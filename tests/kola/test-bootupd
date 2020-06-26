@@ -33,17 +33,21 @@ bootupd() {
     runv /usr/libexec/bootupd "$@"
 }
 
+# Bootstrap metadata from current tree (assumes we're not used at build time yet)
+rpm-ostree usroverlay
+/usr/libexec/bootupd generate-update-metadata /
+jq . < /usr/share/bootupd/updates/efi/meta.json
+
 # Shouldn't be started by default right now; distributions
 # should only enable when it was used at build time.
 runv systemctl show bootupd > out.txt
 assert_file_has_content_literal out.txt 'ActiveState=inactive'
-
 systemctl start bootupd.socket
 
 bootupd status EFI > out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Unmanaged: digest='
-assert_not_file_has_content_literal out.txt 'Update: Available:'
+assert_file_has_content_literal out.txt '  Unmanaged'
+assert_not_file_has_content_literal out.txt 'Update: Available'
 
 if bootupd update EFI 2>err.txt; then
   fatal "performed an update without adopting"
