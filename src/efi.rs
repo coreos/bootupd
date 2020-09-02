@@ -98,6 +98,9 @@ impl Component for EFI {
         }
 
         let src_efidir = openat::Dir::open(&dest_efidir)?;
+        // Query the rpm database and list the package and build times for all the
+        // files in the EFI system partition. If any files are not owned it is considered
+        // and error condition.
         let rpmout = {
             let mut c = ostreeutil::rpm_cmd(sysroot_path);
             c.args(&["-q", "--queryformat", "%{nevra},%{buildtime} ", "-f"]);
