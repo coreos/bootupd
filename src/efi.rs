@@ -90,7 +90,9 @@ impl Component for EFI {
 
             // Fork off mv() because on overlayfs one can't rename() a lower level
             // directory today, and this will handle the copy fallback.
-            let parent = dest_efidir.parent().ok_or(anyhow::anyhow!("Expected parent directory"))?;
+            let parent = dest_efidir
+                .parent()
+                .ok_or(anyhow::anyhow!("Expected parent directory"))?;
             std::fs::create_dir_all(&parent)?;
             Command::new("mv").args(&[&efisrc, &dest_efidir]).run()?;
         }
@@ -144,7 +146,7 @@ impl Component for EFI {
         Ok(meta)
     }
 
-    fn query_update(&self) -> Result<Option<ContentMetadata>> { 
+    fn query_update(&self) -> Result<Option<ContentMetadata>> {
         get_component_update("/", self)
     }
 }

@@ -65,7 +65,7 @@ enum Opt {
     /// Install data from available components into a disk image
     Install {
         /// Source root
-        #[structopt(long, default_value="/")]
+        #[structopt(long, default_value = "/")]
         src_root: String,
         /// Target root
         dest_root: String,
@@ -142,7 +142,9 @@ fn acquire_write_lock<P: AsRef<Path>>(sysroot: P) -> Result<std::fs::File> {
 fn update(_opts: &UpdateOptions) -> Result<String> {
     let _lock = acquire_write_lock("/")?;
     let mut r = String::new();
-    let state = get_saved_state("/")?.unwrap_or_else(|| SavedState { ..Default::default() });
+    let state = get_saved_state("/")?.unwrap_or_else(|| SavedState {
+        ..Default::default()
+    });
     for component in get_components() {
         let installed = if let Some(i) = state.installed.get(component.name()) {
             i
@@ -151,10 +153,18 @@ fn update(_opts: &UpdateOptions) -> Result<String> {
             continue;
         };
         if let Some(update) = component.query_update()? {
-            component.run_update().with_context(|| format!("Failed to update {}", component.name()))?;
+            component
+                .run_update()
+                .with_context(|| format!("Failed to update {}", component.name()))?;
             writeln!(r, "Updated {}: {:?}", component.name(), update).unwrap();
         } else {
-            writeln!(r, "No update available for {}: {:?}", component.name(), installed).unwrap();
+            writeln!(
+                r,
+                "No update available for {}: {:?}",
+                component.name(),
+                installed
+            )
+            .unwrap();
         }
     }
     Ok("".into())
@@ -200,7 +210,11 @@ fn get_saved_state(sysroot_path: &str) -> Result<Option<SavedState>> {
     Ok(saved_state)
 }
 
-fn print_component(component: &dyn Component, installed: &ContentMetadata, r: &mut String) -> Result<()> {
+fn print_component(
+    component: &dyn Component,
+    installed: &ContentMetadata,
+    r: &mut String,
+) -> Result<()> {
     let name = component.name();
     writeln!(r, "Component {}", name).unwrap();
     writeln!(r, "  Installed: {:?}", installed).unwrap();
@@ -305,7 +319,10 @@ pub fn boot_update_main(args: &[String]) -> Result<()> {
     }
     let opt = Opt::from_iter(args.iter());
     match opt {
-        Opt::Install { src_root, dest_root } => install(&src_root, &dest_root).context("boot data installation failed")?,
+        Opt::Install {
+            src_root,
+            dest_root,
+        } => install(&src_root, &dest_root).context("boot data installation failed")?,
         Opt::GenerateUpdateMetadata { sysroot } => {
             generate_update_metadata(&sysroot).context("generating metadata failed")?
         }
