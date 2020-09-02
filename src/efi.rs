@@ -115,7 +115,7 @@ impl Component for EFI {
             std::io::stderr().write_all(&rpmout.stderr)?;
             bail!("Failed to invoke rpm -qf");
         }
-        let pkgs: Result<BTreeMap<&str, NaiveDateTime>> = std::str::from_utf8(&rpmout.stdout)?
+        let pkgs = std::str::from_utf8(&rpmout.stdout)?
             .split_whitespace()
             .map(|s| -> Result<_> {
                 let parts: Vec<_> = s.splitn(2, ',').collect();
@@ -126,8 +126,7 @@ impl Component for EFI {
                     bail!("Failed to parse: {}", s);
                 }
             })
-            .collect();
-        let pkgs = pkgs?;
+            .collect::<Result<BTreeMap<&str, NaiveDateTime>>>()?;
         if pkgs.is_empty() {
             bail!("Failed to find any RPM packages matching files in source efidir");
         }
