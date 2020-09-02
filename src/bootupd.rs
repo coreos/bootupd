@@ -95,14 +95,11 @@ pub(crate) fn install(source_root: &str, dest_root: &str) -> Result<()> {
         return Ok(());
     }
     let mut state = SavedState {
-        components: Vec::new(),
+        installed: Default::default(),
     };
     for component in components {
         let meta = component.install(source_root, dest_root)?;
-        state.components.push(SavedComponent {
-            component: component,
-            metadata: meta,
-        });
+        state.installed.insert(component.name().into(), meta);
     }
 
     let sysroot = openat::Dir::open(dest_root)?;
@@ -145,13 +142,19 @@ fn acquire_write_lock<P: AsRef<Path>>(sysroot: P) -> Result<std::fs::File> {
 fn update(_opts: &UpdateOptions) -> Result<String> {
     let _lock = acquire_write_lock("/")?;
     let mut r = String::new();
-    let state = get_saved_state("/")?;
+    let state = get_saved_state("/")?.unwrap_or_else(|| SavedState { ..Default::default() });
     for component in get_components() {
+        let installed = if let Some(i) = state.installed.get(component.name()) {
+            i
+        } else {
+            writeln!(r, "Component {} is not installed", component.name()).unwrap();
+            continue;
+        };
         if let Some(update) = component.query_update()? {
             component.run_update().with_context(|| format!("Failed to update {}", component.name()))?;
             writeln!(r, "Updated {}: {:?}", component.name(), update).unwrap();
         } else {
-            writeln!(r, "No update available for {}", component.name()).unwrap();
+            writeln!(r, "No update available for {}: {:?}", component.name(), installed).unwrap();
         }
     }
     Ok("".into())
@@ -197,11 +200,11 @@ fn get_saved_state(sysroot_path: &str) -> Result<Option<SavedState>> {
     Ok(saved_state)
 }
 
-fn print_component(saved: &SavedComponent, r: &mut String) -> Result<()> {
-    let name = saved.component.name();
+fn print_component(component: &dyn Component, installed: &ContentMetadata, r: &mut String) -> Result<()> {
+    let name = component.name();
     writeln!(r, "Component {}", name).unwrap();
-    writeln!(r, "  Installed: {:?}", saved.metadata).unwrap();
-    let pending = saved.component.query_update()?;
+    writeln!(r, "  Installed: {:?}", installed).unwrap();
+    let pending = component.query_update()?;
     if let Some(pending) = pending {
         let ts_str = pending.timestamp.format("%Y-%m-%dT%H:%M:%S+00:00");
         writeln!(r, "  Update: Available: {:?}", ts_str).unwrap();
@@ -219,8 +222,10 @@ fn status(opts: &StatusOptions) -> Result<String> {
         Ok(r)
     } else if let Some(state) = state {
         let mut r = String::new();
-        for component in state.components.iter() {
-            print_component(component, &mut r)?;
+        for (name, version) in state.installed.iter() {
+            let component = component::new_from_name(&name)?;
+            let component = component.as_ref();
+            print_component(component, version, &mut r)?;
         }
         Ok(r)
     } else {

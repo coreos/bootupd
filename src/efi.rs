@@ -32,7 +32,6 @@ impl EFI {
     }
 }
 
-#[typetag::serde]
 impl Component for EFI {
     fn name(&self) -> &'static str {
         "EFI"

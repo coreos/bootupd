@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use crate::model::*;
 
 /// A component along with a possible update
-#[typetag::serde(tag = "type")]
 pub(crate) trait Component {
     fn name(&self) -> &'static str;
 
@@ -23,6 +22,14 @@ pub(crate) trait Component {
     fn query_update(&self) -> Result<Option<ContentMetadata>>;
 
     fn run_update(&self) -> Result<()>;
+}
+
+pub(crate) fn new_from_name(name: &str) -> Result<Box<dyn Component>> {
+    let r: Box<dyn Component> = match name {
+        "EFI" => Box::new(crate::efi::EFI::new()),
+        _ => anyhow::bail!("No component {}", name),
+    };
+    Ok(r)
 }
 
 pub(crate) fn component_update_metapath(sysroot: &str, component: &dyn Component) -> PathBuf {

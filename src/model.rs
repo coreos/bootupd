@@ -6,8 +6,7 @@
 
 use chrono::prelude::*;
 use serde_derive::{Deserialize, Serialize};
-
-use crate::component::*;
+use std::collections::BTreeMap;
 
 /// The directory where updates are stored
 pub(crate) const BOOTUPD_UPDATES_DIR: &str = "usr/lib/bootupd/updates";
@@ -20,26 +19,11 @@ pub(crate) struct ContentMetadata {
     pub(crate) version: Option<String>,
 }
 
-/// Our total view of the world at a point in time
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) struct Status {
-    pub(crate) supported_architecture: bool,
-    pub(crate) components: Vec<Box<dyn Component>>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) struct SavedComponent {
-    pub(crate) component: Box<dyn Component>,
-    pub(crate) metadata: ContentMetadata,
-}
-
 /// Will be serialized into /boot/bootupd-state.json
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct SavedState {
-    pub(crate) components: Vec<SavedComponent>,
+    pub(crate) installed: BTreeMap<String, ContentMetadata>,
 }
 
 // Should be stored in /usr/lib/bootupd/edges.json
