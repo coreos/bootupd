@@ -39,7 +39,7 @@ pub(crate) fn install(source_root: &str, dest_root: &str) -> Result<()> {
     }
 
     let mut state_guard =
-        SavedState::acquire_write_lock(source_root).context("failed to acquire write lock")?;
+        SavedState::acquire_write_lock(dest_root).context("failed to acquire write lock")?;
     let mut sysroot = openat::Dir::open(dest_root)?;
     state_guard
         .update_state(&mut sysroot, &state)
