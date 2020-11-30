@@ -93,6 +93,27 @@ pub(crate) enum ComponentUpdateResult {
     },
 }
 
+fn ensure_writable_mount<P: AsRef<Path>>(p: P) -> Result<()> {
+    use nix::sys::statvfs;
+    let p = p.as_ref();
+    let stat = statvfs::statvfs(p)?;
+    if !stat.flags().contains(statvfs::FsFlags::ST_RDONLY) {
+        return Ok(());
+    }
+    let status = std::process::Command::new("mount")
+        .args(&["-o", "remount,rw"])
+        .arg(p.as_os_str())
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("Failed to remount {:?} writable", p);
+    }
+    Ok(())
+}
+
+fn ensure_writable_boot() -> Result<()> {
+    ensure_writable_mount("/boot")
+}
+
 /// daemon implementation of component update
 pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
@@ -108,6 +129,8 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
         Some(p) if inst.meta.can_upgrade_to(&p) => p,
         _ => return Ok(ComponentUpdateResult::AtLatestVersion),
     };
+
+    ensure_writable_boot()?;
 
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
@@ -145,6 +168,8 @@ pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
     } else {
         anyhow::bail!("Component {} has no available update", name);
     };
+    ensure_writable_boot()?;
+
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
