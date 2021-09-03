@@ -393,8 +393,5 @@ pub(crate) fn client_run_validate(c: &mut ipc::ClientToDaemonConnection) -> Resu
             }
         }
     }
-    if caught_validation_error {
-        anyhow::bail!("Caught validation errors");
-    }
-    Ok(())
+    anyhow::bail!("synthetic error to test CI");
 }
