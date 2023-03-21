@@ -8,7 +8,10 @@ use anyhow::{bail, Context, Result};
 use fn_error_context::context;
 use nix::sys::socket as nixsocket;
 use serde::{Deserialize, Serialize};
-use std::os::unix::io::RawFd;
+use std::{
+    io::{IoSlice, IoSliceMut},
+    os::unix::io::RawFd,
+};
 
 pub(crate) const BOOTUPD_SOCKET: &str = "/run/bootupd.sock";
 pub(crate) const MSGSIZE: usize = 1_048_576;
@@ -40,14 +43,13 @@ impl ClientToDaemonConnection {
 
     #[context("connecting to {}", BOOTUPD_SOCKET)]
     pub(crate) fn connect(&mut self) -> Result<()> {
-        use nix::sys::uio::IoVec;
         self.fd = nixsocket::socket(
             nixsocket::AddressFamily::Unix,
             nixsocket::SockType::SeqPacket,
             nixsocket::SockFlag::SOCK_CLOEXEC,
             None,
         )?;
-        let addr = nixsocket::SockAddr::new_unix(BOOTUPD_SOCKET)?;
+        let addr = nixsocket::UnixAddr::new(BOOTUPD_SOCKET)?;
         nixsocket::connect(self.fd, &addr)?;
         let creds = libc::ucred {
             pid: nix::unistd::getpid().as_raw(),
@@ -56,9 +58,11 @@ impl ClientToDaemonConnection {
         };
         let creds = nixsocket::UnixCredentials::from(creds);
         let creds = nixsocket::ControlMessage::ScmCredentials(&creds);
-        let _ = nixsocket::sendmsg(
+        let iov = IoSlice::new(BOOTUPD_HELLO_MSG.as_bytes());
+        dbg!(&iov);
+        let _ = nixsocket::sendmsg::<()>(
             self.fd,
-            &[IoVec::from_slice(BOOTUPD_HELLO_MSG.as_bytes())],
+            &[iov],
             &[creds],
             nixsocket::MsgFlags::MSG_CMSG_CLOEXEC,
             None,
@@ -110,19 +114,19 @@ impl UnauthenticatedClient {
     }
 
     pub(crate) fn authenticate(mut self) -> Result<AuthenticatedClient> {
-        use nix::sys::uio::IoVec;
         let fd = self.fd;
         let mut buf = [0u8; 1024];
 
         nixsocket::setsockopt(fd, nix::sys::socket::sockopt::PassCred, &true)?;
-        let iov = IoVec::from_mut_slice(buf.as_mut());
         let mut cmsgspace = nix::cmsg_space!(nixsocket::UnixCredentials);
-        let msg = nixsocket::recvmsg(
+        let iov = IoSliceMut::new(buf.as_mut());
+        let msg = nixsocket::recvmsg::<()>(
             fd,
-            &[iov],
+            &mut [iov],
             Some(&mut cmsgspace),
             nixsocket::MsgFlags::MSG_CMSG_CLOEXEC,
         )?;
+        dbg!(&msg);
         let mut creds = None;
         for cmsg in msg.cmsgs() {
             if let nixsocket::ControlMessageOwned::ScmCredentials(c) = cmsg {
@@ -138,7 +142,12 @@ impl UnauthenticatedClient {
         } else {
             bail!("No SCM credentials provided");
         }
-        let hello = String::from_utf8_lossy(&buf[0..msg.bytes]);
+        let iov = msg
+            .iovs()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get a buffer"))?;
+        dbg!(&iov);
+        let hello = String::from_utf8_lossy(iov);
         if hello != BOOTUPD_HELLO_MSG {
             bail!("Didn't receive correct hello message, found: {:?}", &hello);
         }
