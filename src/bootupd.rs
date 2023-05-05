@@ -338,7 +338,7 @@ pub(crate) fn client_run_update(c: &mut ipc::ClientToDaemonConnection) -> Result
                 continue;
             }
             ComponentUpdateResult::Updated {
-                previous: _,
+                previous,
                 interrupted,
                 new,
             } => {
@@ -348,7 +348,9 @@ pub(crate) fn client_run_update(c: &mut ipc::ClientToDaemonConnection) -> Result
                         i.version,
                     );
                 }
-                println!("Updated {}: {}", name, new.version);
+                println!("Updated {}", name);
+                println!("  Previous: {}", previous.version);
+                println!("  Current: {}", new.version);
             }
         }
         updated = true;
