@@ -78,10 +78,11 @@ undo_manifest_fork() {
 
 if test -z "${e2e_skip_build:-}"; then
     echo "Building starting image"
+    git config --global --add safe.directory '*'
     rm -f ${overrides}/rpm/*.rpm
     # Version from F37 GA
     add_override grub2-2.06-58.fc37
-    runv cosa build
+    runv runuser -u builder -- cosa build
     prev_image=$(runv cosa meta --image-path qemu)
     create_manifest_fork
     rm -f ${overrides}/rpm/*.rpm
@@ -90,7 +91,7 @@ if test -z "${e2e_skip_build:-}"; then
     add_override grub2-2.06-70.fc37
     mv ${test_tmpdir}/yumrepo/packages/$(arch)/*.rpm ${overrides}/rpm/
     # Only build ostree update
-    runv cosa build ostree
+    runv runuser -u builder -- cosa build ostree
     undo_manifest_fork
 fi
 echo "Preparing test"
@@ -130,7 +131,7 @@ systemd:
 EOF
 runv butane -o ${testtmp}/test.ign ${testtmp}/test.bu
 cd ${testtmp}
-qemuexec_args=(kola qemuexec --propagate-initramfs-failure --qemu-image "${prev_image}" --qemu-firmware uefi \
+qemuexec_args=(runuser -u builder -- kola qemuexec --propagate-initramfs-failure --qemu-image "${prev_image}" --qemu-firmware uefi \
     -i test.ign --bind-ro ${COSA_DIR},/run/cosadir --bind-ro ${bootupd_git},/run/bootupd-source --bind-rw .,/run/testtmp)
 if test -n "${e2e_debug:-}"; then
     runv ${qemuexec_args[@]} --devshell

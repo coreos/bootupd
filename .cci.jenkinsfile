@@ -40,15 +40,17 @@ cosaPod(runAsUser: 0, memory: "4608Mi", cpu: "4") {
     // because bootupd is used both during the `rpm-ostree compose tree` as well as
     // inside the target operating system.
     shwrap("""
+      git config --global --add safe.directory '*'
       mkdir insttree
       tar -C insttree -xzvf insttree.tar.gz
       rsync -rlv insttree/ /
-      coreos-assembler init --force https://github.com/coreos/fedora-coreos-config
+      chown -R -h builder: .
+      runuser -u builder -- coreos-assembler init --force https://github.com/coreos/fedora-coreos-config
       mkdir -p overrides/rootfs
       mv insttree/* overrides/rootfs/
       rmdir insttree
-      cosa fetch
-      cosa build
+      runuser -u builder -- cosa fetch
+      runuser -u builder -- cosa build
     """)
   }
   // The e2e-adopt test will use the ostree commit we just generated above
@@ -63,7 +65,7 @@ cosaPod(runAsUser: 0, memory: "4608Mi", cpu: "4") {
     }
     stage("Kola testing") {
       // The previous e2e leaves things only having built an ostree update
-      shwrap("cosa build")
+      shwrap("runuser -u builder -- cosa build")
       // bootupd really can't break upgrades for the OS
       kola(cosaDir: "${env.WORKSPACE}", extraArgs: "ext.*bootupd*", skipUpgrade: true, skipBasicScenarios: true)
     }
