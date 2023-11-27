@@ -83,7 +83,7 @@ dependencies = [
  "libc",
  "libsystemd",
  "log",
- "nix 0.23.2",
+ "nix 0.27.1",
  "openat",
  "openat-ext",
  "openssl",
