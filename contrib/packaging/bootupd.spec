@@ -20,7 +20,6 @@ BuildRequires: cargo
 # For autosetup -Sgit
 BuildRequires: git
 BuildRequires: openssl-devel
-BuildRequires: systemd-devel
 
 %description 
 %{summary}
@@ -30,7 +29,6 @@ BuildRequires: systemd-devel
 %doc README.md
 %{_bindir}/bootupctl
 %{_libexecdir}/bootupd  
-%{_unitdir}/*
 %{_prefix}/lib/bootupd/grub2-static/
 
 %prep
@@ -51,15 +49,6 @@ cargo build --release
 %install
 %make_install INSTALL="install -p -c"
 make install-grub-static DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
-
-%post        -n %{crate}
-%systemd_post bootupd.service bootupd.socket
-
-%preun       -n %{crate}
-%systemd_preun bootupd.service bootupd.socket
-
-%postun      -n %{crate}
-%systemd_postun bootupd.service bootupd.socket
 
 %changelog
 * Tue Oct 18 2022 Colin Walters <walters@verbum.org> - 0.2.8-3

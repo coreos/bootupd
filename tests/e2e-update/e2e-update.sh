@@ -16,7 +16,6 @@ if test -z "${COSA_DIR:-}"; then
 fi
 # Validate source directory
 bootupd_git=$(cd ${dn} && git rev-parse --show-toplevel)
-test -f ${bootupd_git}/systemd/bootupd.service
 
 testtmp=$(mktemp -d -p /var/tmp bootupd-e2e.XXXXXXX)
 export test_tmpdir=${testtmp}

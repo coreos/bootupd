@@ -7,7 +7,7 @@ authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2021"
 rust-version = "1.70.0"
 
-include = ["src", "LICENSE", "Makefile", "systemd"]
+include = ["src", "LICENSE", "Makefile"]
 
 # See https://github.com/coreos/cargo-vendor-filterer
 [package.metadata.vendor-filter]
