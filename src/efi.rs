@@ -27,6 +27,9 @@ pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
 const EFIBOOTMGR: &str = "efibootmgr";
 const SHIM: &str = "shimx64.efi";
 
+/// The directory for EFI variables.
+const EFIVARS: &str = "/sys/firmware/efi/vars";
+
 /// The ESP partition label on Fedora CoreOS derivatives
 pub(crate) const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
 pub(crate) const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";
@@ -132,6 +135,15 @@ impl Efi {
             log::debug!("Not booted via EFI, skipping firmware update");
             return Ok(());
         }
+
+        if !Path::new(EFIVARS)
+            .try_exists()
+            .context("Checking EFI variables")?
+        {
+            log::debug!("No EFI variables on this system");
+            return Ok(());
+        }
+
         let efidir = &espdir.sub_dir("EFI").context("Opening EFI")?;
         let vendordir = super::grubconfigs::find_efi_vendordir(efidir)?;
         let vendordir = vendordir
