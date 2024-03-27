@@ -68,7 +68,8 @@ tmpefimount=$(mount_tmp_efi)
 assert_not_has_file ${tmpefimount}/EFI/fedora/test-bootupd.efi
 
 bootupctl update | tee out.txt
-assert_file_has_content out.txt "Updated EFI: ${TARGET_GRUB_PKG}.*,test-bootupd-payload-1.0"
+assert_file_has_content out.txt "Updated EFI"
+assert_file_has_content out.txt "  Current.*${TARGET_GRUB_PKG}.*,test-bootupd-payload-1.0"
 
 assert_file_has_content ${tmpefimount}/EFI/fedora/test-bootupd.efi test-payload
 
