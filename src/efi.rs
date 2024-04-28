@@ -137,7 +137,7 @@ impl Efi {
             return Ok(());
         }
         let efidir = &espdir.sub_dir("EFI").context("Opening EFI")?;
-        let vendordir = super::grubconfigs::find_efi_vendordir(efidir)?;
+        let vendordir = super::grubconfigs::find_efi_vendordir(efidir, None)?;
         let vendordir = vendordir
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 vendordir"))?;

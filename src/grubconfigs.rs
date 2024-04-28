@@ -1,9 +1,11 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
+use walkdir::WalkDir;
 
 use crate::efi::SHIM;
 
@@ -12,25 +14,74 @@ const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
 const DROPINDIR: &str = "configs.d";
 
-#[context("Locating EFI vendordir")]
-pub(crate) fn find_efi_vendordir(efidir: &openat::Dir) -> Result<PathBuf> {
-    for d in efidir.list_dir(".")? {
-        let d = d?;
-        let meta = efidir.metadata(d.file_name())?;
-        if !meta.is_dir() {
-            continue;
-        }
-        // skip if not find shim under dir
-        let dir = efidir.sub_dir(d.file_name())?;
-        for entry in dir.list_dir(".")? {
-            let entry = entry?;
-            if entry.file_name() != SHIM {
-                continue;
+#[context("Find target file recursively")]
+fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<PathBuf>> {
+    let mut result = Vec::new();
+
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            if let Some(file_name) = entry.file_name().to_str() {
+                if file_name == target_file {
+                    if let Some(path) = entry.path().to_str() {
+                        result.push(path.into());
+                    }
+                }
             }
-            return Ok(d.file_name().into());
         }
     }
-    anyhow::bail!("Failed to find EFI vendor dir that contains {SHIM}")
+
+    Ok(result)
+}
+
+#[context("Locating EFI vendordir")]
+pub(crate) fn find_efi_vendordir(efidir: &openat::Dir, root: Option<&str>) -> Result<PathBuf> {
+    let root = root.unwrap_or("/");
+    let shim_img_dir = Path::new(root)
+        .join(crate::model::BOOTUPD_UPDATES_DIR)
+        .join("EFI");
+    let shim_files = find_file_recursive(shim_img_dir, SHIM)?;
+
+    // Does not support multiple shim in the image
+    if shim_files.len() > 1 {
+        anyhow::bail!("Find multiple {SHIM} in the image");
+    }
+    let shim_img_path = if let Some(p) = shim_files.first() {
+        p
+    } else {
+        anyhow::bail!("Failed to find {SHIM} in the image");
+    };
+
+    // get {vendor}/shim from image
+    let vendor = shim_img_path
+        .parent()
+        .unwrap()
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("No file name found"))?;
+    let vendor_shim = format!("{}/{SHIM}", vendor.to_str().unwrap());
+
+    let efidir = efidir.recover_path()?;
+    let shim_files = find_file_recursive(&efidir.as_path(), SHIM)?;
+    if shim_files.len() == 0 {
+        anyhow::bail!("Failed to find {SHIM} under efi dir");
+    }
+    for entry in shim_files {
+        // matching content
+        let output = Command::new("diff")
+            .arg(shim_img_path)
+            .arg(&entry)
+            .output()?;
+        let st = output.status;
+        if !st.success() {
+            continue;
+        }
+        // matching {vendor}/shim path
+        if !entry.ends_with(&vendor_shim) {
+            anyhow::bail!("Match existing {SHIM} content which is not expected");
+        }
+        return Ok(vendor.into());
+    }
+
+    anyhow::bail!("Failed to find EFI vendor dir that matches the image")
 }
 
 /// Install the static GRUB config files.
@@ -108,7 +159,7 @@ pub(crate) fn install(target_root: &openat::Dir, efi: bool, write_uuid: bool) ->
         .transpose()?
         .flatten();
     if let Some(efidir) = efidir.as_ref() {
-        let vendordir = find_efi_vendordir(efidir)?;
+        let vendordir = find_efi_vendordir(efidir, None)?;
         log::debug!("vendordir={:?}", &vendordir);
         let target = &vendordir.join("grub.cfg");
         efidir
@@ -153,25 +204,53 @@ mod tests {
     fn test_find_efi_vendordir() -> Result<()> {
         let td = tempfile::tempdir()?;
         let tdp = td.path();
+        let td_updates = tdp.join("usr/lib/bootupd/updates/EFI");
+        std::fs::create_dir_all(&td_updates)?;
+        std::fs::create_dir_all(td_updates.join("fedora"))?;
+        std::fs::write(td_updates.join(format!("fedora/{SHIM}")), "shim data")?;
+
+        assert!(td_updates.join("fedora").join(SHIM).exists());
+        std::fs::create_dir_all(td_updates.join("centos"))?;
+        std::fs::write(td_updates.join(format!("centos/{SHIM}")), "shim data")?;
+        assert!(td_updates.join("centos").join(SHIM).exists());
+
+        std::fs::create_dir_all(tdp.join("EFI/BOOT"))?;
+        std::fs::create_dir_all(tdp.join("EFI/dell"))?;
+        std::fs::create_dir_all(tdp.join("EFI/fedora"))?;
         let efidir = tdp.join("EFI");
-        std::fs::create_dir_all(efidir.join("BOOT"))?;
-        std::fs::create_dir_all(efidir.join("dell"))?;
-        std::fs::create_dir_all(efidir.join("fedora"))?;
         let td = openat::Dir::open(&efidir)?;
 
-        std::fs::write(efidir.join("dell").join("foo"), "foo data")?;
-        std::fs::write(efidir.join("fedora").join("grub.cfg"), "grub config")?;
-        std::fs::write(efidir.join("fedora").join(SHIM), "shim data")?;
+        // error, multiple shim in the image
+        let x = find_efi_vendordir(&td, tdp.to_str());
+        assert_eq!(x.is_err(), true);
 
-        assert!(td.exists("BOOT")?);
+        std::fs::remove_dir_all(td_updates.join("centos"))?;
+
+        std::fs::write(tdp.join("EFI/BOOT").join(SHIM), "boot shim data")?;
+        std::fs::write(tdp.join("EFI/dell/foo"), "foo data")?;
+        std::fs::write(tdp.join("EFI/fedora/grub.cfg"), "grub config")?;
+        std::fs::write(tdp.join("EFI/fedora").join(SHIM), "shim data")?;
+
+        assert!(td.exists(format!("BOOT/{SHIM}"))?);
         assert!(td.exists("dell/foo")?);
         assert!(td.exists("fedora/grub.cfg")?);
         assert!(td.exists(format!("fedora/{SHIM}"))?);
-        assert_eq!(find_efi_vendordir(&td)?.to_str(), Some("fedora"));
+        // successes, match content and {vendor}/shim
+        assert_eq!(
+            find_efi_vendordir(&td, tdp.to_str())?.to_str(),
+            Some("fedora")
+        );
 
-        std::fs::remove_file(efidir.join("fedora").join(SHIM))?;
-        let x = find_efi_vendordir(&td);
+        // error, match content and not match path {vendor}/shim
+        std::fs::write(tdp.join("EFI/BOOT").join(SHIM), "shim data")?;
+        let x = find_efi_vendordir(&td, tdp.to_str());
         assert_eq!(x.is_err(), true);
+
+        // error, not found {vendor}/shim
+        std::fs::remove_file(efidir.join("fedora").join(SHIM))?;
+        let x = find_efi_vendordir(&td, tdp.to_str());
+        assert_eq!(x.is_err(), true);
+        std::fs::remove_dir_all(tdp)?;
         Ok(())
     }
 }
