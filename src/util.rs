@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use cap_std_ext::cap_std::fs::Dir;
 use openat_ext::OpenatDirExt;
 
 pub(crate) trait CommandRunExt {
@@ -98,4 +100,14 @@ pub(crate) fn cmd_output(cmd: &mut Command) -> Result<String> {
     }
     String::from_utf8(result.stdout)
         .with_context(|| format!("decoding as UTF-8 output of `{:#?}`", cmd))
+}
+
+// Re-open an [`openat::Dir`] via the cap-std version.
+pub(crate) fn reopen_dir(d: &openat::Dir) -> Result<Dir> {
+    Dir::reopen_dir(&unsafe { BorrowedFd::borrow_raw(d.as_raw_fd()) }).map_err(Into::into)
+}
+
+// Re-open an [`cap_std::fs::Dir`] as a legacy openat::Dir.
+pub(crate) fn reopen_legacy_dir(d: &Dir) -> Result<openat::Dir> {
+    openat::Dir::open(format!("/proc/self/fd/{}", d.as_raw_fd())).map_err(Into::into)
 }
