@@ -24,6 +24,7 @@ BuildRequires: cargo
 BuildRequires: git
 BuildRequires: openssl-devel
 BuildRequires: systemd-devel
+BuildRequires: systemd-rpm-macros
 
 %description 
 %{summary}
@@ -34,6 +35,7 @@ BuildRequires: systemd-devel
 %{_bindir}/bootupctl
 %{_libexecdir}/bootupd
 %{_prefix}/lib/bootupd/grub2-static/
+%{_unitdir}/bootloader-update.service
 
 %prep
 %autosetup -n %{crate}-%{version} -p1 -Sgit
@@ -53,6 +55,7 @@ cargo build --release
 %install
 %make_install INSTALL="install -p -c"
 make install-grub-static DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
+make install-systemd-unit DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
 
 %changelog
 * Tue Oct 18 2022 Colin Walters <walters@verbum.org> - 0.2.8-3

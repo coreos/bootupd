@@ -1,0 +1,12 @@
+[Unit]
+Description=Update bootloader on boot
+Documentation=https://github.com/coreos/bootupd
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bootupctl update
+RemainAfterExit=yes
+MountFlags=slave
+
+[Install]
+WantedBy=multi-user.target
