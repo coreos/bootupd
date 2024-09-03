@@ -1,0 +1,13 @@
+[Unit]
+Description=Update Bootloader on boot
+Documentation=https://github.com/coreos/bootupd
+ConditionPathExists=/dev/disk/by-label/EFI-SYSTEM
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bootupctl update
+RemainAfterExit=yes
+MountFlags=slave
+
+[Install]
+WantedBy=multi-user.target

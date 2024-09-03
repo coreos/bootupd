@@ -41,6 +41,9 @@ install-grub-static:
 	install -m 644 -D -t ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static src/grub2/*.cfg
 	install -m 755 -d ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static/configs.d
 
+install-systemd-unit:
+	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" contrib/packaging/bootupctl-update.service
+
 bin-archive:
 	rm target/inst -rf
 	$(MAKE) install install-grub-static DESTDIR=$$(pwd)/target/inst
