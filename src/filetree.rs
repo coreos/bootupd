@@ -624,6 +624,8 @@ mod tests {
         assert!(!dp.exists(".btmp.b")?);
         Ok(())
     }
+    // Waiting on https://github.com/rust-lang/rust/pull/125692
+    #[cfg(not(target_env = "musl"))]
     #[test]
     fn test_apply_with_file() -> Result<()> {
         let tmpd = tempfile::tempdir()?;

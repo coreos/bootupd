@@ -56,6 +56,8 @@ mod test {
         "ostree-commit": "b2ea6159d6274e1bbbb49aa0ef093eda5d53a75c8a793dbe184f760ed64dc862"
     }"##;
 
+    // Waiting on https://github.com/rust-lang/rust/pull/125692
+    #[cfg(not(target_env = "musl"))]
     #[test]
     fn test_parse_from_root_empty() -> Result<()> {
         // Verify we're a no-op in an empty root
@@ -65,6 +67,8 @@ mod test {
         Ok(())
     }
 
+    // Waiting on https://github.com/rust-lang/rust/pull/125692
+    #[cfg(not(target_env = "musl"))]
     #[test]
     fn test_parse_from_root() -> Result<()> {
         let root: &tempfile::TempDir = &tempfile::tempdir()?;
@@ -77,6 +81,8 @@ mod test {
         Ok(())
     }
 
+    // Waiting on https://github.com/rust-lang/rust/pull/125692
+    #[cfg(not(target_env = "musl"))]
     #[test]
     fn test_parse_from_root_linked() -> Result<()> {
         let root: &tempfile::TempDir = &tempfile::tempdir()?;
