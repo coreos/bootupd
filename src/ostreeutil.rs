@@ -6,20 +6,63 @@
 
 use std::path::Path;
 
+use anyhow::Result;
+use log::debug;
+
+use crate::util::CommandRunExt;
+
 /// https://github.com/coreos/rpm-ostree/pull/969/commits/dc0e8db5bd92e1f478a0763d1a02b48e57022b59
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) const BOOT_PREFIX: &str = "usr/lib/ostree-boot";
+const LEGACY_RPMOSTREE_DBPATH: &str = "usr/share/rpm";
+const SYSIMAGE_RPM_DBPATH: &str = "usr/lib/sysimage/rpm";
 
-pub(crate) fn rpm_cmd<P: AsRef<Path>>(sysroot: P) -> std::process::Command {
+/// Returns true if the target directory contains at least one file that does
+/// not start with `.`
+fn is_nonempty_dir(path: impl AsRef<Path>) -> Result<bool> {
+    let path = path.as_ref();
+    let it = match std::fs::read_dir(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    for ent in it {
+        let ent = ent?;
+        let name = ent.file_name();
+        if name.as_encoded_bytes().starts_with(b".") {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub(crate) fn rpm_cmd<P: AsRef<Path>>(sysroot: P) -> Result<std::process::Command> {
+    let mut c = std::process::Command::new("rpm");
     let sysroot = sysroot.as_ref();
-    let dbpath = sysroot.join("usr/share/rpm");
-    let dbpath_arg = {
+    // Take the first non-empty database path
+    let mut arg = None;
+    for dbpath in [SYSIMAGE_RPM_DBPATH, LEGACY_RPMOSTREE_DBPATH] {
+        let dbpath = sysroot.join(dbpath);
+        if !is_nonempty_dir(&dbpath)? {
+            continue;
+        }
+        std::process::Command::new("ls")
+            .arg("-al")
+            .arg(&dbpath)
+            .run()?;
         let mut s = std::ffi::OsString::new();
         s.push("--dbpath=");
         s.push(dbpath.as_os_str());
-        s
-    };
-    let mut c = std::process::Command::new("rpm");
-    c.arg(&dbpath_arg);
-    c
+        arg = Some(s);
+        break;
+    }
+    if let Some(arg) = arg {
+        dbg!("found", &arg);
+        debug!("Using dbpath {arg:?}");
+        c.arg(arg);
+    } else {
+        debug!("Failed to find dbpath");
+    }
+    Ok(c)
 }
