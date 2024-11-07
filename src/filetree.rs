@@ -348,7 +348,7 @@ pub(crate) fn apply_diff(
                 path_tmp = path.to_path_buf();
             }
             destdir
-                .remove_file(path_tmp.as_std_path())
+                .remove_file_optional(path_tmp.as_std_path())
                 .with_context(|| format!("removing {:?}", path_tmp))?;
         }
     }
@@ -691,12 +691,19 @@ mod tests {
             assert_eq!(b_btime_foo_new, b_btime_foo);
         }
         {
-            a.remove_file(testfile)?;
+            b.remove_file(testfile)?;
+            let ta = FileTree::new_from_dir(&a)?;
+            let diff = ta.relative_diff_to(&b)?;
+            assert_eq!(diff.removals.len(), 1);
+            apply_diff(&a, &b, &diff, None).context("test removed files with relative_diff")?;
+            assert_eq!(b.exists(testfile)?, false);
+        }
+        {
             a.remove_file(bar)?;
             let diff = run_diff(&b, &a)?;
             assert_eq!(diff.count(), 2);
             apply_diff(&a, &b, &diff, None).context("test removed files")?;
-            assert_eq!(b.exists(testfile)?, false);
+            assert_eq!(b.exists(testfile)?, true);
             assert_eq!(b.exists(bar)?, false);
             let diff = run_diff(&b, &a)?;
             assert_eq!(diff.count(), 0);

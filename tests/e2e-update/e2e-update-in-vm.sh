@@ -89,7 +89,19 @@ rm -f /boot/bootupd-state.json
 bootupctl adopt-and-update | tee out.txt
 assert_file_has_content out.txt "Adopted and updated: BIOS: .*"
 assert_file_has_content out.txt "Adopted and updated: EFI: .*"
+bootupctl validate
 ok adopt-and-update
+
+# Verify the adoption does not fail when install files if they are missing on the disk.
+# see https://github.com/coreos/bootupd/issues/762
+rm -f /boot/bootupd-state.json
+[ -f "${tmpefimount}/EFI/fedora/test-bootupd.efi" ] && rm -f ${tmpefimount}/EFI/fedora/test-bootupd.efi
+bootupctl adopt-and-update | tee out.txt
+assert_file_has_content out.txt "Adopted and updated: BIOS: .*"
+assert_file_has_content out.txt "Adopted and updated: EFI: .*"
+if bootupctl validate 2>err.txt; then
+  fatal "unexpectedly passed validation"
+fi
 
 tap_finish
 touch /run/testtmp/success
