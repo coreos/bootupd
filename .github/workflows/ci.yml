@@ -21,7 +21,7 @@ jobs:
   c9s-bootc-e2e:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: build
         run: sudo podman build -t localhost/bootupd:latest -f ci/Containerfile.c9s .
       - name: bootc install to disk
