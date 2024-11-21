@@ -8,6 +8,7 @@ use crate::efi;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::util;
 use anyhow::{anyhow, Context, Result};
+use clap::crate_version;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -96,7 +97,12 @@ pub(crate) fn install(
 
     match configs.enabled_with_uuid() {
         Some(uuid) => {
-            let self_meta = crate::packagesystem::query_files("/", ["/usr/bin/bootupctl"])?;
+            let self_bin_meta =
+                std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
+            let self_meta = ContentMetadata {
+                timestamp: self_bin_meta.modified()?.into(),
+                version: crate_version!().into(),
+            };
             state.static_configs = Some(self_meta);
             #[cfg(any(
                 target_arch = "x86_64",
