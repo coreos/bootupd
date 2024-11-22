@@ -52,7 +52,7 @@ pub(crate) fn query_files<T>(
 where
     T: AsRef<Path>,
 {
-    let mut c = ostreeutil::rpm_cmd(sysroot_path);
+    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
     c.args(["-q", "--queryformat", "%{nevra},%{buildtime} ", "-f"]);
     for arg in paths {
         c.arg(arg.as_ref());
