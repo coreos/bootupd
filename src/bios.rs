@@ -62,8 +62,27 @@ impl Bios {
         Ok(device)
     }
 
+    // Return `true` if grub2-modules installed
+    fn check_grub_modules(&self) -> Result<bool> {
+        let usr_path = Path::new("/usr/lib/grub");
+        #[cfg(target_arch = "x86_64")]
+        {
+            usr_path.join("i386-pc").try_exists().map_err(Into::into)
+        }
+        #[cfg(target_arch = "powerpc64")]
+        {
+            usr_path
+                .join("powerpc-ieee1275")
+                .try_exists()
+                .map_err(Into::into)
+        }
+    }
+
     // Run grub2-install
     fn run_grub_install(&self, dest_root: &str, device: &str) -> Result<()> {
+        if !self.check_grub_modules()? {
+            bail!("Failed to find grub2-modules");
+        }
         let grub_install = Path::new("/").join(GRUB_BIN);
         if !grub_install.exists() {
             bail!("Failed to find {:?}", grub_install);
