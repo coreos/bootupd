@@ -24,6 +24,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: build
         run: sudo podman build -t localhost/bootupd:latest -f ci/Containerfile.c9s .
+      - name: bootupctl status in container
+        run: |
+          set -xeuo pipefail
+          output=$(sudo podman run --rm -ti localhost/bootupd:latest bootupctl status | tr -d '\r')
+          [ "Available components: BIOS EFI" == "${output}" ]
       - name: bootc install to disk
         run: |
           set -xeuo pipefail
