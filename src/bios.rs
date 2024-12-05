@@ -37,6 +37,7 @@ impl Bios {
             // find /boot partition
             cmd = Command::new("findmnt");
             cmd.arg("--noheadings")
+                .arg("--nofsroot")
                 .arg("--output")
                 .arg("SOURCE")
                 .arg("/boot");
