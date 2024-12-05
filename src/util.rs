@@ -96,3 +96,22 @@ pub(crate) fn cmd_output(cmd: &mut Command) -> Result<String> {
     String::from_utf8(result.stdout)
         .with_context(|| format!("decoding as UTF-8 output of `{:#?}`", cmd))
 }
+
+/// Copy from https://github.com/containers/bootc/blob/main/ostree-ext/src/container_utils.rs#L20
+/// Attempts to detect if the current process is running inside a container.
+/// This looks for the `container` environment variable or the presence
+/// of Docker or podman's more generic `/run/.containerenv`.
+/// This is a best-effort function, as there is not a 100% reliable way
+/// to determine this.
+pub fn running_in_container() -> bool {
+    if std::env::var_os("container").is_some() {
+        return true;
+    }
+    // https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
+    for p in ["/run/.containerenv", "/.dockerenv"] {
+        if Path::new(p).exists() {
+            return true;
+        }
+    }
+    false
+}

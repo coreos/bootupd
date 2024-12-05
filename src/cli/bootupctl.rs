@@ -100,6 +100,9 @@ impl CtlCommand {
 
     /// Runner for `status` verb.
     fn run_status(opts: StatusOpts) -> Result<()> {
+        if crate::util::running_in_container() {
+            return run_status_in_container();
+        }
         ensure_running_in_systemd()?;
         let r = bootupd::status()?;
         if opts.json {
@@ -169,5 +172,16 @@ fn ensure_running_in_systemd() -> Result<()> {
         // If we got here, it's always an error
         return Err(r.into());
     }
+    Ok(())
+}
+
+/// If running in container, just print the available payloads
+fn run_status_in_container() -> Result<()> {
+    let all_components = crate::bootupd::get_components();
+    if all_components.is_empty() {
+        return Ok(());
+    }
+    let avail: Vec<_> = all_components.keys().cloned().collect();
+    println!("Available components: {}", avail.join(" "));
     Ok(())
 }
