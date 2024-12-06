@@ -29,6 +29,8 @@ jobs:
           set -xeuo pipefail
           output=$(sudo podman run --rm -ti localhost/bootupd:latest bootupctl status | tr -d '\r')
           [ "Available components: BIOS EFI" == "${output}" ]
+          output=$(sudo podman run --rm -ti localhost/bootupd:latest bootupctl status --json)
+          [ '{"components":["BIOS","EFI"]}' == "${output}" ]
       - name: bootc install to disk
         run: |
           set -xeuo pipefail

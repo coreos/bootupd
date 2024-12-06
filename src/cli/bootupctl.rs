@@ -101,7 +101,7 @@ impl CtlCommand {
     /// Runner for `status` verb.
     fn run_status(opts: StatusOpts) -> Result<()> {
         if crate::util::running_in_container() {
-            return run_status_in_container();
+            return run_status_in_container(opts.json);
         }
         ensure_running_in_systemd()?;
         let r = bootupd::status()?;
@@ -176,12 +176,21 @@ fn ensure_running_in_systemd() -> Result<()> {
 }
 
 /// If running in container, just print the available payloads
-fn run_status_in_container() -> Result<()> {
+fn run_status_in_container(json_format: bool) -> Result<()> {
     let all_components = crate::bootupd::get_components();
     if all_components.is_empty() {
         return Ok(());
     }
     let avail: Vec<_> = all_components.keys().cloned().collect();
-    println!("Available components: {}", avail.join(" "));
+    if json_format {
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        let output: serde_json::Value = serde_json::json!({
+            "components": avail
+        });
+        serde_json::to_writer(&mut stdout, &output)?;
+    } else {
+        println!("Available components: {}", avail.join(" "));
+    }
     Ok(())
 }
