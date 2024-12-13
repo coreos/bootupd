@@ -22,7 +22,7 @@ use widestring::U16CString;
 use crate::filetree;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::CommandRunExt;
+use crate::util::{self, CommandRunExt};
 use crate::{component::*, packagesystem};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
@@ -108,6 +108,7 @@ impl Efi {
             if st.f_type != libc::MSDOS_SUPER_MAGIC {
                 continue;
             }
+            util::ensure_writable_mount(&mnt)?;
             log::debug!("Reusing existing {mnt:?}");
             return Ok(mnt);
         }
