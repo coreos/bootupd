@@ -58,6 +58,8 @@ pub enum CtlVerb {
     AdoptAndUpdate,
     #[clap(name = "validate", about = "Validate system state")]
     Validate,
+    #[clap(name = "migrate", about = "Migrate a system to static a GRUB config")]
+    Migrate,
 }
 
 #[derive(Debug, Parser)]
@@ -95,6 +97,7 @@ impl CtlCommand {
             CtlVerb::Backend(CtlBackend::Install(opts)) => {
                 super::bootupd::DCommand::run_install(opts)
             }
+            CtlVerb::Migrate => Self::run_migrate(),
         }
     }
 
@@ -134,6 +137,12 @@ impl CtlCommand {
     fn run_validate() -> Result<()> {
         ensure_running_in_systemd()?;
         bootupd::client_run_validate()
+    }
+
+    /// Runner for `migrate` verb.
+    fn run_migrate() -> Result<()> {
+        ensure_running_in_systemd()?;
+        bootupd::client_run_migrate()
     }
 }
 
