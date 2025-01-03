@@ -43,6 +43,7 @@ install-grub-static:
 
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" contrib/packaging/bootloader-update.service
+	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" contrib/packaging/bootupd-static-grub-migration.service
 
 bin-archive:
 	rm target/inst -rf

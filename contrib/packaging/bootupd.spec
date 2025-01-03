@@ -36,6 +36,7 @@ BuildRequires: systemd-rpm-macros
 %{_libexecdir}/bootupd
 %{_prefix}/lib/bootupd/grub2-static/
 %{_unitdir}/bootloader-update.service
+%{_unitdir}/bootupd-static-grub-migration.service
 
 %prep
 %autosetup -n %{crate}-%{version} -p1 -Sgit
