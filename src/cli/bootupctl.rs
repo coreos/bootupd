@@ -6,20 +6,17 @@ use log::LevelFilter;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
-static SYSTEMD_ARGS_BOOTUPD: &[&str] = &[
-    "--unit",
-    "bootupd",
-    "--property",
+static SYSTEMD_ARGS_BOOTUPD: &[&str] = &["--unit", "bootupd", "--pipe"];
+
+/// Keep these properties (isolation/runtime state) in sync with
+/// the systemd units in contrib/packaging/*.service
+static SYSTEMD_PROPERTIES: &[&str] = &[
     "PrivateNetwork=yes",
-    "--property",
     "ProtectHome=yes",
     // While only our main process during update catches SIGTERM, we don't
     // want systemd to send it to other processes.
-    "--property",
     "KillMode=mixed",
-    "--property",
     "MountFlags=slave",
-    "--pipe",
 ];
 
 /// `bootupctl` sub-commands.
@@ -171,6 +168,11 @@ fn ensure_running_in_systemd() -> Result<()> {
             .wait()?;
         let r = Command::new("systemd-run")
             .args(SYSTEMD_ARGS_BOOTUPD)
+            .args(
+                SYSTEMD_PROPERTIES
+                    .into_iter()
+                    .flat_map(|&v| ["--property", v]),
+            )
             .args(std::env::args())
             .exec();
         // If we got here, it's always an error
