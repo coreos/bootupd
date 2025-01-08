@@ -9,6 +9,25 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
+/// Suppress SIGTERM while active
+// TODO: In theory we could record if we got SIGTERM and exit
+// on drop, but in practice we don't care since we're going to exit anyways.
+#[derive(Debug)]
+struct SignalTerminationGuard(signal_hook_registry::SigId);
+
+impl SignalTerminationGuard {
+    pub(crate) fn new() -> Result<Self> {
+        let signal = unsafe { signal_hook_registry::register(libc::SIGTERM, || {})? };
+        Ok(Self(signal))
+    }
+}
+
+impl Drop for SignalTerminationGuard {
+    fn drop(&mut self) {
+        signal_hook_registry::unregister(self.0);
+    }
+}
+
 impl SavedState {
     /// System-wide bootupd write lock (relative to sysroot).
     const WRITE_LOCK_PATH: &'static str = "run/bootupd-lock";
@@ -27,6 +46,7 @@ impl SavedState {
         lockfile.lock_exclusive()?;
         let guard = StateLockGuard {
             sysroot,
+            termguard: Some(SignalTerminationGuard::new()?),
             lockfile: Some(lockfile),
         };
         Ok(guard)
@@ -37,6 +57,7 @@ impl SavedState {
     pub(crate) fn unlocked(sysroot: openat::Dir) -> Result<StateLockGuard> {
         Ok(StateLockGuard {
             sysroot,
+            termguard: None,
             lockfile: None,
         })
     }
@@ -90,6 +111,8 @@ impl SavedState {
 #[derive(Debug)]
 pub(crate) struct StateLockGuard {
     pub(crate) sysroot: openat::Dir,
+    #[allow(dead_code)]
+    termguard: Option<SignalTerminationGuard>,
     #[allow(dead_code)]
     lockfile: Option<File>,
 }
