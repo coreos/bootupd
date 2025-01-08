@@ -6,7 +6,12 @@ Documentation=https://github.com/coreos/bootupd
 Type=oneshot
 ExecStart=/usr/bin/bootupctl update
 RemainAfterExit=yes
+PrivateNetwork=yes
+ProtectHome=yes
 MountFlags=slave
+# inhibit locks are ignored by reboot/poweroff (need to use systemctl)
+# so just delay being killed as much as possible
+KillSignal=SIGCONT
 
 [Install]
 WantedBy=multi-user.target

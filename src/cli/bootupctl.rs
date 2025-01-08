@@ -15,6 +15,8 @@ static SYSTEMD_ARGS_BOOTUPD: &[&str] = &[
     "ProtectHome=yes",
     "--property",
     "MountFlags=slave",
+    "--property",
+    "KillSignal=SIGCONT",
     "--pipe",
 ];
 
