@@ -13,6 +13,10 @@ static SYSTEMD_ARGS_BOOTUPD: &[&str] = &[
     "PrivateNetwork=yes",
     "--property",
     "ProtectHome=yes",
+    // While only our main process during update catches SIGTERM, we don't
+    // want systemd to send it to other processes.
+    "--property",
+    "KillMode=mixed",
     "--property",
     "MountFlags=slave",
     "--pipe",
