@@ -1,0 +1,17 @@
+[Unit]
+Description=bootupd static GRUB config migration
+Documentation=https://github.com/coreos/bootupd
+ConditionPathExists=!/boot/.bootupd-static-migration-complete
+RequiresMountsFor=/sysroot /boot
+# Only run after a successful bootloader update
+After=bootloader-update.service
+Requires=bootloader-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bootupctl migrate
+RemainAfterExit=yes
+MountFlags=slave
+
+[Install]
+WantedBy=multi-user.target
