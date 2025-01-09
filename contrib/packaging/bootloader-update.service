@@ -6,6 +6,10 @@ Documentation=https://github.com/coreos/bootupd
 Type=oneshot
 ExecStart=/usr/bin/bootupctl update
 RemainAfterExit=yes
+# Keep this stuff in sync with SYSTEMD_ARGS_BOOTUPD in general
+PrivateNetwork=yes
+ProtectHome=yes
+KillMode=mixed
 MountFlags=slave
 
 [Install]
