@@ -3,30 +3,37 @@
       {
          "path": "/dev/sr0",
          "pttype": null,
+         "parttype": null,
          "parttypename": null
       },{
          "path": "/dev/zram0",
          "pttype": null,
+         "parttype": null,
          "parttypename": null
       },{
          "path": "/dev/vda",
          "pttype": "gpt",
+         "parttype": null,
          "parttypename": null
       },{
          "path": "/dev/vda1",
          "pttype": "gpt",
+         "parttype": null,
          "parttypename": "EFI System"
       },{
          "path": "/dev/vda2",
          "pttype": "gpt",
+         "parttype": null,
          "parttypename": "Linux extended boot"
       },{
          "path": "/dev/vda3",
          "pttype": "gpt",
+         "parttype": null,
          "parttypename": "Linux filesystem"
       },{
          "path": "/dev/mapper/luks-df2d5f95-5725-44dd-83e1-81bc4cdc49b8",
          "pttype": null,
+         "parttype": null,
          "parttypename": null
       }
    ]
