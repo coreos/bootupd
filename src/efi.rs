@@ -19,6 +19,7 @@ use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
 use widestring::U16CString;
 
+use crate::blockdev;
 use crate::filetree;
 use crate::model::*;
 use crate::ostreeutil;
@@ -57,28 +58,6 @@ pub(crate) struct Efi {
 }
 
 impl Efi {
-    fn esp_path(&self) -> Result<PathBuf> {
-        self.ensure_mounted_esp(Path::new("/"))
-            .map(|v| v.join("EFI"))
-    }
-
-    fn open_esp_optional(&self) -> Result<Option<openat::Dir>> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
-            log::debug!("Skip EFI");
-            return Ok(None);
-        }
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir_optional(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
-    fn open_esp(&self) -> Result<openat::Dir> {
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
     fn get_esp_device(&self) -> Option<PathBuf> {
         let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
             .into_iter()
@@ -93,11 +72,25 @@ impl Efi {
         return esp_device;
     }
 
-    pub(crate) fn ensure_mounted_esp(&self, root: &Path) -> Result<PathBuf> {
-        let mut mountpoint = self.mountpoint.borrow_mut();
-        if let Some(mountpoint) = mountpoint.as_deref() {
-            return Ok(mountpoint.to_owned());
+    fn get_all_esp_devices(&self) -> Option<Vec<String>> {
+        let mut esp_devices = vec![];
+        if let Some(esp_device) = self.get_esp_device() {
+            esp_devices.push(esp_device.to_string_lossy().into_owned());
+        } else {
+            esp_devices = blockdev::find_colocated_esps("/").expect("get esp devices");
+        };
+        if !esp_devices.is_empty() {
+            return Some(esp_devices);
         }
+        return None;
+    }
+
+    fn check_existing_esp<P: AsRef<Path>>(&self, root: P) -> Result<Option<PathBuf>> {
+        let mountpoint = self.mountpoint.borrow_mut();
+        if let Some(mountpoint) = mountpoint.as_deref() {
+            return Ok(Some(mountpoint.to_owned()));
+        }
+        let root = root.as_ref();
         for &mnt in ESP_MOUNTS {
             let mnt = root.join(mnt);
             if !mnt.exists() {
@@ -109,13 +102,23 @@ impl Efi {
                 continue;
             }
             util::ensure_writable_mount(&mnt)?;
-            log::debug!("Reusing existing {mnt:?}");
-            return Ok(mnt);
+            log::debug!("Reusing existing mount point {mnt:?}");
+            return Ok(Some(mnt));
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn ensure_mounted_esp<P: AsRef<Path>>(
+        &self,
+        root: P,
+        esp_device: &str,
+    ) -> Result<PathBuf> {
+        let mut mountpoint = self.mountpoint.borrow_mut();
+        if let Some(mountpoint) = mountpoint.as_deref() {
+            return Ok(mountpoint.to_owned());
         }
 
-        let esp_device = self
-            .get_esp_device()
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        let root = root.as_ref();
         for &mnt in ESP_MOUNTS.iter() {
             let mnt = root.join(mnt);
             if !mnt.exists() {
@@ -134,10 +137,9 @@ impl Efi {
         }
         Ok(mountpoint.as_deref().unwrap().to_owned())
     }
-
     fn unmount(&self) -> Result<()> {
         if let Some(mount) = self.mountpoint.borrow_mut().take() {
-            let status = Command::new("umount").arg(&mount).status()?;
+            let status = Command::new("umount").arg("-l").arg(&mount).status()?;
             if !status.success() {
                 anyhow::bail!("Failed to unmount {mount:?}: {status:?}");
             }
@@ -245,8 +247,7 @@ impl Component for Efi {
     }
 
     fn query_adopt(&self) -> Result<Option<Adoptable>> {
-        let esp = self.open_esp_optional()?;
-        if esp.is_none() {
+        if self.get_all_esp_devices().is_none() {
             log::trace!("No ESP detected");
             return Ok(None);
         };
@@ -269,16 +270,32 @@ impl Component for Efi {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let esp = self.open_esp()?;
-        validate_esp(&esp)?;
         let updated = sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
-        // For adoption, we should only touch files that we know about.
-        let diff = updatef.relative_diff_to(&esp)?;
-        log::trace!("applying adoption diff: {}", &diff);
-        filetree::apply_diff(&updated, &esp, &diff, None).context("applying filesystem changes")?;
+        let esp_devices = self
+            .get_all_esp_devices()
+            .expect("get esp devices before adopt");
+        let sysroot = sysroot.recover_path()?;
+
+        for esp_dev in esp_devices {
+            let dest_path = if let Some(dest_path) = self.check_existing_esp(&sysroot)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(&sysroot, &esp_dev)?.join("EFI")
+            };
+
+            let esp = openat::Dir::open(&dest_path).context("opening EFI dir")?;
+            validate_esp(&esp)?;
+
+            // For adoption, we should only touch files that we know about.
+            let diff = updatef.relative_diff_to(&esp)?;
+            log::trace!("applying adoption diff: {}", &diff);
+            filetree::apply_diff(&updated, &esp, &diff, None)
+                .context("applying filesystem changes")?;
+            self.unmount().context("unmount after adopt")?;
+        }
         Ok(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
@@ -300,9 +317,18 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        let destdir = &self.ensure_mounted_esp(Path::new(dest_root))?;
 
-        let destd = &openat::Dir::open(destdir)
+        let destdir = if let Some(destdir) = self.check_existing_esp(dest_root)? {
+            destdir
+        } else {
+            let esp_device = self
+                .get_esp_device()
+                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+            let esp_device = esp_device.to_str().unwrap();
+            self.ensure_mounted_esp(dest_root, esp_device)?
+        };
+
+        let destd = &openat::Dir::open(&destdir)
             .with_context(|| format!("opening dest dir {}", destdir.display()))?;
         validate_esp(destd)?;
 
@@ -344,12 +370,25 @@ impl Component for Efi {
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let destdir = self.open_esp().context("opening EFI dir")?;
-        validate_esp(&destdir)?;
-        log::trace!("applying diff: {}", &diff);
-        filetree::apply_diff(&updated, &destdir, &diff, None)
-            .context("applying filesystem changes")?;
+        let esp_devices = self
+            .get_all_esp_devices()
+            .context("get esp devices when running update")?;
+        let sysroot = sysroot.recover_path()?;
+
+        for esp in esp_devices {
+            let dest_path = if let Some(dest_path) = self.check_existing_esp(&sysroot)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(&sysroot, &esp)?.join("EFI")
+            };
+
+            let destdir = openat::Dir::open(&dest_path).context("opening EFI dir")?;
+            validate_esp(&destdir)?;
+            log::trace!("applying diff: {}", &diff);
+            filetree::apply_diff(&updated, &destdir, &diff, None)
+                .context("applying filesystem changes")?;
+            self.unmount().context("unmount after update")?;
+        }
         let adopted_from = None;
         Ok(InstalledContent {
             meta: updatemeta,
@@ -397,24 +436,36 @@ impl Component for Efi {
     }
 
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
+        let esp_devices = self.get_all_esp_devices();
+        if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
         }
         let currentf = current
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let efidir = self.open_esp()?;
-        let diff = currentf.relative_diff_to(&efidir)?;
         let mut errs = Vec::new();
-        for f in diff.changes.iter() {
-            errs.push(format!("Changed: {}", f));
+        let esps = esp_devices.ok_or_else(|| anyhow::anyhow!("No esp device found!"))?;
+        let dest_root = Path::new("/");
+        for esp_dev in esps.iter() {
+            let dest_path = if let Some(dest_path) = self.check_existing_esp(dest_root)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(dest_root, &esp_dev)?.join("EFI")
+            };
+
+            let efidir = openat::Dir::open(dest_path.as_path())?;
+            let diff = currentf.relative_diff_to(&efidir)?;
+
+            for f in diff.changes.iter() {
+                errs.push(format!("Changed: {}", f));
+            }
+            for f in diff.removals.iter() {
+                errs.push(format!("Removed: {}", f));
+            }
+            assert_eq!(diff.additions.len(), 0);
+            self.unmount().context("unmount after validate")?;
         }
-        for f in diff.removals.iter() {
-            errs.push(format!("Removed: {}", f));
-        }
-        assert_eq!(diff.additions.len(), 0);
         if !errs.is_empty() {
             Ok(ValidationResult::Errors(errs))
         } else {
