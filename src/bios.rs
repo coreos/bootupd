@@ -6,7 +6,6 @@ use crate::blockdev;
 use crate::component::*;
 use crate::model::*;
 use crate::packagesystem;
-use crate::util;
 
 use anyhow::{bail, Result};
 
@@ -17,40 +16,6 @@ pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
 pub(crate) struct Bios {}
 
 impl Bios {
-    // get target device for running update
-    fn get_device(&self) -> Result<String> {
-        let mut cmd: Command;
-        #[cfg(target_arch = "x86_64")]
-        {
-            // find /boot partition
-            cmd = Command::new("findmnt");
-            cmd.arg("--noheadings")
-                .arg("--nofsroot")
-                .arg("--output")
-                .arg("SOURCE")
-                .arg("/boot");
-            let partition = util::cmd_output(&mut cmd)?;
-
-            // lsblk to find parent device
-            cmd = Command::new("lsblk");
-            cmd.arg("--paths")
-                .arg("--noheadings")
-                .arg("--output")
-                .arg("PKNAME")
-                .arg(partition.trim());
-        }
-
-        #[cfg(target_arch = "powerpc64")]
-        {
-            // get PowerPC-PReP-boot partition
-            cmd = Command::new("realpath");
-            cmd.arg("/dev/disk/by-partlabel/PowerPC-PReP-boot");
-        }
-
-        let device = util::cmd_output(&mut cmd)?;
-        Ok(device)
-    }
-
     // Return `true` if grub2-modules installed
     fn check_grub_modules(&self) -> Result<bool> {
         let usr_path = Path::new("/usr/lib/grub");
@@ -168,9 +133,13 @@ impl Component for Bios {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let device = self.get_device()?;
-        let device = device.trim();
-        self.run_grub_install("/", device)?;
+        let target_root = "/";
+        let devices = blockdev::get_backing_devices(&target_root)?
+            .into_iter()
+            .next();
+        let dev = devices.unwrap();
+        self.run_grub_install(target_root, &dev)?;
+        log::debug!("Install grub2 on {dev}");
         Ok(InstalledContent {
             meta: update.clone(),
             filetree: None,
@@ -184,9 +153,14 @@ impl Component for Bios {
 
     fn run_update(&self, sysroot: &openat::Dir, _: &InstalledContent) -> Result<InstalledContent> {
         let updatemeta = self.query_update(sysroot)?.expect("update available");
-        let device = self.get_device()?;
-        let device = device.trim();
-        self.run_grub_install("/", device)?;
+        let sysroot = sysroot.recover_path()?;
+        let dest_root = sysroot.to_str().unwrap_or("/");
+        let devices = blockdev::get_backing_devices(&dest_root)?
+            .into_iter()
+            .next();
+        let dev = devices.unwrap();
+        self.run_grub_install(dest_root, &dev)?;
+        log::debug!("Install grub modules on {dev}");
 
         let adopted_from = None;
         Ok(InstalledContent {
