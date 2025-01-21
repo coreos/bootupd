@@ -286,18 +286,17 @@ pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
 /// Copy from src to dst at root dir
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+    use bootc_utils::CommandRunExt;
+
     let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
-    let r = unsafe {
+    unsafe {
         Command::new("cp")
             .args(["-a"])
             .arg(src)
             .arg(dst)
             .pre_exec(move || rustix::process::fchdir(rootfd).map_err(Into::into))
-            .status()?
+            .run()?
     };
-    if !r.success() {
-        anyhow::bail!("Failed to copy {src} to {dst}");
-    }
     log::debug!("Copy {src} to {dst}");
     Ok(())
 }
