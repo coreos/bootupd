@@ -121,13 +121,11 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
-            let status = std::process::Command::new("mount")
+            std::process::Command::new("mount")
                 .arg(&esp_device)
                 .arg(&mnt)
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("Failed to mount {:?}", esp_device);
-            }
+                .run()
+                .with_context(|| format!("Failed to mount {:?}", esp_device))?;
             log::debug!("Mounted at {mnt:?}");
             *mountpoint = Some(mnt);
             break;
@@ -137,10 +135,10 @@ impl Efi {
 
     fn unmount(&self) -> Result<()> {
         if let Some(mount) = self.mountpoint.borrow_mut().take() {
-            let status = Command::new("umount").arg(&mount).status()?;
-            if !status.success() {
-                anyhow::bail!("Failed to unmount {mount:?}: {status:?}");
-            }
+            Command::new("umount")
+                .arg(&mount)
+                .run()
+                .with_context(|| format!("Failed to unmount {mount:?}"))?;
             log::trace!("Unmounted");
         }
         Ok(())
@@ -308,15 +306,12 @@ impl Component for Efi {
 
         // TODO - add some sort of API that allows directly setting the working
         // directory to a file descriptor.
-        let r = std::process::Command::new("cp")
+        std::process::Command::new("cp")
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
             .arg(destdir)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
-            .status()?;
-        if !r.success() {
-            anyhow::bail!("Failed to copy");
-        }
+            .run()?;
         if update_firmware {
             if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
@@ -505,17 +500,10 @@ pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
     for entry in boot_entries {
         if entry.name.to_lowercase() == target {
             log::debug!("Deleting matched target {:?}", entry);
-            let output = Command::new(EFIBOOTMGR)
+            Command::new(EFIBOOTMGR)
                 .args(["-b", entry.id.as_str(), "-B"])
-                .output()?;
-            let st = output.status;
-            if !st.success() {
-                std::io::copy(
-                    &mut std::io::Cursor::new(output.stderr),
-                    &mut std::io::stderr().lock(),
-                )?;
-                anyhow::bail!("Failed to invoke {EFIBOOTMGR}: {st:?}");
-            }
+                .run()
+                .with_context(|| format!("Failed to invoke {EFIBOOTMGR}"))?;
         }
     }
 
