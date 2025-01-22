@@ -169,6 +169,7 @@ pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
 }
 
 /// Find all ESP partitions on the devices with mountpoint boot
+#[allow(dead_code)]
 pub fn find_colocated_esps<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     // first, get the parent device
     let devices = get_devices(&target_root).with_context(|| "while looking for colocated ESPs")?;
@@ -198,6 +199,7 @@ pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
 }
 
 /// Find all bios_boot partitions on the devices with mountpoint boot
+#[allow(dead_code)]
 pub fn find_colocated_bios_boot<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     // first, get the parent device
     let devices =
