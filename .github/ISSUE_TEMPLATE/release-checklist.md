@@ -13,6 +13,8 @@ This guide requires:
  * [GPG setup][GPG setup] and personal key for signing
  * [git-evtag](https://github.com/cgwalters/git-evtag/)
  * `cargo` (suggested: latest stable toolchain from [rustup][rustup])
+ * `cargo-release` (suggested: `cargo install -f cargo-release`)
+ * `cargo vendor-filterer` (suggested: `cargo install -f cargo-vendor-filterer`)
  * A verified account on crates.io
  * Write access to this GitHub project
  * Upload access to this project on GitHub, crates.io
@@ -49,7 +51,7 @@ This guide requires:
 
 - publish this release on GitHub:
   - [ ] find the new tag in the [GitHub tag list](https://github.com/coreos/bootupd/tags), click the triple dots menu, and create a release for it
-  - [ ] write a short changelog (i.e. re-use the PR content)
+  - [ ] write a short changelog with `git shortlog $last_tag..` (i.e. re-use the PR content). See previous releases for format, for example [`v0.2.25`](https://hackmd.io/@hhei/SkYe0AtMye)
   - [ ] upload `target/${PROJECT}-${RELEASE_VER}-vendor.tar.gz`
   - [ ] record digests of local artifacts:
     - `sha256sum target/package/${PROJECT}-${RELEASE_VER}.crate`
@@ -64,9 +66,7 @@ This guide requires:
 - Fedora packaging:
   - [ ] update the `rust-bootupd` spec file in [Fedora](https://src.fedoraproject.org/rpms/rust-bootupd)
     - bump the `Version`
-    - switch the `Release` back to `1%{?dist}`
     - remove any patches obsoleted by the new release
-    - update changelog
   - [ ] run `spectool -g -S rust-bootupd.spec`
   - [ ] run `kinit your_fas_account@FEDORAPROJECT.ORG`
   - [ ] run `fedpkg new-sources <crate-name> <vendor-tarball-name>`
