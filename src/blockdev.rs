@@ -2,8 +2,8 @@ use camino::Utf8Path;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use fn_error_context::context;
 use bootc_blockdev::PartitionTable;
+use fn_error_context::context;
 
 #[context("get parent devices from mount point boot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
@@ -26,15 +26,11 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
     let mut devices = get_devices(&target_root)?.into_iter();
     let Some(parent) = devices.next() else {
-        anyhow::bail!(
-            "Failed to find parent device"
-        );
+        anyhow::bail!("Failed to find parent device");
     };
 
     if let Some(next) = devices.next() {
-        anyhow::bail!(
-            "Found multiple parent devices {parent} and {next}; not currently supported"
-        );
+        anyhow::bail!("Found multiple parent devices {parent} and {next}; not currently supported");
     }
     Ok(parent)
 }
@@ -48,10 +44,9 @@ pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
         .partitions
         .into_iter()
         .find(|p| p.parttype.as_str() == ESP_TYPE_GUID);
-    if esp.is_some() {
-        return Ok(Some(esp.unwrap().node));
+    if let Some(esp) = esp {
+        return Ok(Some(esp.node));
     }
-    log::debug!("Not found any esp partition");
     Ok(None)
 }
 
@@ -79,8 +74,8 @@ pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
         .partitions
         .into_iter()
         .find(|p| p.parttype.as_str() == BIOS_BOOT_TYPE_GUID);
-    if bios_boot.is_some() {
-        return Ok(Some(bios_boot.unwrap().node));
+    if let Some(bios_boot) = bios_boot {
+        return Ok(Some(bios_boot.node));
     }
     Ok(None)
 }
