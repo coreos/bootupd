@@ -156,7 +156,7 @@ dependencies = [
 [[package]]
 name = "bootc-utils"
 version = "0.0.0"
-source = "git+https://github.com/containers/bootc#e8bb9f748fdfeb5164667046b3c6678c619ad46c"
+source = "git+https://github.com/containers/bootc#455e16852c620f1023d647364c06647538f93a64"
 dependencies = [
  "anyhow",
  "rustix",
