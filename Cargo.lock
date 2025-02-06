@@ -154,9 +154,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "blockdev"
+version = "0.0.0"
+source = "git+https://github.com/containers/bootc?rev=9a586935e3c88a3802ea4308b0ec364b6448c59e#9a586935e3c88a3802ea4308b0ec364b6448c59e"
+dependencies = [
+ "anyhow",
+ "bootc-utils",
+ "camino",
+ "fn-error-context",
+ "regex",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "bootc-utils"
 version = "0.0.0"
-source = "git+https://github.com/containers/bootc#e8bb9f748fdfeb5164667046b3c6678c619ad46c"
+source = "git+https://github.com/containers/bootc?rev=9a586935e3c88a3802ea4308b0ec364b6448c59e#9a586935e3c88a3802ea4308b0ec364b6448c59e"
 dependencies = [
  "anyhow",
  "rustix",
@@ -173,6 +188,7 @@ version = "0.2.26"
 dependencies = [
  "anyhow",
  "bincode",
+ "blockdev",
  "bootc-utils",
  "camino",
  "cap-std-ext",
@@ -217,6 +233,9 @@ name = "camino"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b96ec4966b5813e2c0507c1f86115c8c5abaadc3980879c3424042a02fd1ad3"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cap-primitives"

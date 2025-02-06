@@ -1,68 +1,21 @@
+use anyhow::{bail, Result};
 use std::io::prelude::*;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 
+use crate::blockdev;
 use crate::component::*;
 use crate::model::*;
 use crate::packagesystem;
-use anyhow::{bail, Result};
-
-use crate::util;
-use serde::{Deserialize, Serialize};
 
 // grub2-install file path
 pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
-
-#[derive(Serialize, Deserialize, Debug)]
-struct BlockDevice {
-    path: String,
-    pttype: Option<String>,
-    parttypename: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Devices {
-    blockdevices: Vec<BlockDevice>,
-}
 
 #[derive(Default)]
 pub(crate) struct Bios {}
 
 impl Bios {
-    // get target device for running update
-    fn get_device(&self) -> Result<String> {
-        let mut cmd: Command;
-        #[cfg(target_arch = "x86_64")]
-        {
-            // find /boot partition
-            cmd = Command::new("findmnt");
-            cmd.arg("--noheadings")
-                .arg("--nofsroot")
-                .arg("--output")
-                .arg("SOURCE")
-                .arg("/boot");
-            let partition = util::cmd_output(&mut cmd)?;
-
-            // lsblk to find parent device
-            cmd = Command::new("lsblk");
-            cmd.arg("--paths")
-                .arg("--noheadings")
-                .arg("--output")
-                .arg("PKNAME")
-                .arg(partition.trim());
-        }
-
-        #[cfg(target_arch = "powerpc64")]
-        {
-            // get PowerPC-PReP-boot partition
-            cmd = Command::new("realpath");
-            cmd.arg("/dev/disk/by-partlabel/PowerPC-PReP-boot");
-        }
-
-        let device = util::cmd_output(&mut cmd)?;
-        Ok(device)
-    }
-
     // Return `true` if grub2-modules installed
     fn check_grub_modules(&self) -> Result<bool> {
         let usr_path = Path::new("/usr/lib/grub");
@@ -115,37 +68,17 @@ impl Bios {
     }
 
     // check bios_boot partition on gpt type disk
-    fn get_bios_boot_partition(&self) -> Result<Option<String>> {
-        let target = self.get_device()?;
-        // lsblk to list children with bios_boot
-        let output = Command::new("lsblk")
-            .args([
-                "--json",
-                "--output",
-                "PATH,PTTYPE,PARTTYPENAME",
-                target.trim(),
-            ])
-            .output()?;
-        if !output.status.success() {
-            std::io::stderr().write_all(&output.stderr)?;
-            bail!("Failed to run lsblk");
-        }
-
-        let output = String::from_utf8(output.stdout)?;
-        // Parse the JSON string into the `Devices` struct
-        let Ok(devices) = serde_json::from_str::<Devices>(&output) else {
-            bail!("Could not deserialize JSON output from lsblk");
-        };
-
-        // Find the device with the parttypename "BIOS boot"
-        for device in devices.blockdevices {
-            if let Some(parttypename) = &device.parttypename {
-                if parttypename == "BIOS boot" && device.pttype.as_deref() == Some("gpt") {
-                    return Ok(Some(device.path));
-                }
+    fn get_bios_boot_partition(&self) -> Option<String> {
+        match blockdev::get_single_device("/") {
+            Ok(device) => {
+                let bios_boot_part =
+                    blockdev::get_bios_boot_partition(&device).expect("get bios_boot part");
+                return bios_boot_part;
             }
+            Err(e) => log::warn!("Get error: {}", e),
         }
-        Ok(None)
+        log::debug!("Not found any bios_boot partition");
+        None
     }
 }
 
@@ -187,7 +120,7 @@ impl Component for Bios {
 
     fn query_adopt(&self) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
-        if crate::efi::is_efi_booted()? && self.get_bios_boot_partition()?.is_none() {
+        if crate::efi::is_efi_booted()? && self.get_bios_boot_partition().is_none() {
             log::debug!("Skip BIOS adopt");
             return Ok(None);
         }
@@ -199,9 +132,10 @@ impl Component for Bios {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let device = self.get_device()?;
-        let device = device.trim();
-        self.run_grub_install("/", device)?;
+        let target_root = "/";
+        let device = blockdev::get_single_device(&target_root)?;
+        self.run_grub_install(target_root, &device)?;
+        log::debug!("Install grub modules on {device}");
         Ok(InstalledContent {
             meta: update.clone(),
             filetree: None,
@@ -215,9 +149,13 @@ impl Component for Bios {
 
     fn run_update(&self, sysroot: &openat::Dir, _: &InstalledContent) -> Result<InstalledContent> {
         let updatemeta = self.query_update(sysroot)?.expect("update available");
-        let device = self.get_device()?;
-        let device = device.trim();
-        self.run_grub_install("/", device)?;
+        let dest_fd = format!("/proc/self/fd/{}", sysroot.as_raw_fd());
+        let dest_root = std::fs::read_link(dest_fd)?;
+        let device = blockdev::get_single_device(&dest_root)?;
+
+        let dest_root = dest_root.to_string_lossy().into_owned();
+        self.run_grub_install(&dest_root, &device)?;
+        log::debug!("Install grub modules on {device}");
 
         let adopted_from = None;
         Ok(InstalledContent {
@@ -233,20 +171,5 @@ impl Component for Bios {
 
     fn get_efi_vendor(&self, _: &openat::Dir) -> Result<Option<String>> {
         Ok(None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_deserialize_lsblk_output() {
-        let data = include_str!("../tests/fixtures/example-lsblk-output.json");
-        let devices: Devices = serde_json::from_str(&data).expect("JSON was not well-formatted");
-        assert_eq!(devices.blockdevices.len(), 7);
-        assert_eq!(devices.blockdevices[0].path, "/dev/sr0");
-        assert!(devices.blockdevices[0].pttype.is_none());
-        assert!(devices.blockdevices[0].parttypename.is_none());
     }
 }
