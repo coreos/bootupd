@@ -1,5 +1,4 @@
 %bcond_without check
-%global __cargo_skip_build 0
 
 %global crate bootupd
 
@@ -8,29 +7,46 @@ Version:        0.2.9
 Release:        1%{?dist}
 Summary:        Bootloader updater
 
-License:        ASL 2.0
-URL:            https://crates.io/crates/bootupd
-Source0:        https://github.com/coreos/bootupd/releases/download/v%{version}/bootupd-%{version}.tar.zstd
-Source1:        https://github.com/coreos/bootupd/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
+License:        Apache-2.0
+URL:            https://github.com/coreos/bootupd
+Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.crate
+Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
+ExcludeArch:    %{ix86}
 
 # For now, see upstream
-# See https://github.com/coreos/fedora-coreos-tracker/issues/1716
-%if 0%{?fedora} || 0%{?rhel} >= 10
-ExcludeArch:   %{ix86}
-%endif
 BuildRequires: make
-BuildRequires: cargo
-# For autosetup -Sgit
-BuildRequires: git
-BuildRequires: openssl-devel
-BuildRequires: systemd-devel
-BuildRequires: systemd-rpm-macros
+BuildRequires:  openssl-devel
+%if 0%{?rhel}
+BuildRequires: rust-toolset
+%else
+BuildRequires:  cargo-rpm-macros >= 25
+%endif
+BuildRequires:  systemd
 
-%description 
-%{summary}
+%global _description %{expand:
+Bootloader updater}
+%description %{_description}
 
-%files
+%package     -n %{crate}
+Summary:        %{summary}
+# Apache-2.0
+# Apache-2.0 OR BSL-1.0
+# Apache-2.0 OR MIT
+# Apache-2.0 WITH LLVM-exception
+# Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+# BSD-3-Clause
+# MIT
+# MIT OR Apache-2.0
+# Unlicense OR MIT
+License:        Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND BSD-3-Clause AND MIT AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT) AND (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) AND (Unlicense OR MIT)
+%{?systemd_requires}
+
+%description -n %{crate} %{_description}
+
+%files -n %{crate}
 %license LICENSE
+%license LICENSE.dependencies
+%license cargo-vendor.txt
 %doc README.md
 %{_bindir}/bootupctl
 %{_libexecdir}/bootupd
@@ -50,12 +66,15 @@ directory = "vendor"
 EOF
 
 %build
-cargo build --release
+%cargo_build
+%cargo_vendor_manifest
+%cargo_license_summary
+%{cargo_license} > LICENSE.dependencies
 
 %install
 %make_install INSTALL="install -p -c"
-make install-grub-static DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
-make install-systemd-unit DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
+%{__make} install-grub-static DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
+%{__make} install-systemd-unit DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
 
 %changelog
 * Tue Oct 18 2022 Colin Walters <walters@verbum.org> - 0.2.8-3
