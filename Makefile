@@ -39,7 +39,7 @@ install:
 
 install-grub-static:
 	install -m 644 -D -t ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static src/grub2/*.cfg
-	install -m 755 -d ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static/configs.d
+	install -m 644 -D -t ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static/configs.d src/grub2/configs.d/*.cfg
 
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-update.service
