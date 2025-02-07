@@ -19,18 +19,43 @@ env:
 
 jobs:
   c9s-bootc-e2e:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+
+    runs-on: [ "${{ matrix.runner }}" ]
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install podman
+        if: ( matrix.runner == 'ubuntu-24.04-arm' )
+        run: |
+          sudo apt update -y
+          sudo apt install -y podman
+
       - name: build
         run: sudo podman build -t localhost/bootupd:latest -f ci/Containerfile.c9s .
+
       - name: bootupctl status in container
         run: |
           set -xeuo pipefail
+          arch="$(uname --machine)"
+          if [[ "${arch}" == "x86_64" ]]; then
+            components_text='Available components: BIOS EFI'
+            components_json='{"components":["BIOS","EFI"]}'
+          else
+            # Assume aarch64 for now
+            components_text='Available components: EFI'
+            components_json='{"components":["EFI"]}'
+          fi
           output=$(sudo podman run --rm -ti localhost/bootupd:latest bootupctl status | tr -d '\r')
-          [ "Available components: BIOS EFI" == "${output}" ]
+          [ "${components_text}" == "${output}" ]
           output=$(sudo podman run --rm -ti localhost/bootupd:latest bootupctl status --json)
-          [ '{"components":["BIOS","EFI"]}' == "${output}" ]
+          [ "${components_json}" == "${output}" ]
+
       - name: bootc install to disk
         run: |
           set -xeuo pipefail
@@ -44,10 +69,18 @@ jobs:
           sudo losetup -P -f myimage.raw
           device=$(losetup --list --noheadings --output NAME,BACK-FILE | grep myimage.raw | awk '{print $1}')
           sudo mount "${device}p2" /mnt/
-          sudo ls /mnt/EFI/centos/{grub.cfg,shimx64.efi}
+          arch="$(uname --machine)"
+          if [[ "${arch}" == "x86_64" ]]; then
+            shim="shimx64.efi"
+          else
+            # Assume aarch64 for now
+            shim="shimaa64.efi"
+          fi
+          sudo ls /mnt/EFI/centos/{grub.cfg,${shim}}
           sudo umount /mnt
           sudo losetup -D "${device}"
           sudo rm -f myimage.raw
+
       - name: bootc install to filesystem
         run: |
           set -xeuo pipefail
