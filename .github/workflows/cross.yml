@@ -13,8 +13,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: aarch64
-            distro: ubuntu_latest
           - arch: s390x
             distro: ubuntu_latest
           - arch: ppc64le
