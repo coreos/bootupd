@@ -2,14 +2,14 @@
 
 %global crate bootupd
 
-Name:           bootupd
+Name:           rust-%{crate}
 Version:        0.2.9
 Release:        1%{?dist}
 Summary:        Bootloader updater
 
 License:        Apache-2.0
 URL:            https://github.com/coreos/bootupd
-Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.crate
+Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.tar.zstd
 Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
 ExcludeArch:    %{ix86}
 
@@ -54,7 +54,7 @@ License:        Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND BSD-3-Clause
 %{_unitdir}/bootloader-update.service
 
 %prep
-%autosetup -n %{crate}-%{version} -p1 -Sgit
+%autosetup -n %{crate}-%{version} -p1 -Sgit -a1
 # Default -v vendor config doesn't support non-crates.io deps (i.e. git)
 cp .cargo/vendor-config.toml .
 %cargo_prep -N
