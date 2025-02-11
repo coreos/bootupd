@@ -14,6 +14,7 @@ Refs:
 #![deny(unused_must_use)]
 // The style lints are more annoying than useful
 #![allow(clippy::style)]
+#![deny(clippy::dbg_macro)]
 
 mod backend;
 #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
