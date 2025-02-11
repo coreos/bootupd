@@ -58,7 +58,6 @@ pub(crate) fn rpm_cmd<P: AsRef<Path>>(sysroot: P) -> Result<std::process::Comman
         break;
     }
     if let Some(arg) = arg {
-        dbg!("found", &arg);
         debug!("Using dbpath {arg:?}");
         c.arg(arg);
     } else {
