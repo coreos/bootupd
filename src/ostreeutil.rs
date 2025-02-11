@@ -9,8 +9,6 @@ use std::path::Path;
 use anyhow::Result;
 use log::debug;
 
-use crate::util::CommandRunExt;
-
 /// https://github.com/coreos/rpm-ostree/pull/969/commits/dc0e8db5bd92e1f478a0763d1a02b48e57022b59
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) const BOOT_PREFIX: &str = "usr/lib/ostree-boot";
@@ -47,10 +45,6 @@ pub(crate) fn rpm_cmd<P: AsRef<Path>>(sysroot: P) -> Result<std::process::Comman
         if !is_nonempty_dir(&dbpath)? {
             continue;
         }
-        std::process::Command::new("ls")
-            .arg("-al")
-            .arg(&dbpath)
-            .run()?;
         let mut s = std::ffi::OsString::new();
         s.push("--dbpath=");
         s.push(dbpath.as_os_str());
