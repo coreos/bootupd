@@ -9,6 +9,13 @@ use xshell::{cmd, Shell};
 
 const NAME: &str = "bootupd";
 const VENDORPATH: &str = "vendor.tar.zstd";
+const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
+    "--sort=name",
+    "--owner=0",
+    "--group=0",
+    "--numeric-owner",
+    "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+];
 
 fn main() {
     if let Err(e) = try_main() {
@@ -73,7 +80,7 @@ fn gitrev(sh: &Shell) -> Result<String> {
 fn git_timestamp(sh: &Shell) -> Result<String> {
     let ts = cmd!(sh, "git show -s --format=%ct").read()?;
     let ts = ts.trim().parse::<i64>()?;
-    let ts = chrono::NaiveDateTime::from_timestamp_opt(ts, 0)
+    let ts = chrono::DateTime::from_timestamp(ts, 0)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse timestamp"))?;
     Ok(ts.format("%Y%m%d%H%M").to_string())
 }
@@ -81,37 +88,80 @@ fn git_timestamp(sh: &Shell) -> Result<String> {
 struct Package {
     version: String,
     srcpath: Utf8PathBuf,
+    vendorpath: Utf8PathBuf,
+}
+
+/// Return the timestamp of the latest git commit in seconds since the Unix epoch.
+fn git_source_date_epoch(dir: &Utf8Path) -> Result<u64> {
+    let o = Command::new("git")
+        .args(["log", "-1", "--pretty=%ct"])
+        .current_dir(dir)
+        .output()?;
+    if !o.status.success() {
+        anyhow::bail!("git exited with an error: {:?}", o);
+    }
+    let buf = String::from_utf8(o.stdout).context("Failed to parse git log output")?;
+    let r = buf.trim().parse()?;
+    Ok(r)
+}
+
+
+/// When using cargo-vendor-filterer --format=tar, the config generated has a bogus source
+/// directory. This edits it to refer to vendor/ as a stable relative reference.
+#[context("Editing vendor config")]
+fn edit_vendor_config(config: &str) -> Result<String> {
+    let mut config: toml::Value = toml::from_str(config)?;
+    let config = config.as_table_mut().unwrap();
+    let source_table = config.get_mut("source").unwrap();
+    let source_table = source_table.as_table_mut().unwrap();
+    let vendored_sources = source_table.get_mut("vendored-sources").unwrap();
+    let vendored_sources = vendored_sources.as_table_mut().unwrap();
+    let previous =
+        vendored_sources.insert("directory".into(), toml::Value::String("vendor".into()));
+    assert!(previous.is_some());
+
+    Ok(config.to_string())
 }
 
 #[context("Packaging")]
 fn impl_package(sh: &Shell) -> Result<Package> {
+    let source_date_epoch = git_source_date_epoch(".".into())?;
     let v = gitrev(sh)?;
-    let timestamp = git_timestamp(sh)?;
-    // We always inject the timestamp first to ensure that newer is better.
-    let v = format!("{timestamp}.{v}");
-    println!("Using version {v}");
+
     let namev = format!("{NAME}-{v}");
-    let target = get_target_dir()?;
-    let p = target.join(format!("{namev}.tar.zstd"));
-    let o = File::create(&p).context("Creating output file")?;
+    let p = Utf8Path::new("target").join(format!("{namev}.tar"));
     let prefix = format!("{namev}/");
-    let st = Command::new("git")
-        .args([
-            "archive",
-            "--format=tar",
-            "--prefix",
-            prefix.as_str(),
-            "HEAD",
-        ])
-        .stdout(Stdio::from(o))
-        .status()
-        .context("Executing git archive")?;
-    if !st.success() {
-        anyhow::bail!("Failed to run {st:?}");
+    cmd!(sh, "git archive --format=tar --prefix={prefix} -o {p} HEAD").run()?;
+    // Generate the vendor directory now, as we want to embed the generated config to use
+    // it in our source.
+    let vendorpath = Utf8Path::new("target").join(format!("{namev}-vendor.tar.zstd"));
+    let vendor_config = cmd!(
+        sh,
+        "cargo vendor-filterer --prefix=vendor --format=tar.zstd {vendorpath}"
+    )
+    .read()?;
+    let vendor_config = edit_vendor_config(&vendor_config)?;
+    // Append .cargo/vendor-config.toml (a made up filename) into the tar archive.
+    {
+        let tmpdir = tempfile::tempdir_in("target")?;
+        let tmpdir_path = tmpdir.path();
+        let path = tmpdir_path.join("vendor-config.toml");
+        std::fs::write(&path, vendor_config)?;
+        let source_date_epoch = format!("{source_date_epoch}");
+        cmd!(
+            sh,
+            "tar -r -C {tmpdir_path} {TAR_REPRODUCIBLE_OPTS...} --mtime=@{source_date_epoch} --transform=s,^,{prefix}.cargo/, -f {p} vendor-config.toml"
+        )
+        .run()?;
     }
+    // Compress with zstd
+    let srcpath: Utf8PathBuf = format!("{p}.zstd").into();
+    cmd!(sh, "zstd --rm -f {p} -o {srcpath}").run()?;
+
     Ok(Package {
         version: v,
-        srcpath: p,
+        srcpath,
+        vendorpath,
     })
 }
 
