@@ -1,4 +1,6 @@
 use anyhow::{bail, Result};
+#[cfg(target_arch = "powerpc64")]
+use std::borrow::Cow;
 use std::io::prelude::*;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -11,6 +13,30 @@ use crate::packagesystem;
 
 // grub2-install file path
 pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
+
+#[cfg(target_arch = "powerpc64")]
+fn target_device(device: &str) -> Result<Cow<str>> {
+    const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
+    /// We make a best-effort to support MBR partitioning too.
+    const PREPBOOT_MBR_TYPE: &str = "41";
+
+    // Here we use lsblk to see if the device has any partitions at all
+    let dev = bootc_blockdev::list_dev(device.into())?;
+    if dev.children.is_none() {
+        return Ok(device.into());
+    };
+    // If it does, directly call `sfdisk` and bypass lsblk because inside a container
+    // we may not have all the cached udev state (that I think is in /run).
+    let device = bootc_blockdev::partitions_of(device.into())?;
+    let prepdev = device
+        .partitions
+        .iter()
+        .find(|p| matches!(p.parttype.as_str(), PREPBOOT_GUID | PREPBOOT_MBR_TYPE))
+        .ok_or_else(|| {
+            anyhow::anyhow!("Failed to find PReP partition with GUID {PREPBOOT_GUID}")
+        })?;
+    Ok(prepdev.path().as_str().to_owned().into())
+}
 
 #[derive(Default)]
 pub(crate) struct Bios {}
@@ -54,10 +80,13 @@ impl Bios {
             .arg(device);
 
         #[cfg(target_arch = "powerpc64")]
-        cmd.args(&["--target", "powerpc-ieee1275"])
-            .args(&["--boot-directory", boot_dir.to_str().unwrap()])
-            .arg("--no-nvram")
-            .arg(device);
+        {
+            let device = target_device(device)?;
+            cmd.args(&["--target", "powerpc-ieee1275"])
+                .args(&["--boot-directory", boot_dir.to_str().unwrap()])
+                .arg("--no-nvram")
+                .arg(&*device);
+        }
 
         let cmdout = cmd.output()?;
         if !cmdout.status.success() {
