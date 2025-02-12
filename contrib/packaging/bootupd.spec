@@ -13,6 +13,7 @@ Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.tar.zstd
 Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
 ExcludeArch:    %{ix86}
 
+BuildRequires: git
 # For now, see upstream
 BuildRequires: make
 BuildRequires:  openssl-devel
