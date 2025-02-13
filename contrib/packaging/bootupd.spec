@@ -11,7 +11,9 @@ License:        Apache-2.0
 URL:            https://github.com/coreos/bootupd
 Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.tar.zstd
 Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
+%if 0%{?fedora} || 0%{?rhel} >= 10
 ExcludeArch:    %{ix86}
+%endif
 
 BuildRequires: git
 # For now, see upstream
