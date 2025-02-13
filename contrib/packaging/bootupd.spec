@@ -15,7 +15,7 @@ Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.t
 ExcludeArch:    %{ix86}
 %endif
 
-BuildRequires: git
+BuildRequires: git-core
 # For now, see upstream
 BuildRequires: make
 BuildRequires:  openssl-devel
