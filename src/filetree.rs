@@ -339,8 +339,11 @@ pub(crate) fn apply_diff(
             if first_dir != path {
                 path_tmp = Utf8Path::new(&first_dir_tmp).join(path.strip_prefix(&first_dir)?);
                 // copy to temp dir and remember
-                if !destdir.exists(&first_dir_tmp)? {
-                    copy_dir(destdir, first_dir.as_str(), &first_dir_tmp)?;
+                // skip copying if dir not existed in dest
+                if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
+                    copy_dir(destdir, first_dir.as_str(), &first_dir_tmp).with_context(|| {
+                        format!("copy {first_dir} to {first_dir_tmp} before removing {pathstr}")
+                    })?;
                     updates.insert(first_dir, first_dir_tmp);
                 }
             } else {
@@ -359,7 +362,9 @@ pub(crate) fn apply_diff(
         if first_dir != path {
             if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
                 // copy to temp dir if not exists
-                copy_dir(destdir, first_dir.as_str(), &first_dir_tmp)?;
+                copy_dir(destdir, first_dir.as_str(), &first_dir_tmp).with_context(|| {
+                    format!("copy {first_dir} to {first_dir_tmp} before updating {pathstr}")
+                })?;
             }
             path_tmp = path_tmp.join(path.strip_prefix(&first_dir)?);
             // ensure new additions dir exists
