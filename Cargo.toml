@@ -26,7 +26,7 @@ bootc-blockdev = { git = "https://github.com/containers/bootc", rev = "v1.1.5" }
 bootc-utils = { git = "https://github.com/containers/bootc", rev = "v1.1.5" }
 cap-std-ext = "4.0.5"
 camino = "1.1.9"
-chrono = { version = "0.4.39", features = ["serde"] }
+chrono = { version = "0.4.40", features = ["serde"] }
 clap = { version = "4.5", default-features = false, features = ["cargo", "derive", "std", "help", "usage", "suggestions"] }
 env_logger = "0.11"
 fail = { version = "0.5", features = ["failpoints"] }
