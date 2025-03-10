@@ -175,7 +175,7 @@ version = "0.0.0"
 source = "git+https://github.com/containers/bootc?rev=v1.1.5#155c5e2d8670c31c9ccc065f05652bd75e6016b2"
 dependencies = [
  "anyhow",
- "rustix",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "tempfile",
@@ -209,7 +209,7 @@ dependencies = [
  "openssl",
  "os-release",
  "regex",
- "rustix",
+ "rustix 1.0.1",
  "serde",
  "serde_json",
  "signal-hook-registry",
@@ -257,7 +257,7 @@ dependencies = [
  "io-lifetimes",
  "ipnet",
  "maybe-owned",
- "rustix",
+ "rustix 0.38.44",
  "windows-sys 0.59.0",
  "winx",
 ]
@@ -271,7 +271,7 @@ dependencies = [
  "cap-primitives",
  "io-extras",
  "io-lifetimes",
- "rustix",
+ "rustix 0.38.44",
 ]
 
 [[package]]
@@ -283,7 +283,7 @@ dependencies = [
  "cap-primitives",
  "cap-tempfile",
  "libc",
- "rustix",
+ "rustix 0.38.44",
 ]
 
 [[package]]
@@ -294,7 +294,7 @@ checksum = "1ffa1c0edc4958d742bab2e903e52f93ccee482072680e08d6ce0784873e65b1"
 dependencies = [
  "cap-std",
  "rand",
- "rustix",
+ "rustix 0.38.44",
  "uuid",
 ]
 
@@ -492,7 +492,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e2e6123af26f0f2c51cc66869137080199406754903cc926a7690401ce09cb4"
 dependencies = [
  "io-lifetimes",
- "rustix",
+ "rustix 0.38.44",
  "windows-sys 0.59.0",
 ]
 
@@ -674,6 +674,12 @@ name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6db9c683daf087dc577b7506e9695b3d556a9f3849903fa28186283afd6809e9"
 
 [[package]]
 name = "log"
@@ -1018,8 +1024,21 @@ dependencies = [
  "errno",
  "itoa",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.4.15",
  "once_cell",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rustix"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dade4812df5c384711475be5fcd8c162555352945401aed22a35bffeab61f657"
+dependencies = [
+ "bitflags 2.8.0",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.9.2",
  "windows-sys 0.59.0",
 ]
 
@@ -1150,7 +1169,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.3.1",
  "once_cell",
- "rustix",
+ "rustix 0.38.44",
  "windows-sys 0.59.0",
 ]
 
