@@ -23,7 +23,7 @@ path = "src/main.rs"
 anyhow = "1.0"
 bincode = "1.3.2"
 bootc-blockdev = { git = "https://github.com/containers/bootc", rev = "v1.1.6" }
-bootc-utils = { git = "https://github.com/containers/bootc", rev = "v1.1.5" }
+bootc-utils = { git = "https://github.com/containers/bootc", rev = "v1.1.6" }
 cap-std-ext = "4.0.5"
 camino = "1.1.9"
 chrono = { version = "0.4.40", features = ["serde"] }
