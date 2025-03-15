@@ -37,13 +37,16 @@ install:
 	install -D -t "${DESTDIR}$(LIBEXECDIR)" target/${PROFILE}/bootupd
 	ln -f ${DESTDIR}$(LIBEXECDIR)/bootupd ${DESTDIR}$(PREFIX)/bin/bootupctl
 
+.PHONY: install-grub-static
 install-grub-static:
 	install -m 644 -D -t ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static src/grub2/*.cfg
 	install -m 755 -d ${DESTDIR}$(PREFIX)/lib/bootupd/grub2-static/configs.d
 
+.PHONY: install-systemd-unit
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-update.service
 
+.PHONY: bin-archive
 bin-archive:
 	rm target/inst -rf
 	$(MAKE) install install-grub-static DESTDIR=$$(pwd)/target/inst
