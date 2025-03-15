@@ -21,7 +21,7 @@ parallel build: {
         """)
       }
       shwrap("""
-        make install DESTDIR=\$(pwd)/insttree/
+        make install install-grub-static install-systemd-unit DESTDIR=\$(pwd)/insttree/
         tar -c -C insttree/ -zvf insttree.tar.gz .
       """)
       stash includes: 'insttree.tar.gz', name: 'build'
