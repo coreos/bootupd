@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -76,6 +76,7 @@ fn gitrev(sh: &Shell) -> Result<String> {
 
 /// Return a string formatted version of the git commit timestamp, up to the minute
 /// but not second because, well, we're not going to build more than once a second.
+#[allow(dead_code)]
 #[context("Finding git timestamp")]
 fn git_timestamp(sh: &Shell) -> Result<String> {
     let ts = cmd!(sh, "git show -s --format=%ct").read()?;
@@ -236,6 +237,7 @@ fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
 }
 
 fn package_srpm(sh: &Shell) -> Result<()> {
+    let _targetdir = get_target_dir()?;
     let srpm = impl_srpm(sh)?;
     println!("Generated: {srpm}");
     Ok(())
