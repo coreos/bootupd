@@ -44,7 +44,7 @@ regex = "1.11.1"
 rustix = { version = "1.0.3", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
-tempfile = "^3.17"
+tempfile = "^3.19"
 widestring = "1.2.0"
 walkdir = "2.3.2"
 signal-hook-registry = "1.4.2"
