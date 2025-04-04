@@ -97,6 +97,7 @@ impl Bios {
     }
 
     // check bios_boot partition on gpt type disk
+    #[cfg(target_arch = "x86_64")]
     fn get_bios_boot_partition(&self) -> Option<String> {
         match blockdev::get_single_device("/") {
             Ok(device) => {
@@ -104,9 +105,8 @@ impl Bios {
                     blockdev::get_bios_boot_partition(&device).expect("get bios_boot part");
                 return bios_boot_part;
             }
-            Err(e) => log::warn!("Get error: {}", e),
+            Err(e) => log::warn!("Get single device: {}", e),
         }
-        log::debug!("Not found any bios_boot partition");
         None
     }
 }
@@ -149,7 +149,7 @@ impl Component for Bios {
 
     fn query_adopt(&self) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
-        if crate::efi::is_efi_booted()? && self.get_bios_boot_partition().is_none() {
+        if self.get_bios_boot_partition().is_none() {
             log::debug!("Skip BIOS adopt");
             return Ok(None);
         }
