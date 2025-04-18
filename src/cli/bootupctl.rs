@@ -3,6 +3,7 @@ use anyhow::Result;
 use clap::Parser;
 use log::LevelFilter;
 
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -179,8 +180,14 @@ fn ensure_running_in_systemd() -> Result<()> {
             .stderr(Stdio::null())
             .spawn()?
             .wait()?;
+        let mut systemd_args = SYSTEMD_ARGS_BOOTUPD.to_vec();
+        // we need --pty when detect that stdin is a terminal
+        // see discussion in https://github.com/coreos/bootupd/issues/902#issuecomment-2794680163
+        if nix::unistd::isatty(std::io::stdin().as_raw_fd()).unwrap_or(false) {
+            systemd_args.push("--pty");
+        }
         let r = Command::new("systemd-run")
-            .args(SYSTEMD_ARGS_BOOTUPD)
+            .args(&systemd_args)
             .args(
                 SYSTEMD_PROPERTIES
                     .into_iter()
