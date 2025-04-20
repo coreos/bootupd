@@ -36,6 +36,9 @@ pub(crate) const SHIM: &str = "shimaa64.efi";
 #[cfg(target_arch = "x86_64")]
 pub(crate) const SHIM: &str = "shimx64.efi";
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) const SHIM: &str = "shimriscv64.efi";
+
 /// The ESP partition label on Fedora CoreOS derivatives
 pub(crate) const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
 pub(crate) const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";

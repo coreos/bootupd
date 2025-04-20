@@ -4,33 +4,61 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use anyhow::{bail, Context, Result};
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use camino::{Utf8Path, Utf8PathBuf};
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use openat_ext::OpenatDirExt;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use openssl::hash::{Hasher, MessageDigest};
 use rustix::fd::BorrowedFd;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 /// The prefix we apply to our temporary files.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub(crate) const TMP_PREFIX: &str = ".btmp.";
 // This module doesn't handle modes right now, because
 // we're only targeting FAT filesystems for UEFI.
 // In FAT there are no unix permission bits, usually
 // they're set by mount options.
 // See also https://github.com/coreos/fedora-coreos-config/commit/8863c2b34095a2ae5eae6fbbd121768a5f592091
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 const DEFAULT_FILE_MODE: u32 = 0o700;
 
 use crate::sha512string::SHA512String;
@@ -79,7 +107,11 @@ impl FileTreeDiff {
 }
 
 impl FileMetadata {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     pub(crate) fn new_from_path<P: openat::AsPath>(
         dir: &openat::Dir,
         name: P,
@@ -99,7 +131,11 @@ impl FileMetadata {
 
 impl FileTree {
     // Internal helper to generate a sub-tree
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     fn unsorted_from_dir(dir: &openat::Dir) -> Result<HashMap<String, FileMetadata>> {
         let mut ret = HashMap::new();
         for entry in dir.list_dir(".")? {
@@ -136,7 +172,11 @@ impl FileTree {
     }
 
     /// Create a FileTree from the target directory.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     pub(crate) fn new_from_dir(dir: &openat::Dir) -> Result<Self> {
         let mut children = BTreeMap::new();
         for (k, v) in Self::unsorted_from_dir(dir)?.drain() {
@@ -147,7 +187,11 @@ impl FileTree {
     }
 
     /// Determine the changes *from* self to the updated tree
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     pub(crate) fn diff(&self, updated: &Self) -> Result<FileTreeDiff> {
         self.diff_impl(updated, true)
     }
@@ -167,7 +211,11 @@ impl FileTree {
         current.diff_impl(self, false)
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     fn diff_impl(&self, updated: &Self, check_additions: bool) -> Result<FileTreeDiff> {
         let mut additions = HashSet::new();
         let mut removals = HashSet::new();
@@ -199,7 +247,11 @@ impl FileTree {
 
     /// Create a diff from a target directory.  This will ignore
     /// any files or directories that are not part of the original tree.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     pub(crate) fn relative_diff_to(&self, dir: &openat::Dir) -> Result<FileTreeDiff> {
         let mut removals = HashSet::new();
         let mut changes = HashSet::new();
@@ -233,7 +285,11 @@ impl FileTree {
 }
 
 // Recursively remove all files/dirs in the directory that start with our TMP_PREFIX
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 fn cleanup_tmp(dir: &openat::Dir) -> Result<()> {
     for entry in dir.list_dir(".")? {
         let entry = entry?;
@@ -264,7 +320,11 @@ fn cleanup_tmp(dir: &openat::Dir) -> Result<()> {
 }
 
 #[derive(Default, Clone)]
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub(crate) struct ApplyUpdateOptions {
     pub(crate) skip_removals: bool,
     pub(crate) skip_sync: bool,
@@ -274,7 +334,11 @@ pub(crate) struct ApplyUpdateOptions {
 // to be bound in nix today.  I found https://github.com/XuShaohua/nc
 // but that's a nontrivial dependency with not a lot of code review.
 // Let's just fork off a helper process for now.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
     use rustix::fs::{Mode, OFlags};
     let d = unsafe { BorrowedFd::borrow_raw(d.as_raw_fd()) };
@@ -284,7 +348,11 @@ pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
 }
 
 /// Copy from src to dst at root dir
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     use bootc_utils::CommandRunExt;
 
@@ -304,7 +372,11 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
 /// Get first sub dir and tmp sub dir for the path
 /// "fedora/foo/bar" -> ("fedora", ".btmp.fedora")
 /// "foo" -> ("foo", ".btmp.foo")
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
     let first = path
         .iter()
@@ -316,7 +388,11 @@ fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
 }
 
 /// Given two directories, apply a diff generated from srcdir to destdir
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub(crate) fn apply_diff(
     srcdir: &openat::Dir,
     destdir: &openat::Dir,
