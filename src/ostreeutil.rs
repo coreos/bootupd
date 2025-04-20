@@ -10,7 +10,11 @@ use anyhow::Result;
 use log::debug;
 
 /// https://github.com/coreos/rpm-ostree/pull/969/commits/dc0e8db5bd92e1f478a0763d1a02b48e57022b59
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 pub(crate) const BOOT_PREFIX: &str = "usr/lib/ostree-boot";
 const LEGACY_RPMOSTREE_DBPATH: &str = "usr/share/rpm";
 const SYSIMAGE_RPM_DBPATH: &str = "usr/lib/sysimage/rpm";

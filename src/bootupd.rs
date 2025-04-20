@@ -3,7 +3,11 @@ use crate::bios;
 use crate::component;
 use crate::component::{Component, ValidationResult};
 use crate::coreos;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use crate::efi;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::util;
@@ -113,7 +117,8 @@ pub(crate) fn install(
             #[cfg(any(
                 target_arch = "x86_64",
                 target_arch = "aarch64",
-                target_arch = "powerpc64"
+                target_arch = "powerpc64",
+                target_arch = "riscv64"
             ))]
             crate::grubconfigs::install(sysroot, installed_efi_vendor.as_deref(), uuid)?;
             // On other architectures, assume that there's nothing to do.
@@ -163,7 +168,7 @@ pub(crate) fn get_components_impl(auto: bool) -> Components {
             insert_component(&mut components, Box::new(efi::Efi::default()));
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     insert_component(&mut components, Box::new(efi::Efi::default()));
 
     #[cfg(target_arch = "powerpc64")]
@@ -390,7 +395,11 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
         println!("CoreOS aleph version: {}", coreos_aleph.aleph.version);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
     {
         let boot_method = if efi::is_efi_booted()? { "EFI" } else { "BIOS" };
         println!("Boot method: {}", boot_method);

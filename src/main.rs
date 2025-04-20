@@ -2,7 +2,7 @@
 **Boot**loader **upd**ater.
 
 This is an early prototype hidden/not-yet-standardized mechanism
-which just updates EFI for now (x86_64/aarch64 only).
+which just updates EFI for now (x86_64/aarch64/riscv64 only).
 
 But in the future will hopefully gain some independence from
 ostree and also support e.g. updating the MBR etc.
@@ -24,7 +24,11 @@ mod bootupd;
 mod cli;
 mod component;
 mod coreos;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 mod efi;
 mod failpoints;
 mod filesystem;
@@ -32,7 +36,8 @@ mod filetree;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
-    target_arch = "powerpc64"
+    target_arch = "powerpc64",
+    target_arch = "riscv64"
 ))]
 mod grubconfigs;
 mod model;
