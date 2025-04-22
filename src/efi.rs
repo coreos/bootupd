@@ -377,12 +377,25 @@ impl Component for Efi {
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let destdir = self.open_esp().context("opening EFI dir")?;
-        validate_esp_fstype(&destdir)?;
-        log::trace!("applying diff: {}", &diff);
-        filetree::apply_diff(&updated, &destdir, &diff, None)
-            .context("applying filesystem changes")?;
+        let esp_devices = self
+            .get_all_esp_devices()
+            .context("get esp devices when running update")?;
+        let sysroot = sysroot.recover_path()?;
+
+        for esp in esp_devices {
+            let dest_path = if let Some(dest_path) = self.get_mounted_esp(&sysroot)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(&sysroot, &esp)?.join("EFI")
+            };
+
+            let destdir = openat::Dir::open(&dest_path).context("opening EFI dir")?;
+            validate_esp_fstype(&destdir)?;
+            log::trace!("applying diff: {}", &diff);
+            filetree::apply_diff(&updated, &destdir, &diff, None)
+                .context("applying filesystem changes")?;
+            self.unmount().context("unmount after update")?;
+        }
         let adopted_from = None;
         Ok(InstalledContent {
             meta: updatemeta,
