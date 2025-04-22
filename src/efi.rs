@@ -289,16 +289,32 @@ impl Component for Efi {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let esp = self.open_esp()?;
-        validate_esp_fstype(&esp)?;
         let updated = sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
-        // For adoption, we should only touch files that we know about.
-        let diff = updatef.relative_diff_to(&esp)?;
-        log::trace!("applying adoption diff: {}", &diff);
-        filetree::apply_diff(&updated, &esp, &diff, None).context("applying filesystem changes")?;
+        let esp_devices = self
+            .get_all_esp_devices()
+            .expect("get esp devices before adopt");
+        let sysroot = sysroot.recover_path()?;
+
+        for esp_dev in esp_devices {
+            let dest_path = if let Some(dest_path) = self.get_mounted_esp(&sysroot)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(&sysroot, &esp_dev)?.join("EFI")
+            };
+
+            let esp = openat::Dir::open(&dest_path).context("opening EFI dir")?;
+            validate_esp_fstype(&esp)?;
+
+            // For adoption, we should only touch files that we know about.
+            let diff = updatef.relative_diff_to(&esp)?;
+            log::trace!("applying adoption diff: {}", &diff);
+            filetree::apply_diff(&updated, &esp, &diff, None)
+                .context("applying filesystem changes")?;
+            self.unmount().context("unmount after adopt")?;
+        }
         Ok(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
