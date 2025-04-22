@@ -58,28 +58,6 @@ pub(crate) struct Efi {
 }
 
 impl Efi {
-    fn esp_path(&self) -> Result<PathBuf> {
-        self.ensure_mounted_esp(Path::new("/"))
-            .map(|v| v.join("EFI"))
-    }
-
-    fn open_esp_optional(&self) -> Result<Option<openat::Dir>> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
-            log::debug!("Skip EFI");
-            return Ok(None);
-        }
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir_optional(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
-    fn open_esp(&self) -> Result<openat::Dir> {
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
     fn get_esp_device(&self) -> Option<PathBuf> {
         let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
             .into_iter()
