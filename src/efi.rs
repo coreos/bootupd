@@ -322,7 +322,7 @@ impl Component for Efi {
         })
     }
 
-    // TODO: Remove dest_root; it was never actually used
+    // For installation, only support single ESP now
     fn install(
         &self,
         src_root: &openat::Dir,
@@ -336,9 +336,17 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        let destdir = &self.ensure_mounted_esp(Path::new(dest_root))?;
+        let destdir = if let Some(destdir) = self.get_mounted_esp(dest_root)? {
+            destdir
+        } else {
+            let esp_device = self
+                .get_esp_device()
+                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+            let esp_device = esp_device.to_str().unwrap();
+            self.ensure_mounted_esp(dest_root, esp_device)?
+        };
 
-        let destd = &openat::Dir::open(destdir)
+        let destd = &openat::Dir::open(&destdir)
             .with_context(|| format!("opening dest dir {}", destdir.display()))?;
         validate_esp_fstype(destd)?;
 
