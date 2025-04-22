@@ -422,17 +422,29 @@ impl Component for Efi {
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let efidir = self.open_esp()?;
-        let diff = currentf.relative_diff_to(&efidir)?;
+
         let mut errs = Vec::new();
-        for f in diff.changes.iter() {
-            errs.push(format!("Changed: {}", f));
+        let esps = esp_devices.ok_or_else(|| anyhow::anyhow!("No esp device found!"))?;
+        let dest_root = Path::new("/");
+        for esp_dev in esps.iter() {
+            let dest_path = if let Some(dest_path) = self.get_mounted_esp(dest_root)? {
+                dest_path.join("EFI")
+            } else {
+                self.ensure_mounted_esp(dest_root, &esp_dev)?.join("EFI")
+            };
+
+            let efidir = openat::Dir::open(dest_path.as_path())?;
+            let diff = currentf.relative_diff_to(&efidir)?;
+
+            for f in diff.changes.iter() {
+                errs.push(format!("Changed: {}", f));
+            }
+            for f in diff.removals.iter() {
+                errs.push(format!("Removed: {}", f));
+            }
+            assert_eq!(diff.additions.len(), 0);
+            self.unmount().context("unmount after validate")?;
         }
-        for f in diff.removals.iter() {
-            errs.push(format!("Removed: {}", f));
-        }
-        assert_eq!(diff.additions.len(), 0);
         if !errs.is_empty() {
             Ok(ValidationResult::Errors(errs))
         } else {
