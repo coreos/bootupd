@@ -93,11 +93,13 @@ impl Efi {
         return esp_device;
     }
 
-    pub(crate) fn ensure_mounted_esp(&self, root: &Path) -> Result<PathBuf> {
-        let mut mountpoint = self.mountpoint.borrow_mut();
+    // Get mounted esp path
+    fn get_mounted_esp<P: AsRef<Path>>(&self, root: P) -> Result<Option<PathBuf>> {
+        let mountpoint = self.mountpoint.borrow_mut();
         if let Some(mountpoint) = mountpoint.as_deref() {
-            return Ok(mountpoint.to_owned());
+            return Ok(Some(mountpoint.to_owned()));
         }
+        let root = root.as_ref();
         for &mnt in ESP_MOUNTS {
             let mnt = root.join(mnt);
             if !mnt.exists() {
@@ -109,13 +111,24 @@ impl Efi {
                 continue;
             }
             util::ensure_writable_mount(&mnt)?;
-            log::debug!("Reusing existing {mnt:?}");
-            return Ok(mnt);
+            log::debug!("Reusing existing mount point {mnt:?}");
+            return Ok(Some(mnt));
+        }
+        Ok(None)
+    }
+
+    // Ensure mount the passed esp_device
+    pub(crate) fn ensure_mounted_esp<P: AsRef<Path>>(
+        &self,
+        root: P,
+        esp_device: &str,
+    ) -> Result<PathBuf> {
+        let mut mountpoint = self.mountpoint.borrow_mut();
+        if let Some(mountpoint) = mountpoint.as_deref() {
+            return Ok(mountpoint.to_owned());
         }
 
-        let esp_device = self
-            .get_esp_device()
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        let root = root.as_ref();
         for &mnt in ESP_MOUNTS.iter() {
             let mnt = root.join(mnt);
             if !mnt.exists() {
