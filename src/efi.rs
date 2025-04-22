@@ -19,6 +19,7 @@ use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
 use widestring::U16CString;
 
+use crate::blockdev;
 use crate::filetree;
 use crate::model::*;
 use crate::ostreeutil;
@@ -91,6 +92,15 @@ impl Efi {
             }
         }
         return esp_device;
+    }
+
+    // Get esp devices list on all devices
+    fn get_all_esp_devices(&self) -> Option<Vec<String>> {
+        let esp_devices = blockdev::find_colocated_esps("/").expect("get esp devices");
+        if !esp_devices.is_empty() {
+            return Some(esp_devices);
+        }
+        return None;
     }
 
     // Get mounted esp path
@@ -256,8 +266,7 @@ impl Component for Efi {
     }
 
     fn query_adopt(&self) -> Result<Option<Adoptable>> {
-        let esp = self.open_esp_optional()?;
-        if esp.is_none() {
+        if self.get_all_esp_devices().is_none() {
             log::trace!("No ESP detected");
             return Ok(None);
         };
@@ -405,7 +414,8 @@ impl Component for Efi {
     }
 
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
+        let esp_devices = self.get_all_esp_devices();
+        if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
         }
         let currentf = current
