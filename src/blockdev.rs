@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use bootc_blockdev::PartitionTable;
 use fn_error_context::context;
 
-#[context("get parent devices from mount point boot")]
+#[context("get parent devices from mount point boot or sysroot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     let target_root = target_root.as_ref();
     let bootdir = target_root.join("boot");
@@ -14,10 +14,18 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     }
     let bootdir = openat::Dir::open(&bootdir)?;
     // Run findmnt to get the source path of mount point boot
-    let fsinfo = crate::filesystem::inspect_filesystem(&bootdir, ".")?;
+    // If failed, change to sysroot
+    let source= if let Ok(fsinfo) = crate::filesystem::inspect_filesystem(&bootdir, ".") {
+        fsinfo.source
+    } else {
+        let sysroot = target_root.join("sysroot");
+        let sysrootdir = openat::Dir::open(&sysroot)?;
+        let fsinfo = crate::filesystem::inspect_filesystem(&sysrootdir, ".")?;
+        fsinfo.source
+    };
     // Find the parent devices of the source path
-    let parent_devices = bootc_blockdev::find_parent_devices(&fsinfo.source)
-        .with_context(|| format!("while looking for backing devices of {}", fsinfo.source))?;
+    let parent_devices = bootc_blockdev::find_parent_devices(&source)
+        .with_context(|| format!("while looking for backing devices of {}", source))?;
     log::debug!("Find parent devices: {parent_devices:?}");
     Ok(parent_devices)
 }
