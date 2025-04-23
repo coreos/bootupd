@@ -137,6 +137,7 @@ impl Efi {
     fn unmount(&self) -> Result<()> {
         if let Some(mount) = self.mountpoint.borrow_mut().take() {
             Command::new("umount")
+                .arg("-l")
                 .arg(&mount)
                 .run()
                 .with_context(|| format!("Failed to unmount {mount:?}"))?;
