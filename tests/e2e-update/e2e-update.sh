@@ -48,55 +48,25 @@ add_override() {
     (cd ${overrides}/rpm && runv koji download-build --arch=noarch --arch=$(arch) ${override})
 }
 
-create_manifest_fork() {
-    if test ! -f src/config/bootupd-fork; then
-        echo "NOTICE: overriding src/config in ${COSA_DIR}"
-        sleep 2
-        runv rm -rf src/config.bootupd-testing-old
-        runv mv src/config src/config.orig
-        runv git clone src/config.orig src/config
-        touch src/config/bootupd-fork
-        # This will fall over if the upstream manifest gains `packages:`
-        cat >> src/config/manifest.yaml << EOF
-packages:
-  - test-bootupd-payload
-EOF
-        echo "forked src/config"
-    else
-        fatal "already forked manifest"
-    fi
-}
-
-undo_manifest_fork() {
-    test -d src/config.orig
-    assert_file_has_content src/config/manifest.yaml test-bootupd-payload
-    if test -f src/config/bootupd-fork; then
-        runv rm src/config -rf
-    else
-        # Keep this around just in case
-        runv mv src/config{,.bootupd-testing-old}
-    fi
-    runv mv src/config.orig src/config
-    test ! -f src/config/bootupd-fork
-    echo "undo src/config fork OK"
-}
-
 if test -z "${e2e_skip_build:-}"; then
     echo "Building starting image"
     rm -f ${overrides}/rpm/*.rpm
-    # Version from F41 GA
-    add_override grub2-2.12-4.fc41
+    # Version from F42 prior to GA
+    add_override grub2-2.12-26.fc42
     runv cosa build
     prev_image=$(runv cosa meta --image-path qemu)
-    create_manifest_fork
+    # Modify manifest to include `test-bootupd-payload` RPM
+    runv git -C src/config checkout manifest.yaml # first make sure it's clean
+    echo "packages: [test-bootupd-payload]" >> src/config/manifest.yaml
     rm -f ${overrides}/rpm/*.rpm
     echo "Building update ostree"
-    # Version queued in current updates
-    add_override grub2-2.12-10.fc41
+    # Latest (current) version in F42
+    add_override grub2-2.12-28.fc42
     mv ${test_tmpdir}/yumrepo/packages/$(arch)/*.rpm ${overrides}/rpm/
     # Only build ostree update
     runv cosa build ostree
-    undo_manifest_fork
+    # Undo manifest modification
+    runv git -C src/config checkout manifest.yaml
 fi
 echo "Preparing test"
 grubarch=
