@@ -155,7 +155,7 @@ impl Efi {
         }
         let sysroot = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
         let product_name = get_product_name(&sysroot)?;
-        log::debug!("Get product name: {product_name}");
+        log::debug!("Get product name: '{product_name}'");
         assert!(product_name.len() > 0);
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
@@ -169,7 +169,8 @@ fn get_product_name(sysroot: &Dir) -> Result<String> {
     if sysroot.exists(release_path) {
         let content = sysroot.read_to_string(release_path)?;
         let re = regex::Regex::new(r" *release.*").unwrap();
-        return Ok(re.replace_all(&content, "").to_string());
+        let name = re.replace_all(&content, "").trim().to_string();
+        return Ok(name);
     }
     // Read /etc/os-release
     let release: OsRelease = OsRelease::new()?;
@@ -673,6 +674,15 @@ Boot0003* test";
             tmpd.atomic_write(
                 "etc/system-release",
                 "Red Hat Enterprise Linux CoreOS release 4",
+            )?;
+            let name = get_product_name(&tmpd)?;
+            assert_eq!("Red Hat Enterprise Linux CoreOS", name);
+        }
+        {
+            tmpd.atomic_write(
+                "etc/system-release",
+                "Red Hat Enterprise Linux CoreOS release 4
+                ",
             )?;
             let name = get_product_name(&tmpd)?;
             assert_eq!("Red Hat Enterprise Linux CoreOS", name);
