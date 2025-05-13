@@ -12,6 +12,7 @@ use crate::efi;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::util;
 use anyhow::{anyhow, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
@@ -406,6 +407,34 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub struct RootContext {
+    pub sysroot: openat::Dir,
+    pub path: Utf8PathBuf,
+    pub devices: Vec<String>
+}
+
+impl RootContext {
+    fn new(sysroot: openat::Dir, path: &str, devices: Vec<String>) -> Self {
+        Self {
+            sysroot,
+            path: Utf8Path::new(path).into(),
+            devices,
+        }
+    }
+}
+
+/// Initialize parent devices to prepare the update
+fn prep_before_update() -> Result<RootContext> {
+    let path = "/";
+    let sysroot = openat::Dir::open(path).context("Opening root dir")?;
+    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
+    Ok(RootContext::new(
+        sysroot,
+        path,
+        devices
+    ))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
