@@ -12,6 +12,7 @@ use crate::efi;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::util;
 use anyhow::{anyhow, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
@@ -215,16 +216,16 @@ fn ensure_writable_boot() -> Result<()> {
 }
 
 /// daemon implementation of component update
-pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdateResult> {
+    let mut state = SavedState::load_from_disk(&rootcxt.path)?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let inst = if let Some(inst) = state.installed.get(name) {
         inst.clone()
     } else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    let sysroot = openat::Dir::open("/")?;
-    let update = component.query_update(&sysroot)?;
+    let sysroot = &rootcxt.sysroot;
+    let update = component.query_update(sysroot)?;
     let update = match update.as_ref() {
         Some(p) if inst.meta.can_upgrade_to(p) => p,
         _ => return Ok(ComponentUpdateResult::AtLatestVersion),
@@ -235,6 +236,7 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
     pending_container.insert(component.name().into(), update.clone());
+    let sysroot = sysroot.try_clone()?;
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
     state_guard
@@ -256,9 +258,9 @@ pub(crate) fn update(name: &str) -> Result<ComponentUpdateResult> {
 }
 
 /// daemon implementation of component adoption
-pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
-    let sysroot = openat::Dir::open("/")?;
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<ContentMetadata> {
+    let sysroot = &rootcxt.sysroot;
+    let mut state = SavedState::load_from_disk(&rootcxt.path)?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     if state.installed.contains_key(name) {
         anyhow::bail!("Component {} is already installed", name);
@@ -266,9 +268,10 @@ pub(crate) fn adopt_and_update(name: &str) -> Result<ContentMetadata> {
 
     ensure_writable_boot()?;
 
-    let Some(update) = component.query_update(&sysroot)? else {
+    let Some(update) = component.query_update(sysroot)? else {
         anyhow::bail!("Component {} has no available update", name);
     };
+    let sysroot = sysroot.try_clone()?;
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
@@ -408,8 +411,34 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
     Ok(())
 }
 
+pub struct RootContext {
+    pub sysroot: openat::Dir,
+    pub path: Utf8PathBuf,
+    #[allow(dead_code)]
+    pub devices: Vec<String>,
+}
+
+impl RootContext {
+    fn new(sysroot: openat::Dir, path: &str, devices: Vec<String>) -> Self {
+        Self {
+            sysroot,
+            path: Utf8Path::new(path).into(),
+            devices,
+        }
+    }
+}
+
+/// Initialize parent devices to prepare the update
+fn prep_before_update() -> Result<RootContext> {
+    let path = "/";
+    let sysroot = openat::Dir::open(path).context("Opening root dir")?;
+    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
+    Ok(RootContext::new(sysroot, path, devices))
+}
+
 pub(crate) fn client_run_update() -> Result<()> {
     crate::try_fail_point!("update");
+    let rootcxt = prep_before_update()?;
     let status: Status = status()?;
     if status.components.is_empty() && status.adoptable.is_empty() {
         println!("No components installed.");
@@ -421,7 +450,7 @@ pub(crate) fn client_run_update() -> Result<()> {
             ComponentUpdatable::Upgradable => {}
             _ => continue,
         };
-        match update(name)? {
+        match update(name, &rootcxt)? {
             ComponentUpdateResult::AtLatestVersion => {
                 // Shouldn't happen unless we raced with another client
                 eprintln!(
@@ -449,7 +478,7 @@ pub(crate) fn client_run_update() -> Result<()> {
     }
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, &rootcxt)?;
             println!("Adopted and updated: {}: {}", name, r.version);
             updated = true;
         } else {
@@ -463,12 +492,13 @@ pub(crate) fn client_run_update() -> Result<()> {
 }
 
 pub(crate) fn client_run_adopt_and_update() -> Result<()> {
+    let rootcxt = prep_before_update()?;
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
     } else {
         for (name, _) in status.adoptable.iter() {
-            let r: ContentMetadata = adopt_and_update(name)?;
+            let r: ContentMetadata = adopt_and_update(name, &rootcxt)?;
             println!("Adopted and updated: {}: {}", name, r.version);
         }
     }
