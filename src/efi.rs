@@ -19,6 +19,7 @@ use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
 use widestring::U16CString;
 
+use crate::bootupd::RootContext;
 use crate::filetree;
 use crate::model::*;
 use crate::ostreeutil;
@@ -330,13 +331,14 @@ impl Component for Efi {
 
     fn run_update(
         &self,
-        sysroot: &openat::Dir,
+        sysroot: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent> {
         let currentf = current
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
+        let sysroot = &sysroot.sysroot;
         let updatemeta = self.query_update(sysroot)?.expect("update available");
         let updated = sysroot
             .sub_dir(&component_updatedirname(self))

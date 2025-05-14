@@ -217,7 +217,7 @@ fn ensure_writable_boot() -> Result<()> {
 
 /// daemon implementation of component update
 pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdateResult> {
-    let mut state = SavedState::load_from_disk(&rootcxt.path)?.unwrap_or_default();
+    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let inst = if let Some(inst) = state.installed.get(name) {
         inst.clone()
@@ -244,7 +244,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         .context("Failed to update state")?;
 
     let newinst = component
-        .run_update(&state_guard.sysroot, &inst)
+        .run_update(rootcxt, &inst)
         .with_context(|| format!("Failed to update {}", component.name()))?;
     state.installed.insert(component.name().into(), newinst);
     pending_container.remove(component.name());
@@ -260,7 +260,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
 /// daemon implementation of component adoption
 pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<ContentMetadata> {
     let sysroot = &rootcxt.sysroot;
-    let mut state = SavedState::load_from_disk(&rootcxt.path)?.unwrap_or_default();
+    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     if state.installed.contains_key(name) {
         anyhow::bail!("Component {} is already installed", name);
@@ -414,7 +414,6 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
 pub struct RootContext {
     pub sysroot: openat::Dir,
     pub path: Utf8PathBuf,
-    #[allow(dead_code)]
     pub devices: Vec<String>,
 }
 
