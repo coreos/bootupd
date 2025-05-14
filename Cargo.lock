@@ -210,7 +210,7 @@ dependencies = [
  "openssl",
  "os-release",
  "regex",
- "rustix 1.0.5",
+ "rustix 1.0.7",
  "serde",
  "serde_json",
  "signal-hook-registry",
@@ -284,7 +284,7 @@ dependencies = [
  "cap-primitives",
  "cap-tempfile",
  "libc",
- "rustix 1.0.5",
+ "rustix 1.0.7",
 ]
 
 [[package]]
@@ -1065,9 +1065,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.0.5"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d97817398dd4bb2e6da002002db259209759911da105da92bec29ccb12cf58bf"
+checksum = "c71e83d6afe7ff64890ec6b71d6a69bb8a610ab78ce364b3352876bb4c801266"
 dependencies = [
  "bitflags 2.8.0",
  "errno",
@@ -1202,7 +1202,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.3.1",
  "once_cell",
- "rustix 1.0.5",
+ "rustix 1.0.7",
  "windows-sys 0.59.0",
 ]
 
