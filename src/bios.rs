@@ -2,11 +2,11 @@ use anyhow::{bail, Result};
 #[cfg(target_arch = "powerpc64")]
 use std::borrow::Cow;
 use std::io::prelude::*;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 
 use crate::blockdev;
+use crate::bootupd::RootContext;
 use crate::component::*;
 use crate::model::*;
 use crate::packagesystem;
@@ -176,15 +176,24 @@ impl Component for Bios {
         get_component_update(sysroot, self)
     }
 
-    fn run_update(&self, sysroot: &openat::Dir, _: &InstalledContent) -> Result<InstalledContent> {
-        let updatemeta = self.query_update(sysroot)?.expect("update available");
-        let dest_fd = format!("/proc/self/fd/{}", sysroot.as_raw_fd());
-        let dest_root = std::fs::read_link(dest_fd)?;
-        let device = blockdev::get_single_device(&dest_root)?;
+    fn run_update(&self, sysroot: &RootContext, _: &InstalledContent) -> Result<InstalledContent> {
+        let updatemeta = self
+            .query_update(&sysroot.sysroot)?
+            .expect("update available");
 
-        let dest_root = dest_root.to_string_lossy().into_owned();
-        self.run_grub_install(&dest_root, &device)?;
-        log::debug!("Install grub modules on {device}");
+        let mut parent_devices = sysroot.devices.iter();
+        let Some(parent) = parent_devices.next() else {
+            anyhow::bail!("Failed to find parent device");
+        };
+
+        if let Some(next) = parent_devices.next() {
+            anyhow::bail!(
+                "Found multiple parent devices {parent} and {next}; not currently supported"
+            );
+        }
+
+        self.run_grub_install(sysroot.path.as_str(), &parent)?;
+        log::debug!("Install grub modules on {parent}");
 
         let adopted_from = None;
         Ok(InstalledContent {

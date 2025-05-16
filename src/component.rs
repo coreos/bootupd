@@ -10,7 +10,7 @@ use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::model::*;
+use crate::{bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -66,7 +66,7 @@ pub(crate) trait Component {
     /// Used on the client to run an update.
     fn run_update(
         &self,
-        sysroot: &openat::Dir,
+        sysroot: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent>;
 
