@@ -97,6 +97,7 @@ impl Bios {
     }
 
     // check bios_boot partition on gpt type disk
+    #[cfg(target_arch = "x86_64")]
     fn get_bios_boot_partition(&self) -> Option<String> {
         match blockdev::get_single_device("/") {
             Ok(device) => {
@@ -148,6 +149,7 @@ impl Component for Bios {
     }
 
     fn query_adopt(&self) -> Result<Option<Adoptable>> {
+        // Skip BIOS adopt if booting with efi and none bios_boot part
         #[cfg(target_arch = "x86_64")]
         if crate::efi::is_efi_booted()? && self.get_bios_boot_partition().is_none() {
             log::debug!("Skip BIOS adopt");

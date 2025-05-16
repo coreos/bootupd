@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use bootc_blockdev::PartitionTable;
 use fn_error_context::context;
 
-#[context("get parent devices from mount point boot")]
+#[context("get parent devices from mount point boot or sysroot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     let target_root = target_root.as_ref();
     let bootdir = target_root.join("boot");
@@ -14,10 +14,18 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     }
     let bootdir = openat::Dir::open(&bootdir)?;
     // Run findmnt to get the source path of mount point boot
-    let fsinfo = crate::filesystem::inspect_filesystem(&bootdir, ".")?;
+    // If failed, change to sysroot
+    let source= if let Ok(fsinfo) = crate::filesystem::inspect_filesystem(&bootdir, ".") {
+        fsinfo.source
+    } else {
+        let sysroot = target_root.join("sysroot");
+        let sysrootdir = openat::Dir::open(&sysroot)?;
+        let fsinfo = crate::filesystem::inspect_filesystem(&sysrootdir, ".")?;
+        fsinfo.source
+    };
     // Find the parent devices of the source path
-    let parent_devices = bootc_blockdev::find_parent_devices(&fsinfo.source)
-        .with_context(|| format!("while looking for backing devices of {}", fsinfo.source))?;
+    let parent_devices = bootc_blockdev::find_parent_devices(&source)
+        .with_context(|| format!("while looking for backing devices of {}", source))?;
     log::debug!("Find parent devices: {parent_devices:?}");
     Ok(parent_devices)
 }
@@ -37,7 +45,6 @@ pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
 
 /// Find esp partition on the same device
 /// using sfdisk to get partitiontable
-#[allow(dead_code)]
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
     const ESP_TYPE_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
     let device_info: PartitionTable = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
@@ -52,7 +59,6 @@ pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
 }
 
 /// Find all ESP partitions on the devices with mountpoint boot
-#[allow(dead_code)]
 pub fn find_colocated_esps<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     // first, get the parent device
     let devices = get_devices(&target_root).with_context(|| "while looking for colocated ESPs")?;
