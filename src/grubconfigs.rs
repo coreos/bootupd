@@ -1,7 +1,9 @@
 use std::fmt::Write;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 
@@ -9,6 +11,7 @@ use openat_ext::OpenatDirExt;
 const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
 const DROPINDIR: &str = "configs.d";
+const GRUBENV: &str = "grubenv";
 
 /// Install the static GRUB config files.
 #[context("Installing static GRUB configs")]
@@ -62,6 +65,8 @@ pub(crate) fn install(
         .context("Copying grub-static.cfg")?;
     println!("Installed: grub.cfg");
 
+    write_grubenv(&bootdir).context("Create grubenv")?;
+
     let uuid_path = if write_uuid {
         let target_fs = if boot_is_mount { bootdir } else { target_root };
         let bootfs_meta = crate::filesystem::inspect_filesystem(target_fs, ".")?;
@@ -104,6 +109,24 @@ pub(crate) fn install(
     Ok(())
 }
 
+#[context("Create file boot/grub2/grubenv")]
+fn write_grubenv(bootdir: &openat::Dir) -> Result<()> {
+    let grubdir = &bootdir.sub_dir(GRUB2DIR).context("Opening boot/grub2")?;
+
+    if grubdir.exists(GRUBENV)? {
+        return Ok(());
+    }
+    let editenv = Path::new("/usr/bin/grub2-editenv");
+    if !editenv.exists() {
+        anyhow::bail!("Failed to find {:?}", editenv);
+    }
+
+    std::process::Command::new(editenv)
+        .args([GRUBENV, "create"])
+        .current_dir(format!("/proc/self/fd/{}", grubdir.as_raw_fd()))
+        .run_with_cmd_context()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +145,17 @@ mod tests {
 
         assert!(td.exists("boot/grub2/grub.cfg")?);
         assert!(td.exists("boot/efi/EFI/fedora/grub.cfg")?);
+        Ok(())
+    }
+    #[test]
+    fn test_write_grubenv() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let tdp = td.path();
+        std::fs::create_dir_all(tdp.join("boot/grub2"))?;
+        let td = openat::Dir::open(&tdp.join("boot"))?;
+        write_grubenv(&td)?;
+
+        assert!(td.exists("grub2/grubenv")?);
         Ok(())
     }
 }
