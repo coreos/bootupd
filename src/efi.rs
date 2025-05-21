@@ -97,29 +97,31 @@ impl Efi {
         return esp_device;
     }
 
-    pub(crate) fn ensure_mounted_esp(&self, root: &Path) -> Result<PathBuf> {
-        let mut mountpoint = self.mountpoint.borrow_mut();
-        if let Some(mountpoint) = mountpoint.as_deref() {
-            return Ok(mountpoint.to_owned());
-        }
-        for &mnt in ESP_MOUNTS {
-            let mnt = root.join(mnt);
-            if !mnt.exists() {
-                continue;
-            }
-            let st =
-                rustix::fs::statfs(&mnt).with_context(|| format!("statfs failed for {mnt:?}"))?;
-            if st.f_type != libc::MSDOS_SUPER_MAGIC {
-                continue;
-            }
-            util::ensure_writable_mount(&mnt)?;
-            log::debug!("Reusing existing {mnt:?}");
-            return Ok(mnt);
-        }
+    // Get mounted point for esp
+    pub(crate) fn get_mounted_esp(&self, root: &Path) -> Result<Option<PathBuf>> {
+        // First check all potential mount points without holding the borrow
+        let found_mount = ESP_MOUNTS.iter()
+            .map(|&mnt| root.join(mnt))
+            .find(|mnt| {
+                mnt.exists() &&
+                rustix::fs::statfs(mnt).map_or(false, |st| st.f_type == libc::MSDOS_SUPER_MAGIC) &&
+                util::ensure_writable_mount(mnt).is_ok()
+            });
 
-        let esp_device = self
-            .get_esp_device()
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        // Only borrow mutably if we found a mount point
+        if let Some(mnt) = found_mount {
+            log::debug!("Reusing existing mount point {mnt:?}");
+            *self.mountpoint.borrow_mut() = Some(mnt.clone());
+            Ok(Some(mnt))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Mount the passed esp_device, return mount point
+    pub(crate) fn mount_esp_device(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
+        let mut mountpoint = None;
+
         for &mnt in ESP_MOUNTS.iter() {
             let mnt = root.join(mnt);
             if !mnt.exists() {
@@ -131,10 +133,25 @@ impl Efi {
                 .run()
                 .with_context(|| format!("Failed to mount {:?}", esp_device))?;
             log::debug!("Mounted at {mnt:?}");
-            *mountpoint = Some(mnt);
+            mountpoint = Some(mnt);
             break;
         }
-        Ok(mountpoint.as_deref().unwrap().to_owned())
+        let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
+        *self.mountpoint.borrow_mut() = Some(mnt.clone());
+        Ok(mnt)
+    }
+
+    // Firstly check if esp is already mounted, then mount the passed esp device
+    pub(crate) fn ensure_mounted_esp(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
+        if let Some(mountpoint) = self.mountpoint.borrow().as_deref() {
+            return Ok(mountpoint.to_owned());
+        }
+        let destdir = if let Some(destdir) = self.get_mounted_esp(Path::new(root))? {
+            destdir
+        } else {
+            self.mount_esp_device(root, esp_device)?
+        };
+        Ok(destdir)
     }
 
     fn unmount(&self) -> Result<()> {
