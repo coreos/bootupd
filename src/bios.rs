@@ -97,6 +97,7 @@ impl Bios {
     }
 
     // check bios_boot partition on gpt type disk
+    #[allow(dead_code)]
     fn get_bios_boot_partition(&self) -> Option<String> {
         match blockdev::get_single_device("/") {
             Ok(device) => {
@@ -147,24 +148,37 @@ impl Component for Bios {
         Ok(meta)
     }
 
-    fn query_adopt(&self) -> Result<Option<Adoptable>> {
+    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
-        if crate::efi::is_efi_booted()? && self.get_bios_boot_partition().is_none() {
+        if crate::efi::is_efi_booted()? && devices.is_none() {
             log::debug!("Skip BIOS adopt");
             return Ok(None);
         }
         crate::component::query_adopt_state()
     }
 
-    fn adopt_update(&self, _: &openat::Dir, update: &ContentMetadata) -> Result<InstalledContent> {
-        let Some(meta) = self.query_adopt()? else {
+    fn adopt_update(
+        &self,
+        sysroot: &RootContext,
+        update: &ContentMetadata,
+    ) -> Result<InstalledContent> {
+        let bios_devices = blockdev::find_colocated_bios_boot(&sysroot.devices)?;
+        let Some(meta) = self.query_adopt(&bios_devices)? else {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let target_root = "/";
-        let device = blockdev::get_single_device(&target_root)?;
-        self.run_grub_install(target_root, &device)?;
-        log::debug!("Install grub modules on {device}");
+        let mut parent_devices = sysroot.devices.iter();
+        let Some(parent) = parent_devices.next() else {
+            anyhow::bail!("Failed to find parent device");
+        };
+
+        if let Some(next) = parent_devices.next() {
+            anyhow::bail!(
+                "Found multiple parent devices {parent} and {next}; not currently supported"
+            );
+        }
+        self.run_grub_install(sysroot.path.as_str(), &parent)?;
+        log::debug!("Install grub modules on {parent}");
         Ok(InstalledContent {
             meta: update.clone(),
             filetree: None,

@@ -264,9 +264,8 @@ impl Component for Efi {
         "EFI"
     }
 
-    fn query_adopt(&self) -> Result<Option<Adoptable>> {
-        let esp = self.open_esp_optional()?;
-        if esp.is_none() {
+    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+        if devices.is_none() {
             log::trace!("No ESP detected");
             return Ok(None);
         };
@@ -282,23 +281,41 @@ impl Component for Efi {
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
-        sysroot: &openat::Dir,
+        sysroot: &RootContext,
         updatemeta: &ContentMetadata,
     ) -> Result<InstalledContent> {
-        let Some(meta) = self.query_adopt()? else {
+        let esp_devices = blockdev::find_colocated_esps(&sysroot.devices)?;
+        let Some(meta) = self.query_adopt(&esp_devices)? else {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let esp = self.open_esp()?;
-        validate_esp(&esp)?;
+        // Confirm that esp_devices is Some(value)
+        let esp_devices = esp_devices.unwrap();
+        let mut devices = esp_devices.iter();
+        let Some(esp) = devices.next() else {
+            anyhow::bail!("Failed to find esp device");
+        };
+
+        if let Some(next_esp) = devices.next() {
+            anyhow::bail!(
+                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+            );
+        }
+        let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
+
+        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
+        validate_esp(&destdir)?;
         let updated = sysroot
+            .sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         // For adoption, we should only touch files that we know about.
-        let diff = updatef.relative_diff_to(&esp)?;
+        let diff = updatef.relative_diff_to(&destdir)?;
         log::trace!("applying adoption diff: {}", &diff);
-        filetree::apply_diff(&updated, &esp, &diff, None).context("applying filesystem changes")?;
+        filetree::apply_diff(&updated, &destdir, &diff, None)
+            .context("applying filesystem changes")?;
         Ok(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),

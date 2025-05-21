@@ -276,7 +276,7 @@ pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<Cont
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
     let inst = component
-        .adopt_update(&state_guard.sysroot, &update)
+        .adopt_update(&rootcxt, &update)
         .context("Failed adopt and update")?;
     state.installed.insert(component.name().into(), inst);
 
@@ -327,8 +327,10 @@ pub(crate) fn status() -> Result<Status> {
 
     // Process the remaining components not installed
     log::trace!("Remaining known components: {}", known_components.len());
-    for (name, component) in known_components {
-        if let Some(adopt_ver) = component.query_adopt()? {
+    for (name, _) in known_components {
+        // Only run `query_adopt_state()` is enough
+        // When do adopt and update for each component, will check more
+        if let Some(adopt_ver) = crate::component::query_adopt_state()? {
             ret.adoptable.insert(name.to_string(), adopt_ver);
         } else {
             log::trace!("Not adoptable: {}", name);
