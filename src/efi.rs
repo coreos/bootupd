@@ -20,7 +20,7 @@ use walkdir::WalkDir;
 use widestring::U16CString;
 
 use crate::bootupd::RootContext;
-use crate::filetree;
+use crate::{blockdev, filetree};
 use crate::model::*;
 use crate::ostreeutil;
 use crate::util::{self, CommandRunExt};
@@ -306,7 +306,6 @@ impl Component for Efi {
         })
     }
 
-    // TODO: Remove dest_root; it was never actually used
     fn install(
         &self,
         src_root: &openat::Dir,
@@ -320,10 +319,14 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        let destdir = &self.ensure_mounted_esp(Path::new(dest_root))?;
+        // get esp device via /dev/disk/by-partlabel
+        let esp_device = self
+            .get_esp_device()
+            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), &esp_device)?;
 
-        let destd = &openat::Dir::open(destdir)
-            .with_context(|| format!("opening dest dir {}", destdir.display()))?;
+        let destd = &openat::Dir::open(destpath)
+            .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp(destd)?;
 
         // TODO - add some sort of API that allows directly setting the working
@@ -331,7 +334,7 @@ impl Component for Efi {
         std::process::Command::new("cp")
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
-            .arg(destdir)
+            .arg(destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
         if update_firmware {
@@ -355,15 +358,31 @@ impl Component for Efi {
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        let sysroot = &sysroot.sysroot;
-        let updatemeta = self.query_update(sysroot)?.expect("update available");
-        let updated = sysroot
+        let sysroot_dir = &sysroot.sysroot;
+        let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
+        let updated = sysroot_dir
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
-        let diff = currentf.diff(&updatef)?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let destdir = self.open_esp().context("opening EFI dir")?;
+        let diff = currentf.diff(&updatef)?;       
+
+        let Some(esp_devices) = blockdev::find_colocated_esps(&sysroot.devices)? else {
+            anyhow::bail!("Failed to find all esp devices");
+        };
+        let mut devices = esp_devices.iter();
+        let Some(esp) = devices.next() else {
+            anyhow::bail!("Failed to find esp device");
+        };
+
+        if let Some(next_esp) = devices.next() {
+            anyhow::bail!(
+                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+            );
+        }
+        let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
+
+        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
         validate_esp(&destdir)?;
         log::trace!("applying diff: {}", &diff);
         filetree::apply_diff(&updated, &destdir, &diff, None)
