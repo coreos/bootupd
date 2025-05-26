@@ -35,5 +35,9 @@ jobs:
           run: |
             set -xeu
             apt update -y
-            apt install -y gcc make cargo libssl-dev pkg-config
+            apt install -y gcc make curl libssl-dev pkg-config
+            # Install Rust 1.84.1
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.84.1
+            source $HOME/.cargo/env
+            rustc --version
             cargo check
