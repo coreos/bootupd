@@ -44,7 +44,7 @@ jobs:
           sudo apt install -y podman
 
       - name: build
-        run: sudo podman build -t localhost/bootupd:latest -f ci/Containerfile.c9s .
+        run: sudo podman build -t localhost/bootupd:latest -f Dockerfile .
 
       - name: bootupctl status in container
         run: |

@@ -23,14 +23,6 @@ all:
 	cargo build ${CARGO_ARGS}
 	ln -f target/${PROFILE}/bootupd target/${PROFILE}/bootupctl
 
-.PHONY: create-build-container
-create-build-container:
-	${CONTAINER_RUNTIME} build -t ${IMAGE_NAME} -f Dockerfile.build
-
-.PHONY: build-in-container
-build-in-container: create-build-container
-	${CONTAINER_RUNTIME} run -ti --rm -v .:/srv/bootupd:z ${IMAGE_PREFIX}${IMAGE_NAME} make
-
 .PHONY: install
 install:
 	mkdir -p "${DESTDIR}$(PREFIX)/bin" "${DESTDIR}$(LIBEXECDIR)"
@@ -45,6 +37,9 @@ install-grub-static:
 .PHONY: install-systemd-unit
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-update.service
+
+.PHONY: install-all
+install-all: install install-grub-static install-systemd-unit
 
 .PHONY: bin-archive
 bin-archive:
