@@ -40,9 +40,3 @@ install-systemd-unit:
 
 .PHONY: install-all
 install-all: install install-grub-static install-systemd-unit
-
-.PHONY: bin-archive
-bin-archive:
-	rm target/inst -rf
-	$(MAKE) install install-grub-static DESTDIR=$$(pwd)/target/inst
-	tar -C target/inst -c --zstd -f target/bootupd.tar.zst .
