@@ -67,7 +67,7 @@ jobs:
         run: |
           set -xeuo pipefail
           sudo truncate -s 10G myimage.raw
-          sudo podman run --rm -ti --privileged -v .:/target --pid=host --security-opt label=disable \
+          sudo podman run --rm --privileged -v .:/target --pid=host --security-opt label=disable \
             -v /var/lib/containers:/var/lib/containers \
             -v /dev:/dev \
             localhost/bootupd:latest bootc install to-disk --skip-fetch-check \
@@ -95,6 +95,7 @@ jobs:
           sudo podman run --rm -ti --privileged -v /:/target --pid=host --security-opt label=disable \
             -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
             localhost/bootupd:latest bootc install to-filesystem --skip-fetch-check \
+            --acknowledge-destructive \
             --disable-selinux --replace=alongside /target
           # Verify we injected static configs
           jq -re '.["static-configs"].version' /boot/bootupd-state.json
