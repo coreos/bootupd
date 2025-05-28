@@ -79,11 +79,20 @@ impl Efi {
     // Get mounted point for esp
     pub(crate) fn get_mounted_esp(&self, root: &Path) -> Result<Option<PathBuf>> {
         // First check all potential mount points without holding the borrow
-        let found_mount = ESP_MOUNTS.iter().map(|&mnt| root.join(mnt)).find(|mnt| {
-            mnt.exists()
-                && rustix::fs::statfs(mnt).map_or(false, |st| st.f_type == libc::MSDOS_SUPER_MAGIC)
-                && util::ensure_writable_mount(mnt).is_ok()
-        });
+        let mut found_mount = None;
+        for &mnt in ESP_MOUNTS.iter() {
+            let path = root.join(mnt);
+            if !path.exists() {
+                continue;
+            }
+
+            let st = rustix::fs::statfs(&path)?;
+            if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                util::ensure_writable_mount(&path)?;
+                found_mount = Some(path);
+                break;
+            }
+        }
 
         // Only borrow mutably if we found a mount point
         if let Some(mnt) = found_mount {
@@ -266,8 +275,7 @@ impl Component for Efi {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        // Confirm that esp_devices is Some(value)
-        let esp_devices = esp_devices.unwrap();
+        let esp_devices = esp_devices.unwrap_or_default();
         let mut devices = esp_devices.iter();
         let Some(esp) = devices.next() else {
             anyhow::bail!("Failed to find esp device");
@@ -439,8 +447,7 @@ impl Component for Efi {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
 
-        // Confirm that esp_devices is Some(value)
-        let esp_devices = esp_devices.unwrap();
+        let esp_devices = esp_devices.unwrap_or_default();
         let mut devices = esp_devices.iter();
         let Some(esp) = devices.next() else {
             anyhow::bail!("Failed to find esp device");
