@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use bootc_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use fn_error_context::context;
@@ -22,7 +23,7 @@ use widestring::U16CString;
 use crate::bootupd::RootContext;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::{self, CommandRunExt};
+use crate::util;
 use crate::{blockdev, filetree};
 use crate::{component::*, packagesystem};
 
@@ -381,10 +382,42 @@ impl Component for Efi {
     }
 
     fn generate_update_metadata(&self, sysroot_path: &str) -> Result<ContentMetadata> {
-        let ostreebootdir = Path::new(sysroot_path).join(ostreeutil::BOOT_PREFIX);
         let dest_efidir = component_updatedir(sysroot_path, self);
 
-        if ostreebootdir.exists() {
+        // New EFI dir /usr/lib/efi
+        let efi_lib = Path::new(sysroot_path).join("usr/lib/efi");
+        // Legacy ostree-boot dir
+        let ostreebootdir = Path::new(sysroot_path).join(ostreeutil::BOOT_PREFIX);
+
+        let meta = if efi_lib.exists() {
+            // Get EFI paths like /usr/lib/efi/(shim|grub2)/<version>/EFI
+            let efi_paths = find_all_efi_dirs(&efi_lib)
+                .with_context(|| format!("Failed to find EFI path under {}", efi_lib.display()))?;
+
+            // Get all files under EFI paths
+            let all_files: Result<Vec<String>> =
+                efi_paths.iter().try_fold(Vec::new(), |mut acc, efi| {
+                    let efidir = openat::Dir::open(efi)
+                        .with_context(|| format!("Opening {}", efi.display()))?;
+
+                    // Get all files path
+                    let mut files = crate::util::filenames(&efidir)?
+                        .into_iter()
+                        .map(|mut f| {
+                            f.insert_str(0, efi.to_str().unwrap());
+                            f
+                        })
+                        .collect::<Vec<String>>();
+
+                    Command::new("mv")
+                        .arg(&efi)
+                        .arg(&dest_efidir)
+                        .run_with_cmd_context()?;
+                    acc.append(&mut files);
+                    Ok(acc)
+                });
+            packagesystem::query_files(sysroot_path, all_files?.into_iter())?
+        } else if ostreebootdir.exists() {
             let cruft = ["loader", "grub2"];
             for p in cruft.iter() {
                 let p = ostreebootdir.join(p);
@@ -400,17 +433,25 @@ impl Component for Efi {
 
             // Fork off mv() because on overlayfs one can't rename() a lower level
             // directory today, and this will handle the copy fallback.
-            Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
-        }
+            Command::new("mv")
+                .args([&efisrc, &dest_efidir])
+                .run_with_cmd_context()?;
 
-        let efidir = openat::Dir::open(&dest_efidir)
-            .with_context(|| format!("Opening {}", dest_efidir.display()))?;
-        let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
-            f.insert_str(0, "/boot/efi/EFI/");
-            f
-        });
+            let efidir = openat::Dir::open(&dest_efidir)
+                .with_context(|| format!("Opening {}", dest_efidir.display()))?;
+            let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
+                f.insert_str(0, "/boot/efi/EFI/");
+                f
+            });
+            packagesystem::query_files(sysroot_path, files)?
+        } else {
+            bail!(
+                "No directories found {} or {}",
+                efi_lib.display(),
+                ostreebootdir.display()
+            );
+        };
 
-        let meta = packagesystem::query_files(sysroot_path, files)?;
         write_update_metadata(sysroot_path, self, &meta)?;
         Ok(meta)
     }
@@ -615,6 +656,29 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
     Ok(result)
 }
 
+// Find EFI dirs under usr/lib/efi
+// for exmaple: usr/lib/efi/shim/15.8-4/EFI, usr/lib/efi/grub2/2.12-34.fc42/EFI
+fn find_all_efi_dirs(sysroot_lib: &Path) -> Result<Vec<PathBuf>> {
+    const LIBDIRS: &[&str] = &["grub2", "shim"];
+
+    LIBDIRS.iter().try_fold(Vec::new(), |mut acc, pkg| {
+        let lib_path = sysroot_lib.join(pkg);
+        if !lib_path.exists() {
+            return Ok(acc);
+        }
+
+        for entry in std::fs::read_dir(&lib_path)? {
+            let entry = entry?;
+            let version_dir = entry.path();
+            let efi_path = version_dir.join("EFI");
+            if efi_path.is_dir() {
+                acc.push(efi_path);
+            }
+        }
+        Ok(acc)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use cap_std_ext::dirext::CapStdExtDirExt;
@@ -732,6 +796,36 @@ Boot0003* test";
             tmpd.remove_file("etc/system-release")?;
             let name = get_product_name(&tmpd)?;
             assert!(name.len() > 0);
+        }
+        Ok(())
+    }
+    #[test]
+    fn test_find_all_efi_dirs() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let tdp = td.path();
+        let tdp_efi = tdp.join("usr/lib/efi");
+        std::fs::create_dir_all(tdp_efi.join("grub2/2.12-34.fc42/EFI/fedora"))?;
+        std::fs::create_dir_all(tdp_efi.join("shim/15.8-4/EFI/BOOT"))?;
+        std::fs::create_dir_all(tdp_efi.join("grub/testdir/test"))?;
+        {
+            let dirs = find_all_efi_dirs(&tdp_efi)?;
+            assert_eq!(2, dirs.len());
+        }
+        {
+            let td = openat::Dir::open(&tdp_efi)?;
+            td.remove_all("grub2")?;
+            let dirs = find_all_efi_dirs(&tdp_efi)?;
+            assert_eq!(1, dirs.len());
+
+            td.remove_all("shim")?;
+            let dirs = find_all_efi_dirs(&tdp_efi)?;
+            assert_eq!(0, dirs.len());
+        }
+        {
+            std::fs::create_dir_all(tdp_efi.join("grub2/2.12-34.fc42"))?;
+            std::fs::create_dir_all(tdp_efi.join("shim/15.8-4/EFI/BOOT"))?;
+            let dirs = find_all_efi_dirs(&tdp_efi)?;
+            assert_eq!(1, dirs.len());
         }
         Ok(())
     }
