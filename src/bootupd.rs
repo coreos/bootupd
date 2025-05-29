@@ -276,7 +276,7 @@ pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<Cont
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
     let inst = component
-        .adopt_update(&state_guard.sysroot, &update)
+        .adopt_update(&rootcxt, &update)
         .context("Failed adopt and update")?;
     state.installed.insert(component.name().into(), inst);
 
@@ -327,8 +327,23 @@ pub(crate) fn status() -> Result<Status> {
 
     // Process the remaining components not installed
     log::trace!("Remaining known components: {}", known_components.len());
-    for (name, component) in known_components {
-        if let Some(adopt_ver) = component.query_adopt()? {
+    for (name, _) in known_components {
+        // To determine if not-installed components can be adopted:
+        //
+        // `query_adopt_state()` checks for existing installation state,
+        // such as a `version` in `/sysroot/.coreos-aleph-version.json`,
+        // or the presence of `/ostree/deploy`.
+        //
+        // `component.query_adopt()` performs additional checks,
+        // including hardware/device requirements.
+        // For example, it will skip BIOS adoption if the system is booted via EFI
+        // and lacks a BIOS_BOOT partition.
+        //
+        // Once a component is determined to be adoptable, it is added to the
+        // adoptable list, and adoption proceeds automatically.
+        //
+        // Therefore, calling `query_adopt_state()` alone is sufficient.
+        if let Some(adopt_ver) = crate::component::query_adopt_state()? {
             ret.adoptable.insert(name.to_string(), adopt_ver);
         } else {
             log::trace!("Not adoptable: {}", name);

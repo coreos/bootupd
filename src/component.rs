@@ -29,12 +29,12 @@ pub(crate) trait Component {
     /// In an operating system whose initially booted disk image is not
     /// using bootupd, detect whether it looks like the component exists
     /// and "synthesize" content metadata from it.
-    fn query_adopt(&self) -> Result<Option<Adoptable>>;
+    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>>;
 
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
-        sysroot: &openat::Dir,
+        rootcxt: &RootContext,
         update: &ContentMetadata,
     ) -> Result<InstalledContent>;
 
@@ -66,7 +66,7 @@ pub(crate) trait Component {
     /// Used on the client to run an update.
     fn run_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent>;
 
