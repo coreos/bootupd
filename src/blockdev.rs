@@ -63,7 +63,7 @@ pub fn find_colocated_esps(devices: &Vec<String>) -> Result<Option<Vec<String>>>
     if esps.is_empty() {
         return Ok(None);
     }
-    log::debug!("Find esp partitions: {esps:?}");
+    log::debug!("Found esp partitions: {esps:?}");
     Ok(Some(esps))
 }
 
@@ -93,6 +93,6 @@ pub fn find_colocated_bios_boot(devices: &Vec<String>) -> Result<Option<Vec<Stri
     if bios_boots.is_empty() {
         return Ok(None);
     }
-    log::debug!("Find bios_boot partitions: {bios_boots:?}");
+    log::debug!("Found bios_boot partitions: {bios_boots:?}");
     Ok(Some(bios_boots))
 }

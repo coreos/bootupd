@@ -34,7 +34,7 @@ pub(crate) trait Component {
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         update: &ContentMetadata,
     ) -> Result<InstalledContent>;
 
@@ -66,7 +66,7 @@ pub(crate) trait Component {
     /// Used on the client to run an update.
     fn run_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent>;
 

@@ -267,10 +267,10 @@ impl Component for Efi {
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         updatemeta: &ContentMetadata,
     ) -> Result<InstalledContent> {
-        let esp_devices = blockdev::find_colocated_esps(&sysroot.devices)?;
+        let esp_devices = blockdev::find_colocated_esps(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&esp_devices)? else {
             anyhow::bail!("Failed to find adoptable system")
         };
@@ -286,12 +286,12 @@ impl Component for Efi {
                 "Found multiple esp devices {esp} and {next_esp}; not currently supported"
             );
         }
-        let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
+        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
 
         let destdir = &openat::Dir::open(&destpath.join("EFI"))
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
         validate_esp(&destdir)?;
-        let updated = sysroot
+        let updated = rootcxt
             .sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
@@ -353,14 +353,14 @@ impl Component for Efi {
 
     fn run_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent> {
         let currentf = current
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        let sysroot_dir = &sysroot.sysroot;
+        let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
         let updated = sysroot_dir
             .sub_dir(&component_updatedirname(self))
@@ -368,7 +368,7 @@ impl Component for Efi {
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 
-        let Some(esp_devices) = blockdev::find_colocated_esps(&sysroot.devices)? else {
+        let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
             anyhow::bail!("Failed to find all esp devices");
         };
         let mut devices = esp_devices.iter();
@@ -381,7 +381,7 @@ impl Component for Efi {
                 "Found multiple esp devices {esp} and {next_esp}; not currently supported"
             );
         }
-        let destpath = &self.ensure_mounted_esp(sysroot.path.as_ref(), Path::new(&esp))?;
+        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
 
         let destdir = &openat::Dir::open(&destpath.join("EFI"))
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;

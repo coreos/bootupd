@@ -159,15 +159,15 @@ impl Component for Bios {
 
     fn adopt_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         update: &ContentMetadata,
     ) -> Result<InstalledContent> {
-        let bios_devices = blockdev::find_colocated_bios_boot(&sysroot.devices)?;
+        let bios_devices = blockdev::find_colocated_bios_boot(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let mut parent_devices = sysroot.devices.iter();
+        let mut parent_devices = rootcxt.devices.iter();
         let Some(parent) = parent_devices.next() else {
             anyhow::bail!("Failed to find parent device");
         };
@@ -177,8 +177,8 @@ impl Component for Bios {
                 "Found multiple parent devices {parent} and {next}; not currently supported"
             );
         }
-        self.run_grub_install(sysroot.path.as_str(), &parent)?;
-        log::debug!("Install grub modules on {parent}");
+        self.run_grub_install(rootcxt.path.as_str(), &parent)?;
+        log::debug!("Installed grub modules on {parent}");
         Ok(InstalledContent {
             meta: update.clone(),
             filetree: None,
@@ -190,12 +190,12 @@ impl Component for Bios {
         get_component_update(sysroot, self)
     }
 
-    fn run_update(&self, sysroot: &RootContext, _: &InstalledContent) -> Result<InstalledContent> {
+    fn run_update(&self, rootcxt: &RootContext, _: &InstalledContent) -> Result<InstalledContent> {
         let updatemeta = self
-            .query_update(&sysroot.sysroot)?
+            .query_update(&rootcxt.sysroot)?
             .expect("update available");
 
-        let mut parent_devices = sysroot.devices.iter();
+        let mut parent_devices = rootcxt.devices.iter();
         let Some(parent) = parent_devices.next() else {
             anyhow::bail!("Failed to find parent device");
         };
@@ -206,7 +206,7 @@ impl Component for Bios {
             );
         }
 
-        self.run_grub_install(sysroot.path.as_str(), &parent)?;
+        self.run_grub_install(rootcxt.path.as_str(), &parent)?;
         log::debug!("Install grub modules on {parent}");
 
         let adopted_from = None;
