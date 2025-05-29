@@ -162,6 +162,39 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, espdir, vendordir, &product_name)
     }
+
+    /// Copy firmware files from /boot/efi to target directory
+    fn copy_firmware_blobs(&self, src_root: &openat::Dir, dest_root: &str) -> Result<()> {
+        let src_efi = "boot/efi";
+
+        // Always create destination directory structure
+        let dest_path = Path::new(dest_root).join("boot/efi");
+        std::fs::create_dir_all(&dest_path)?;
+
+        // Skip if source doesn't exist
+        if !src_root.exists(src_efi)? {
+            log::debug!("No EFI directory found at {}", src_efi);
+            return Ok(());
+        }
+
+        // Open destination directory
+        let dest_dir = openat::Dir::open(Path::new(dest_root))?;
+
+        // Copy all files from source
+        for entry in src_root.list_dir(src_efi)? {
+            let entry = entry?;
+            if let Some(openat::SimpleType::File) = entry.simple_type() {
+                let src_path = Path::new(src_efi).join(entry.file_name());
+                let dest_path = Path::new("boot/efi").join(entry.file_name());
+                src_root
+                    .copy_file_at(&src_path, &dest_dir, &dest_path)
+                    .with_context(|| format!("Failed to copy {:?} to {:?}", src_path, dest_path))?;
+                log::debug!("Copied firmware file: {:?} to {:?}", src_path, dest_path);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[context("Get product name")]
@@ -304,13 +337,16 @@ impl Component for Efi {
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
         let destdir = &self.ensure_mounted_esp(Path::new(dest_root))?;
-
         let destd = &openat::Dir::open(destdir)
             .with_context(|| format!("opening dest dir {}", destdir.display()))?;
         validate_esp(destd)?;
 
         // TODO - add some sort of API that allows directly setting the working
         // directory to a file descriptor.
+
+        // Copy firmware files
+        self.copy_firmware_blobs(src_root, dest_root)?;
+
         std::process::Command::new("cp")
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
@@ -579,9 +615,8 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
-    use cap_std_ext::dirext::CapStdExtDirExt;
-
     use super::*;
+    use cap_std_ext::dirext::CapStdExtDirExt;
 
     #[test]
     fn test_parse_boot_entries() -> Result<()> {
@@ -695,6 +730,66 @@ Boot0003* test";
             let name = get_product_name(&tmpd)?;
             assert!(name.len() > 0);
         }
+        Ok(())
+    }
+    #[test]
+    fn test_copy_firmware_blobs() -> Result<()> {
+        // Setup temp directory structure
+        let tmpd = tempfile::tempdir()?;
+        let tmp_path = tmpd.path();
+
+        // Create source structure
+        std::fs::create_dir_all(tmp_path.join("boot/efi"))?;
+        std::fs::write(tmp_path.join("boot/efi/fwfile1.bin"), "test1")?;
+        std::fs::write(tmp_path.join("boot/efi/fwfile2.bin"), "test2")?;
+
+        // Destination directory
+        let dest_tmpd = tempfile::tempdir()?;
+        let dest_path = dest_tmpd.path();
+
+        // Test the copy
+        let efi = Efi::default();
+        let src_dir = openat::Dir::open(tmp_path)?;
+        efi.copy_firmware_blobs(&src_dir, dest_path.to_str().unwrap())?;
+
+        // Verify files were copied
+        assert!(dest_path.join("boot/efi/fwfile1.bin").exists());
+        assert!(dest_path.join("boot/efi/fwfile2.bin").exists());
+
+        // Verify contents
+        assert_eq!(
+            std::fs::read_to_string(dest_path.join("boot/efi/fwfile1.bin"))?,
+            "test1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest_path.join("boot/efi/fwfile2.bin"))?,
+            "test2"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_copy_firmware_blobs_empty() -> Result<()> {
+        // Source directory (empty)
+        let tmpd = tempfile::tempdir()?;
+        let tmp_path = tmpd.path();
+
+        // Destination directory
+        let dest_tmpd = tempfile::tempdir()?;
+        let dest_path = dest_tmpd.path();
+
+        // Test the copy
+        let efi = Efi::default();
+        let src_dir = openat::Dir::open(tmp_path)?;
+        efi.copy_firmware_blobs(&src_dir, dest_path.to_str().unwrap())?;
+
+        // Verify directory was created
+        assert!(dest_path.join("boot/efi").exists());
+
+        // Verify directory is empty
+        assert!(dest_path.join("boot/efi").read_dir()?.next().is_none());
+
         Ok(())
     }
 }
