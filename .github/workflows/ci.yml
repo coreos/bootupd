@@ -67,8 +67,9 @@ jobs:
             --disable-selinux --generic-image --via-loopback /target/myimage.raw
           # Verify we installed grub.cfg and shim on the disk
           sudo losetup -P -f myimage.raw
-          device=$(losetup --list --noheadings --output NAME,BACK-FILE | grep myimage.raw | awk '{print $1}')
-          sudo mount "${device}p2" /mnt/
+          device=$(losetup -a myimage.raw --output NAME -n)
+          esp_part=$(sudo sfdisk -l -J "${device}" | jq -r '.partitiontable.partitions[] | select(.type == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B").node')
+          sudo mount "${esp_part}" /mnt/
           arch="$(uname --machine)"
           if [[ "${arch}" == "x86_64" ]]; then
             shim="shimx64.efi"
