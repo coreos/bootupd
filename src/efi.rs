@@ -40,10 +40,6 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
 
-/// The ESP partition label on Fedora CoreOS derivatives
-pub(crate) const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
-pub(crate) const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";
-
 /// Systemd boot loader info EFI variable names
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
@@ -61,21 +57,6 @@ pub(crate) struct Efi {
 }
 
 impl Efi {
-    // Get esp device via EFI partlabel
-    fn get_esp_device(&self) -> Option<PathBuf> {
-        let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
-            .into_iter()
-            .map(|p| Path::new("/dev/disk/by-partlabel/").join(p));
-        let mut esp_device = None;
-        for path in esp_devices {
-            if path.exists() {
-                esp_device = Some(path);
-                break;
-            }
-        }
-        return esp_device;
-    }
-
     // Get mounted point for esp
     pub(crate) fn get_mounted_esp(&self, root: &Path) -> Result<Option<PathBuf>> {
         // First check all potential mount points without holding the borrow
@@ -321,11 +302,13 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        // get esp device via /dev/disk/by-partlabel
-        let esp_device = self
-            .get_esp_device()
+
+        // Using `blockdev` to find the partition instead of partlabel because
+        // we know the target install toplevel device already.
+        let esp_device = blockdev::get_esp_partition(device)?
             .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
-        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), &esp_device)?;
+
+        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), Path::new(&esp_device))?;
 
         let destd = &openat::Dir::open(destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;

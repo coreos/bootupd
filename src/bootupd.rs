@@ -328,8 +328,21 @@ pub(crate) fn status() -> Result<Status> {
     // Process the remaining components not installed
     log::trace!("Remaining known components: {}", known_components.len());
     for (name, _) in known_components {
-        // Only run `query_adopt_state()` is enough
-        // When do adopt and update for each component, will check more
+        // To determine if not-installed components can be adopted:
+        //
+        // `query_adopt_state()` checks for existing installation state,
+        // such as a `version` in `/sysroot/.coreos-aleph-version.json`,
+        // or the presence of `/ostree/deploy`.
+        //
+        // `component.query_adopt()` performs additional checks,
+        // including hardware/device requirements.
+        // For example, it will skip BIOS adoption if the system is booted via EFI
+        // and lacks a BIOS_BOOT partition.
+        //
+        // Once a component is determined to be adoptable, it is added to the
+        // adoptable list, and adoption proceeds automatically.
+        //
+        // Therefore, calling `query_adopt_state()` alone is sufficient.
         if let Some(adopt_ver) = crate::component::query_adopt_state()? {
             ret.adoptable.insert(name.to_string(), adopt_ver);
         } else {
