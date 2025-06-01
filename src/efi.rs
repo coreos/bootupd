@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use bootc_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use fn_error_context::context;
@@ -22,7 +23,7 @@ use widestring::U16CString;
 use crate::bootupd::RootContext;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::{self, CommandRunExt};
+use crate::util;
 use crate::{blockdev, filetree};
 use crate::{component::*, packagesystem};
 
@@ -123,6 +124,14 @@ impl Efi {
 
     fn unmount(&self) -> Result<()> {
         if let Some(mount) = self.mountpoint.borrow_mut().take() {
+            // To safely unmount `/boot/efi`, first ensure
+            // all pending writes are flushed to disk using `sync`.
+            Command::new("sync")
+                .arg("--file-system")
+                .arg(&mount)
+                .run_with_cmd_context()
+                .with_context(|| format!("Failed to sync before unmounting {mount:?}"))?;
+
             Command::new("umount")
                 .arg(&mount)
                 .run()
