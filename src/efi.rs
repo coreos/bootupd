@@ -20,10 +20,10 @@ use walkdir::WalkDir;
 use widestring::U16CString;
 
 use crate::bootupd::RootContext;
-use crate::filetree;
 use crate::model::*;
 use crate::ostreeutil;
 use crate::util::{self, CommandRunExt};
+use crate::{blockdev, filetree};
 use crate::{component::*, packagesystem};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
@@ -39,10 +39,6 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
-
-/// The ESP partition label on Fedora CoreOS derivatives
-pub(crate) const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
-pub(crate) const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";
 
 /// Systemd boot loader info EFI variable names
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
@@ -61,65 +57,38 @@ pub(crate) struct Efi {
 }
 
 impl Efi {
-    fn esp_path(&self) -> Result<PathBuf> {
-        self.ensure_mounted_esp(Path::new("/"))
-            .map(|v| v.join("EFI"))
-    }
+    // Get mounted point for esp
+    pub(crate) fn get_mounted_esp(&self, root: &Path) -> Result<Option<PathBuf>> {
+        // First check all potential mount points without holding the borrow
+        let mut found_mount = None;
+        for &mnt in ESP_MOUNTS.iter() {
+            let path = root.join(mnt);
+            if !path.exists() {
+                continue;
+            }
 
-    fn open_esp_optional(&self) -> Result<Option<openat::Dir>> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
-            log::debug!("Skip EFI");
-            return Ok(None);
-        }
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir_optional(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
-    fn open_esp(&self) -> Result<openat::Dir> {
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let sysroot = openat::Dir::open("/")?;
-        let esp = sysroot.sub_dir(&self.esp_path()?)?;
-        Ok(esp)
-    }
-
-    fn get_esp_device(&self) -> Option<PathBuf> {
-        let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
-            .into_iter()
-            .map(|p| Path::new("/dev/disk/by-partlabel/").join(p));
-        let mut esp_device = None;
-        for path in esp_devices {
-            if path.exists() {
-                esp_device = Some(path);
+            let st = rustix::fs::statfs(&path)?;
+            if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                util::ensure_writable_mount(&path)?;
+                found_mount = Some(path);
                 break;
             }
         }
-        return esp_device;
+
+        // Only borrow mutably if we found a mount point
+        if let Some(mnt) = found_mount {
+            log::debug!("Reusing existing mount point {mnt:?}");
+            *self.mountpoint.borrow_mut() = Some(mnt.clone());
+            Ok(Some(mnt))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub(crate) fn ensure_mounted_esp(&self, root: &Path) -> Result<PathBuf> {
-        let mut mountpoint = self.mountpoint.borrow_mut();
-        if let Some(mountpoint) = mountpoint.as_deref() {
-            return Ok(mountpoint.to_owned());
-        }
-        for &mnt in ESP_MOUNTS {
-            let mnt = root.join(mnt);
-            if !mnt.exists() {
-                continue;
-            }
-            let st =
-                rustix::fs::statfs(&mnt).with_context(|| format!("statfs failed for {mnt:?}"))?;
-            if st.f_type != libc::MSDOS_SUPER_MAGIC {
-                continue;
-            }
-            util::ensure_writable_mount(&mnt)?;
-            log::debug!("Reusing existing {mnt:?}");
-            return Ok(mnt);
-        }
+    // Mount the passed esp_device, return mount point
+    pub(crate) fn mount_esp_device(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
+        let mut mountpoint = None;
 
-        let esp_device = self
-            .get_esp_device()
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
         for &mnt in ESP_MOUNTS.iter() {
             let mnt = root.join(mnt);
             if !mnt.exists() {
@@ -131,10 +100,25 @@ impl Efi {
                 .run()
                 .with_context(|| format!("Failed to mount {:?}", esp_device))?;
             log::debug!("Mounted at {mnt:?}");
-            *mountpoint = Some(mnt);
+            mountpoint = Some(mnt);
             break;
         }
-        Ok(mountpoint.as_deref().unwrap().to_owned())
+        let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
+        *self.mountpoint.borrow_mut() = Some(mnt.clone());
+        Ok(mnt)
+    }
+
+    // Firstly check if esp is already mounted, then mount the passed esp device
+    pub(crate) fn ensure_mounted_esp(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
+        if let Some(mountpoint) = self.mountpoint.borrow().as_deref() {
+            return Ok(mountpoint.to_owned());
+        }
+        let destdir = if let Some(destdir) = self.get_mounted_esp(Path::new(root))? {
+            destdir
+        } else {
+            self.mount_esp_device(root, esp_device)?
+        };
+        Ok(destdir)
     }
 
     fn unmount(&self) -> Result<()> {
@@ -247,9 +231,8 @@ impl Component for Efi {
         "EFI"
     }
 
-    fn query_adopt(&self) -> Result<Option<Adoptable>> {
-        let esp = self.open_esp_optional()?;
-        if esp.is_none() {
+    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+        if devices.is_none() {
             log::trace!("No ESP detected");
             return Ok(None);
         };
@@ -265,23 +248,40 @@ impl Component for Efi {
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
-        sysroot: &openat::Dir,
+        rootcxt: &RootContext,
         updatemeta: &ContentMetadata,
     ) -> Result<InstalledContent> {
-        let Some(meta) = self.query_adopt()? else {
+        let esp_devices = blockdev::find_colocated_esps(&rootcxt.devices)?;
+        let Some(meta) = self.query_adopt(&esp_devices)? else {
             anyhow::bail!("Failed to find adoptable system")
         };
 
-        let esp = self.open_esp()?;
-        validate_esp(&esp)?;
-        let updated = sysroot
+        let esp_devices = esp_devices.unwrap_or_default();
+        let mut devices = esp_devices.iter();
+        let Some(esp) = devices.next() else {
+            anyhow::bail!("Failed to find esp device");
+        };
+
+        if let Some(next_esp) = devices.next() {
+            anyhow::bail!(
+                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+            );
+        }
+        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+
+        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
+        validate_esp(&destdir)?;
+        let updated = rootcxt
+            .sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         // For adoption, we should only touch files that we know about.
-        let diff = updatef.relative_diff_to(&esp)?;
+        let diff = updatef.relative_diff_to(&destdir)?;
         log::trace!("applying adoption diff: {}", &diff);
-        filetree::apply_diff(&updated, &esp, &diff, None).context("applying filesystem changes")?;
+        filetree::apply_diff(&updated, &destdir, &diff, None)
+            .context("applying filesystem changes")?;
         Ok(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
@@ -289,7 +289,6 @@ impl Component for Efi {
         })
     }
 
-    // TODO: Remove dest_root; it was never actually used
     fn install(
         &self,
         src_root: &openat::Dir,
@@ -303,10 +302,16 @@ impl Component for Efi {
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-        let destdir = &self.ensure_mounted_esp(Path::new(dest_root))?;
 
-        let destd = &openat::Dir::open(destdir)
-            .with_context(|| format!("opening dest dir {}", destdir.display()))?;
+        // Using `blockdev` to find the partition instead of partlabel because
+        // we know the target install toplevel device already.
+        let esp_device = blockdev::get_esp_partition(device)?
+            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+
+        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), Path::new(&esp_device))?;
+
+        let destd = &openat::Dir::open(destpath)
+            .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp(destd)?;
 
         // TODO - add some sort of API that allows directly setting the working
@@ -314,7 +319,7 @@ impl Component for Efi {
         std::process::Command::new("cp")
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
-            .arg(destdir)
+            .arg(destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
         if update_firmware {
@@ -331,22 +336,38 @@ impl Component for Efi {
 
     fn run_update(
         &self,
-        sysroot: &RootContext,
+        rootcxt: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent> {
         let currentf = current
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        let sysroot = &sysroot.sysroot;
-        let updatemeta = self.query_update(sysroot)?.expect("update available");
-        let updated = sysroot
+        let sysroot_dir = &rootcxt.sysroot;
+        let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
+        let updated = sysroot_dir
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let destdir = self.open_esp().context("opening EFI dir")?;
+
+        let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
+            anyhow::bail!("Failed to find all esp devices");
+        };
+        let mut devices = esp_devices.iter();
+        let Some(esp) = devices.next() else {
+            anyhow::bail!("Failed to find esp device");
+        };
+
+        if let Some(next_esp) = devices.next() {
+            anyhow::bail!(
+                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+            );
+        }
+        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+
+        let destdir = &openat::Dir::open(&destpath.join("EFI"))
+            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
         validate_esp(&destdir)?;
         log::trace!("applying diff: {}", &diff);
         filetree::apply_diff(&updated, &destdir, &diff, None)
@@ -399,15 +420,32 @@ impl Component for Efi {
     }
 
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        if !is_efi_booted()? && self.get_esp_device().is_none() {
+        let devices = crate::blockdev::get_devices("/").context("get parent devices")?;
+        let esp_devices = blockdev::find_colocated_esps(&devices)?;
+        if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
         }
         let currentf = current
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
-        self.ensure_mounted_esp(Path::new("/"))?;
-        let efidir = self.open_esp()?;
+
+        let esp_devices = esp_devices.unwrap_or_default();
+        let mut devices = esp_devices.iter();
+        let Some(esp) = devices.next() else {
+            anyhow::bail!("Failed to find esp device");
+        };
+
+        if let Some(next_esp) = devices.next() {
+            anyhow::bail!(
+                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+            );
+        }
+        let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
+
+        let efidir = &openat::Dir::open(&destpath.join("EFI"))
+            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
+
         let diff = currentf.relative_diff_to(&efidir)?;
         let mut errs = Vec::new();
         for f in diff.changes.iter() {

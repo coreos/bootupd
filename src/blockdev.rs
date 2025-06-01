@@ -23,6 +23,7 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 }
 
 // Get single device for the target root
+#[allow(dead_code)]
 pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
     let mut devices = get_devices(&target_root)?.into_iter();
     let Some(parent) = devices.next() else {
@@ -37,7 +38,6 @@ pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
 
 /// Find esp partition on the same device
 /// using sfdisk to get partitiontable
-#[allow(dead_code)]
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
     const ESP_TYPE_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
     let device_info: PartitionTable = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
@@ -51,21 +51,20 @@ pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Find all ESP partitions on the devices with mountpoint boot
-#[allow(dead_code)]
-pub fn find_colocated_esps<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
-    // first, get the parent device
-    let devices = get_devices(&target_root).with_context(|| "while looking for colocated ESPs")?;
-
-    // now, look for all ESPs on those devices
+/// Find all ESP partitions on the devices
+pub fn find_colocated_esps(devices: &Vec<String>) -> Result<Option<Vec<String>>> {
+    // look for all ESPs on those devices
     let mut esps = Vec::new();
     for device in devices {
         if let Some(esp) = get_esp_partition(&device)? {
             esps.push(esp)
         }
     }
-    log::debug!("Find esp partitions: {esps:?}");
-    Ok(esps)
+    if esps.is_empty() {
+        return Ok(None);
+    }
+    log::debug!("Found esp partitions: {esps:?}");
+    Ok(Some(esps))
 }
 
 /// Find bios_boot partition on the same device
@@ -82,20 +81,18 @@ pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Find all bios_boot partitions on the devices with mountpoint boot
-#[allow(dead_code)]
-pub fn find_colocated_bios_boot<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
-    // first, get the parent device
-    let devices =
-        get_devices(&target_root).with_context(|| "looking for colocated bios_boot parts")?;
-
-    // now, look for all bios_boot parts on those devices
+/// Find all bios_boot partitions on the devices
+pub fn find_colocated_bios_boot(devices: &Vec<String>) -> Result<Option<Vec<String>>> {
+    // look for all bios_boot parts on those devices
     let mut bios_boots = Vec::new();
     for device in devices {
         if let Some(bios) = get_bios_boot_partition(&device)? {
             bios_boots.push(bios)
         }
     }
-    log::debug!("Find bios_boot partitions: {bios_boots:?}");
-    Ok(bios_boots)
+    if bios_boots.is_empty() {
+        return Ok(None);
+    }
+    log::debug!("Found bios_boot partitions: {bios_boots:?}");
+    Ok(Some(bios_boots))
 }
