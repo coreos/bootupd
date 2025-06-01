@@ -271,7 +271,7 @@ impl Component for Efi {
 
         let destdir = &openat::Dir::open(&destpath.join("EFI"))
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-        validate_esp(&destdir)?;
+        validate_esp_fstype(&destdir)?;
         let updated = rootcxt
             .sysroot
             .sub_dir(&component_updatedirname(self))
@@ -312,7 +312,7 @@ impl Component for Efi {
 
         let destd = &openat::Dir::open(destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
-        validate_esp(destd)?;
+        validate_esp_fstype(destd)?;
 
         // TODO - add some sort of API that allows directly setting the working
         // directory to a file descriptor.
@@ -368,7 +368,7 @@ impl Component for Efi {
 
         let destdir = &openat::Dir::open(&destpath.join("EFI"))
             .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-        validate_esp(&destdir)?;
+        validate_esp_fstype(&destdir)?;
         log::trace!("applying diff: {}", &diff);
         filetree::apply_diff(&updated, &destdir, &diff, None)
             .context("applying filesystem changes")?;
@@ -492,7 +492,7 @@ impl Drop for Efi {
     }
 }
 
-fn validate_esp(dir: &openat::Dir) -> Result<()> {
+fn validate_esp_fstype(dir: &openat::Dir) -> Result<()> {
     let dir = unsafe { BorrowedFd::borrow_raw(dir.as_raw_fd()) };
     let stat = rustix::fs::fstatfs(&dir)?;
     if stat.f_type != libc::MSDOS_SUPER_MAGIC {
