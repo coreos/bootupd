@@ -161,10 +161,10 @@ impl Component for Bios {
         &self,
         rootcxt: &RootContext,
         update: &ContentMetadata,
-    ) -> Result<InstalledContent> {
+    ) -> Result<Option<InstalledContent>> {
         let bios_devices = blockdev::find_colocated_bios_boot(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
-            anyhow::bail!("Failed to find adoptable system")
+            return Ok(None);
         };
 
         let mut parent_devices = rootcxt.devices.iter();
@@ -179,11 +179,11 @@ impl Component for Bios {
         }
         self.run_grub_install(rootcxt.path.as_str(), &parent)?;
         log::debug!("Installed grub modules on {parent}");
-        Ok(InstalledContent {
+        Ok(Some(InstalledContent {
             meta: update.clone(),
             filetree: None,
             adopted_from: Some(meta.version),
-        })
+        }))
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {

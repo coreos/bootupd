@@ -36,7 +36,7 @@ pub(crate) trait Component {
         &self,
         rootcxt: &RootContext,
         update: &ContentMetadata,
-    ) -> Result<InstalledContent>;
+    ) -> Result<Option<InstalledContent>>;
 
     /// Implementation of `bootupd install` for a given component.  This should
     /// gather data (or run binaries) from the source root, and install them

@@ -258,7 +258,10 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
 }
 
 /// daemon implementation of component adoption
-pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<ContentMetadata> {
+pub(crate) fn adopt_and_update(
+    name: &str,
+    rootcxt: &RootContext,
+) -> Result<Option<ContentMetadata>> {
     let sysroot = &rootcxt.sysroot;
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
@@ -278,10 +281,15 @@ pub(crate) fn adopt_and_update(name: &str, rootcxt: &RootContext) -> Result<Cont
     let inst = component
         .adopt_update(&rootcxt, &update)
         .context("Failed adopt and update")?;
-    state.installed.insert(component.name().into(), inst);
-
-    state_guard.update_state(&state)?;
-    Ok(update)
+    if let Some(inst) = inst {
+        state.installed.insert(component.name().into(), inst);
+        state_guard.update_state(&state)?;
+        return Ok(Some(update));
+    } else {
+        // Nothing adopted, skip
+        log::info!("Component '{}' skipped adoption", component.name());
+        return Ok(None);
+    }
 }
 
 /// daemon implementation of component validate
@@ -492,9 +500,10 @@ pub(crate) fn client_run_update() -> Result<()> {
     }
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
-            let r: ContentMetadata = adopt_and_update(name, &rootcxt)?;
-            println!("Adopted and updated: {}: {}", name, r.version);
-            updated = true;
+            if let Some(r) = adopt_and_update(name, &rootcxt)? {
+                println!("Adopted and updated: {}: {}", name, r.version);
+                updated = true;
+            }
         } else {
             println!("Component {} requires explicit adopt-and-update", name);
         }
@@ -512,8 +521,9 @@ pub(crate) fn client_run_adopt_and_update() -> Result<()> {
         println!("No components are adoptable.");
     } else {
         for (name, _) in status.adoptable.iter() {
-            let r: ContentMetadata = adopt_and_update(name, &rootcxt)?;
-            println!("Adopted and updated: {}: {}", name, r.version);
+            if let Some(r) = adopt_and_update(name, &rootcxt)? {
+                println!("Adopted and updated: {}: {}", name, r.version);
+            }
         }
     }
     Ok(())

@@ -250,10 +250,10 @@ impl Component for Efi {
         &self,
         rootcxt: &RootContext,
         updatemeta: &ContentMetadata,
-    ) -> Result<InstalledContent> {
+    ) -> Result<Option<InstalledContent>> {
         let esp_devices = blockdev::find_colocated_esps(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&esp_devices)? else {
-            anyhow::bail!("Failed to find adoptable system")
+            return Ok(None);
         };
 
         let esp_devices = esp_devices.unwrap_or_default();
@@ -282,11 +282,11 @@ impl Component for Efi {
         log::trace!("applying adoption diff: {}", &diff);
         filetree::apply_diff(&updated, &destdir, &diff, None)
             .context("applying filesystem changes")?;
-        Ok(InstalledContent {
+        Ok(Some(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
             adopted_from: Some(meta.version),
-        })
+        }))
     }
 
     fn install(
