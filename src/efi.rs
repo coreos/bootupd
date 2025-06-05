@@ -30,6 +30,9 @@ use crate::{component::*, packagesystem};
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
 
+/// New efi lib dir
+const EFILIB: &str = "usr/lib/efi";
+
 /// The binary to change EFI boot ordering
 const EFIBOOTMGR: &str = "efibootmgr";
 #[cfg(target_arch = "aarch64")]
@@ -385,7 +388,7 @@ impl Component for Efi {
         let dest_efidir = component_updatedir(sysroot_path, self);
 
         // New EFI dir /usr/lib/efi
-        let efi_lib = Path::new(sysroot_path).join("usr/lib/efi");
+        let efi_lib = Path::new(sysroot_path).join(EFILIB);
         // Legacy ostree-boot dir
         let ostreebootdir = Path::new(sysroot_path).join(ostreeutil::BOOT_PREFIX);
 
