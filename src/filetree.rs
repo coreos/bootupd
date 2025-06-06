@@ -28,6 +28,11 @@ use openat_ext::OpenatDirExt;
     target_arch = "riscv64"
 ))]
 use openssl::hash::{Hasher, MessageDigest};
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use rustix::fd::BorrowedFd;
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
@@ -39,8 +44,6 @@ use std::fmt::Display;
     target_arch = "riscv64"
 ))]
 use std::os::unix::io::AsRawFd;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 
 /// The prefix we apply to our temporary files.
 #[cfg(any(
@@ -355,6 +358,8 @@ pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
 ))]
 fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     use bootc_utils::CommandRunExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
 
     let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
     unsafe {

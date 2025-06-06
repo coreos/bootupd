@@ -1,0 +1,21 @@
+[Unit]
+Description=Static GRUB config migration for 4.1/4.2 born RHCOS nodes
+# XXX: sanity-check that this goes away when we switched to sysroot.bootloader=none
+ConditionPathExists=!/boot/grub2/.grub2-static-migrated
+RequiresMountsFor=/sysroot /boot
+
+[Service]
+Type=oneshot
+ExecCondition=/bin/sh -c '[ "$(ostree config --repo=/sysroot/ostree/repo get sysroot.bootloader 2>/dev/null || echo none)" != "none" ]'
+ExecStart=bootupctl adopt-and-update
+ExecStart=/usr/bin/bootupctl migrate-static-grub-config --from-tree
+RemainAfterExit=yes
+# MountFlags=slave is so the read write remount of /boot will only be visible to this unit
+# Keep this stuff in sync with SYSTEMD_ARGS_BOOTUPD in general
+PrivateNetwork=yes
+ProtectHome=yes
+KillMode=mixed
+MountFlags=slave
+
+[Install]
+WantedBy=multi-user.target

@@ -37,6 +37,7 @@ install-grub-static:
 .PHONY: install-systemd-unit
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-update.service
+	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-migrate.service
 
 .PHONY: install-all
 install-all: install install-grub-static install-systemd-unit
