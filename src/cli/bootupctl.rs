@@ -64,7 +64,7 @@ pub enum CtlVerb {
         hide = true,
         about = "Migrate a system to a static GRUB config"
     )]
-    MigrateStaticGrubConfig,
+    MigrateStaticGrubConfig(MigrateOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -88,6 +88,13 @@ pub struct StatusOpts {
     json: bool,
 }
 
+#[derive(Debug, Parser)]
+pub struct MigrateOpts {
+    /// Install the canonical static GRUB config files
+    #[clap(long, action)]
+    from_tree: bool,
+}
+
 impl CtlCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
@@ -102,7 +109,7 @@ impl CtlCommand {
             CtlVerb::Backend(CtlBackend::Install(opts)) => {
                 super::bootupd::DCommand::run_install(opts)
             }
-            CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
+            CtlVerb::MigrateStaticGrubConfig(opts) => Self::run_migrate_static_grub_config(opts),
         }
     }
 
@@ -145,9 +152,9 @@ impl CtlCommand {
     }
 
     /// Runner for `migrate-static-grub-config` verb.
-    fn run_migrate_static_grub_config() -> Result<()> {
+    fn run_migrate_static_grub_config(opts: MigrateOpts) -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_migrate_static_grub_config()
+        bootupd::client_run_migrate_static_grub_config(opts.from_tree)
     }
 }
 

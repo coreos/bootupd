@@ -108,13 +108,8 @@ pub(crate) fn install(
 
     match configs.enabled_with_uuid() {
         Some(uuid) => {
-            let self_bin_meta =
-                std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
-            let self_meta = ContentMetadata {
-                timestamp: self_bin_meta.modified()?.into(),
-                version: crate_version!().into(),
-            };
-            state.static_configs = Some(self_meta);
+            let meta = get_static_config_meta()?;
+            state.static_configs = Some(meta);
             #[cfg(any(
                 target_arch = "x86_64",
                 target_arch = "aarch64",
@@ -137,6 +132,16 @@ pub(crate) fn install(
         .context("failed to update state")?;
 
     Ok(())
+}
+
+#[context("Get static config metadata")]
+fn get_static_config_meta() -> Result<ContentMetadata> {
+    let self_bin_meta = std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
+    let self_meta = ContentMetadata {
+        timestamp: self_bin_meta.modified()?.into(),
+        version: crate_version!().into(),
+    };
+    Ok(self_meta)
 }
 
 type Components = BTreeMap<&'static str, Box<dyn Component>>;
@@ -559,7 +564,11 @@ pub(crate) fn client_run_validate() -> Result<()> {
 }
 
 #[context("Migrating to a static GRUB config")]
-pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
+pub(crate) fn client_run_migrate_static_grub_config(from_tree: bool) -> Result<()> {
+    if cfg!(target_arch = "s390x") {
+        println!("Not supported migration");
+        return Ok(());
+    }
     // Did we already complete the migration?
     let mut cmd = std::process::Command::new("ostree");
     let result = cmd
@@ -594,95 +603,103 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     let grub_config_dir = PathBuf::from("/boot/grub2");
     let dirfd = openat::Dir::open(&grub_config_dir).context("Opening /boot/grub2")?;
 
-    // We mark the bootloader as BLS capable to disable the ostree-grub2 logic.
-    // We can do that as we know that we are run after the bootloader has been
-    // updated and all recent GRUB2 versions support reading BLS configs.
-    // Ignore errors as this is not critical. This is a safety net if a user
-    // manually overwrites the (soon) static GRUB config by calling `grub2-mkconfig`.
-    // We need this until we can rely on ostree-grub2 being removed from the image.
-    println!("Marking bootloader as BLS capable...");
-    _ = File::create("/boot/grub2/.grub2-blscfg-supported");
-
     // Migrate /boot/grub2/grub.cfg to a static GRUB config if it is a symlink
-    let grub_config_filename = PathBuf::from("/boot/grub2/grub.cfg");
-    match dirfd.read_link("grub.cfg") {
-        Err(_) => {
-            println!(
-                "'{}' is not a symlink, nothing to migrate",
-                grub_config_filename.display()
-            );
-        }
-        Ok(path) => {
-            println!("Migrating to a static GRUB config...");
+    let grub_config_filename = grub_config_dir.join("grub.cfg");
+    let sysroot = openat::Dir::open("/").context("Opening sysroot '/'")?;
 
-            // Resolve symlink location
-            let mut current_config = grub_config_dir.clone();
-            current_config.push(path);
+    // Install the canonical static GRUB config files
+    if from_tree {
+        install_static_grub_cofig(&sysroot, &grub_config_dir)?;
+    } else {
+        // We mark the bootloader as BLS capable to disable the ostree-grub2 logic.
+        // We can do that as we know that we are run after the bootloader has been
+        // updated and all recent GRUB2 versions support reading BLS configs.
+        // Ignore errors as this is not critical. This is a safety net if a user
+        // manually overwrites the (soon) static GRUB config by calling `grub2-mkconfig`.
+        // We need this until we can rely on ostree-grub2 being removed from the image.
+        println!("Marking bootloader as BLS capable...");
+        _ = File::create("/boot/grub2/.grub2-blscfg-supported");
 
-            // Backup the current GRUB config which is hopefully working right now
-            let backup_config = PathBuf::from("/boot/grub2/grub.cfg.backup");
-            println!(
-                "Creating a backup of the current GRUB config '{}' in '{}'...",
-                current_config.display(),
-                backup_config.display()
-            );
-            fs::copy(&current_config, &backup_config).context("Failed to backup GRUB config")?;
-
-            // Read the current config, strip the ostree generated GRUB entries and
-            // write the result to a temporary file
-            println!("Stripping ostree generated entries from GRUB config...");
-            let current_config_file =
-                File::open(current_config).context("Could not open current GRUB config")?;
-            let stripped_config = String::from("grub.cfg.stripped");
-            // mode = -rw-r--r-- (644)
-            let mut writer = BufWriter::new(
-                dirfd
-                    .write_file(
-                        &stripped_config,
-                        (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
-                    )
-                    .context("Failed to open temporary GRUB config")?,
-            );
-            let mut skip = false;
-            for line in BufReader::new(current_config_file).lines() {
-                let line = line.context("Failed to read line from GRUB config")?;
-                if line == "### END /etc/grub.d/15_ostree ###" {
-                    skip = false;
-                }
-                if skip {
-                    continue;
-                }
-                if line == "### BEGIN /etc/grub.d/15_ostree ###" {
-                    skip = true;
-                }
-                writer
-                    .write_all(&line.as_bytes())
-                    .context("Failed to write stripped GRUB config")?;
-                writer
-                    .write_all(b"\n")
-                    .context("Failed to write stripped GRUB config")?;
+        match dirfd.read_link("grub.cfg") {
+            Err(_) => {
+                println!(
+                    "'{}' is not a symlink, nothing to migrate",
+                    grub_config_filename.display()
+                );
             }
-            writer
-                .flush()
-                .context("Failed to write stripped GRUB config")?;
+            Ok(path) => {
+                println!("Migrating to a static GRUB config...");
 
-            // Sync changes to the filesystem (ignore failures)
-            let _ = dirfd.syncfs();
+                // Resolve symlink location
+                let mut current_config = grub_config_dir.clone();
+                current_config.push(path);
 
-            // Atomically exchange the configs
-            dirfd
-                .local_exchange(&stripped_config, "grub.cfg")
-                .context("Failed to exchange symlink with current GRUB config")?;
+                // Backup the current GRUB config which is hopefully working right now
+                let backup_config = PathBuf::from("/boot/grub2/grub.cfg.backup");
+                println!(
+                    "Creating a backup of the current GRUB config '{}' in '{}'...",
+                    current_config.display(),
+                    backup_config.display()
+                );
+                fs::copy(&current_config, &backup_config)
+                    .context("Failed to backup GRUB config")?;
 
-            // Sync changes to the filesystem (ignore failures)
-            let _ = dirfd.syncfs();
+                // Read the current config, strip the ostree generated GRUB entries and
+                // write the result to a temporary file
+                println!("Stripping ostree generated entries from GRUB config...");
+                let current_config_file =
+                    File::open(current_config).context("Could not open current GRUB config")?;
+                let stripped_config = String::from("grub.cfg.stripped");
+                // mode = -rw-r--r-- (644)
+                let mut writer = BufWriter::new(
+                    dirfd
+                        .write_file(
+                            &stripped_config,
+                            (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
+                        )
+                        .context("Failed to open temporary GRUB config")?,
+                );
+                let mut skip = false;
+                for line in BufReader::new(current_config_file).lines() {
+                    let line = line.context("Failed to read line from GRUB config")?;
+                    if line == "### END /etc/grub.d/15_ostree ###" {
+                        skip = false;
+                    }
+                    if skip {
+                        continue;
+                    }
+                    if line == "### BEGIN /etc/grub.d/15_ostree ###" {
+                        skip = true;
+                    }
+                    writer
+                        .write_all(&line.as_bytes())
+                        .context("Failed to write stripped GRUB config")?;
+                    writer
+                        .write_all(b"\n")
+                        .context("Failed to write stripped GRUB config")?;
+                }
+                writer
+                    .flush()
+                    .context("Failed to write stripped GRUB config")?;
 
-            println!("GRUB config symlink successfully replaced with the current config");
+                // Sync changes to the filesystem (ignore failures)
+                let _ = dirfd.syncfs();
 
-            // Remove the now unused symlink (optional cleanup, ignore any failures)
-            _ = dirfd.remove_file(&stripped_config);
-        }
-    };
+                // Atomically exchange the configs
+                dirfd
+                    .local_exchange(&stripped_config, "grub.cfg")
+                    .context("Failed to exchange symlink with current GRUB config")?;
+
+                // Sync changes to the filesystem (ignore failures)
+                let _ = dirfd.syncfs();
+
+                println!("GRUB config symlink successfully replaced with the current config");
+
+                // Remove the now unused symlink (optional cleanup, ignore any failures)
+                _ = dirfd.remove_file(&stripped_config);
+            }
+        };
+    }
 
     println!("Setting 'sysroot.bootloader' to 'none' in ostree repo config...");
     let status = std::process::Command::new("ostree")
@@ -699,6 +716,157 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     }
 
     println!("Static GRUB config migration completed successfully");
+    Ok(())
+}
+
+fn install_static_grub_cofig(sysroot: &openat::Dir, grub_config_dir: &PathBuf) -> Result<()> {
+    let root_path = "/";
+    let state = SavedState::load_from_disk(root_path)?;
+
+    if let Some(mut state) = state {
+        if let Some(static_config) = state.static_configs {
+            println!("Already has existing static-configs '{:?}'", static_config);
+            return Ok(());
+        }
+
+        let mut installed_efi_vendor = None;
+
+        let all_components = get_components_impl(false);
+        if all_components.is_empty() {
+            println!("No components available for this platform.");
+            return Ok(());
+        }
+
+        // Map the installed component to known components
+        let installed_components = state
+            .installed
+            .keys()
+            .map(|name| {
+                all_components
+                    .get(name.as_str())
+                    .ok_or_else(|| anyhow!("Unknown component: {}", name))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        for component in installed_components.iter() {
+            if let Some(vendor) = component.get_efi_vendor(&sysroot)? {
+                assert!(installed_efi_vendor.is_none());
+                installed_efi_vendor = Some(vendor);
+            }
+        }
+
+        // Backup the current grub.cfg
+        let dirfd = sysroot
+            .sub_dir("boot/grub2")
+            .context("Opening /boot/grub2")?;
+
+        const GRUBCONFIG: &str = "grub.cfg";
+        const BACKUP: &str = "grub.cfg.backup";
+        let grubconfig = grub_config_dir.join(GRUBCONFIG);
+
+        let mut state_guard = SavedState::acquire_write_lock(sysroot.try_clone()?)
+            .context("Failed to acquire write lock")?;
+
+        #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
+        {
+            // On BIOS, /boot/grub2/grub.cfg is symlink to /boot/loader/grub.cfg,
+            // should backup it to /boot/grub2/grub.cfg.bak
+            if !grubconfig.exists() {
+                // None existing, maybe UEFI?
+                println!("Not found '{}'", grubconfig.display());
+                if cfg!(target_arch = "powerpc64") {
+                    anyhow::bail!("Not found '{}'", grubconfig.display());
+                }
+            } else if grubconfig.is_symlink() {
+                let realconfig = dirfd.read_link(GRUBCONFIG)?;
+                // Resolve symlink location
+                let mut current_config = grub_config_dir.clone();
+                current_config.push(realconfig);
+                let backup_config = grub_config_dir.join(BACKUP);
+
+                // Backup the current GRUB config which is hopefully working right now
+                println!(
+                    "Creating a backup of the current GRUB config '{}' in '{}'...",
+                    current_config.display(),
+                    backup_config.display()
+                );
+                fs::copy(&current_config, &backup_config)
+                    .context("Failed to backup GRUB config")?;
+                // Remove the symlink (on BIOS)
+                dirfd.remove_file_optional(GRUBCONFIG)?;
+                crate::grubconfigs::install(&sysroot, None, false)?;
+                let _ = dirfd.syncfs();
+            } else {
+                println!(
+                    "'{}' is not a symlink, nothing to migrate",
+                    grubconfig.display()
+                );
+                return Ok(());
+            }
+        }
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        ))]
+        if efi::is_efi_booted()? {
+            // On EFI, the current config is /boot/efi/EFI/vendor/grub.cfg
+            let Some(vendor) = installed_efi_vendor.clone() else {
+                anyhow::bail!("Failed to find efi vendor");
+            };
+            let esp = {
+                let devices =
+                    crate::blockdev::get_devices(root_path).context("get parent devices")?;
+                let Some(esp_devices) = crate::blockdev::find_colocated_esps(&devices)? else {
+                    anyhow::bail!("Failed to find all esp devices");
+                };
+                let mut devices = esp_devices.into_iter();
+                let Some(esp) = devices.next() else {
+                    anyhow::bail!("Failed to find esp device");
+                };
+
+                if let Some(next_esp) = devices.next() {
+                    anyhow::bail!(
+                        "Found multiple esp devices {esp} and {next_esp}; not currently supported"
+                    );
+                }
+                esp
+            };
+
+            let efi = crate::efi::Efi::default();
+            let mount_point = efi.ensure_mounted_esp(Path::new(root_path), Path::new(&esp))?;
+            let efi_path = mount_point.join(format!("EFI/{vendor}"));
+            let efidir = openat::Dir::open(&efi_path)
+                .with_context(|| format!("Opening {}", efi_path.display()))?;
+            efidir
+                .copy_file(GRUBCONFIG, BACKUP)
+                .context("Backup grub.cfg")?;
+            println!("Backup grub.cfg on EFI");
+            crate::grubconfigs::install(&sysroot, Some(&vendor), false)?;
+        }
+
+        let meta = get_static_config_meta()?;
+        state.static_configs = Some(meta);
+
+        // Unmount the ESP, etc.
+        drop(installed_components);
+
+        state_guard
+            .update_state(&state)
+            .context("Failed to update state")?;
+
+        // Create the stamp file
+        dirfd
+            .write_file(".grub2-static-migrated", 0o644)
+            .context("Creating stamp file")?;
+
+        // Remove the unused file (on BIOS), already backuped
+        sysroot.remove_file_optional("boot/loader/grub.cfg")?;
+
+        let _ = dirfd.syncfs();
+    } else {
+        println!("No saved state");
+    }
     Ok(())
 }
 

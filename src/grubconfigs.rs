@@ -103,6 +103,8 @@ pub(crate) fn install(
                     .copy_file_at(uuid_path, &efidir, target)
                     .context("Writing bootuuid.cfg to efi dir")?;
             }
+        } else {
+            anyhow::bail!("Failed to find /boot/efi/EFI");
         }
     }
 
