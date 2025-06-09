@@ -109,6 +109,8 @@ pub(crate) fn install(
                 println!("Installed: {target:?}");
             }
             fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+        } else {
+            println!("Not found /boot/efi/EFI when installing {target:?}");
         }
     }
 
