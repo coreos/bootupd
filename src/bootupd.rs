@@ -10,7 +10,7 @@ use crate::coreos;
 ))]
 use crate::efi;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
-use crate::util;
+use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
@@ -561,23 +561,8 @@ pub(crate) fn client_run_validate() -> Result<()> {
 #[context("Migrating to a static GRUB config")]
 pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     // Did we already complete the migration?
-    let mut cmd = std::process::Command::new("ostree");
-    let result = cmd
-        .args([
-            "config",
-            "--repo=/sysroot/ostree/repo",
-            "get",
-            "sysroot.bootloader",
-        ])
-        .output()
-        .context("Querying ostree sysroot.bootloader")?;
-    if !result.status.success() {
-        // ostree will exit with a non zero return code if the key does not exists
-        println!("ostree repo 'sysroot.bootloader' config option is not set yet");
-    } else {
-        let res = String::from_utf8(result.stdout)
-            .with_context(|| "decoding as UTF-8 output of ostree command")?;
-        let bootloader = res.trim_end();
+    // We need to migrate if bootloader is not none (or not set)
+    if let Some(bootloader) = ostreeutil::get_ostree_bootloader()? {
         if bootloader == "none" {
             println!("Already using a static GRUB config");
             return Ok(());
@@ -586,6 +571,8 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
             "ostree repo 'sysroot.bootloader' config option is currently set to: '{}'",
             bootloader
         );
+    } else {
+        println!("ostree repo 'sysroot.bootloader' config option is not set yet");
     }
 
     // Remount /boot read write just for this unit (we are called in a slave mount namespace by systemd)
@@ -631,47 +618,19 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
             // Read the current config, strip the ostree generated GRUB entries and
             // write the result to a temporary file
             println!("Stripping ostree generated entries from GRUB config...");
+            let stripped_config = "grub.cfg.stripped";
             let current_config_file =
                 File::open(current_config).context("Could not open current GRUB config")?;
-            let stripped_config = String::from("grub.cfg.stripped");
-            // mode = -rw-r--r-- (644)
-            let mut writer = BufWriter::new(
-                dirfd
-                    .write_file(
-                        &stripped_config,
-                        (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
-                    )
-                    .context("Failed to open temporary GRUB config")?,
-            );
-            let mut skip = false;
-            for line in BufReader::new(current_config_file).lines() {
-                let line = line.context("Failed to read line from GRUB config")?;
-                if line == "### END /etc/grub.d/15_ostree ###" {
-                    skip = false;
-                }
-                if skip {
-                    continue;
-                }
-                if line == "### BEGIN /etc/grub.d/15_ostree ###" {
-                    skip = true;
-                }
-                writer
-                    .write_all(&line.as_bytes())
-                    .context("Failed to write stripped GRUB config")?;
-                writer
-                    .write_all(b"\n")
-                    .context("Failed to write stripped GRUB config")?;
-            }
-            writer
-                .flush()
-                .context("Failed to write stripped GRUB config")?;
+            let content = BufReader::new(current_config_file);
+
+            strip_grub_config_file(content, &dirfd, stripped_config)?;
 
             // Sync changes to the filesystem (ignore failures)
             let _ = dirfd.syncfs();
 
             // Atomically exchange the configs
             dirfd
-                .local_exchange(&stripped_config, "grub.cfg")
+                .local_exchange(stripped_config, "grub.cfg")
                 .context("Failed to exchange symlink with current GRUB config")?;
 
             // Sync changes to the filesystem (ignore failures)
@@ -680,25 +639,60 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
             println!("GRUB config symlink successfully replaced with the current config");
 
             // Remove the now unused symlink (optional cleanup, ignore any failures)
-            _ = dirfd.remove_file(&stripped_config);
+            _ = dirfd.remove_file(stripped_config);
         }
     };
 
     println!("Setting 'sysroot.bootloader' to 'none' in ostree repo config...");
-    let status = std::process::Command::new("ostree")
-        .args([
-            "config",
-            "--repo=/sysroot/ostree/repo",
-            "set",
-            "sysroot.bootloader",
-            "none",
-        ])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("Failed to set 'sysroot.bootloader' to 'none' in ostree repo config");
-    }
+    ostreeutil::set_ostree_bootloader("none")?;
 
     println!("Static GRUB config migration completed successfully");
+    Ok(())
+}
+
+/// Writes a stripped GRUB config to `stripped_config_name`, removing lines between
+/// `### BEGIN /etc/grub.d/15_ostree ###` and `### END /etc/grub.d/15_ostree ###`.
+fn strip_grub_config_file(
+    current_config_content: impl BufRead,
+    dirfd: &openat::Dir,
+    stripped_config_name: &str,
+) -> Result<()> {
+    // mode = -rw-r--r-- (644)
+    let mut writer = BufWriter::new(
+        dirfd
+            .write_file(
+                stripped_config_name,
+                (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
+            )
+            .context("Failed to open temporary GRUB config")?,
+    );
+
+    let mut skip = false;
+    for line in current_config_content.lines() {
+        let line = line.context("Failed to read line from GRUB config")?;
+        if line == "### END /etc/grub.d/15_ostree ###" {
+            skip = false;
+            continue;
+        }
+        if skip {
+            continue;
+        }
+        if line == "### BEGIN /etc/grub.d/15_ostree ###" {
+            skip = true;
+            continue;
+        }
+        writer
+            .write_all(line.as_bytes())
+            .context("Failed to write stripped GRUB config")?;
+        writer
+            .write_all(b"\n")
+            .context("Failed to write stripped GRUB config")?;
+    }
+
+    writer
+        .flush()
+        .context("Failed to write stripped GRUB config")?;
+
     Ok(())
 }
 
@@ -713,5 +707,55 @@ mod tests {
         let r = client_run_update();
         assert_eq!(r.is_err(), true);
         guard.teardown();
+    }
+
+    #[test]
+    fn test_strip_grub_config_file() -> Result<()> {
+        let root: &tempfile::TempDir = &tempfile::tempdir()?;
+        let root_path = root.path();
+        let rootd = openat::Dir::open(root_path)?;
+        let stripped_config = root_path.join("stripped");
+        let content = r"
+### BEGIN /etc/grub.d/10_linux ###
+
+### END /etc/grub.d/10_linux ###
+
+### BEGIN /etc/grub.d/15_ostree ###
+menuentry 'Red Hat Enterprise Linux CoreOS 4 (ostree)' --class gnu-linux --class gnu --class os --unrestricted 'ostree-0-a92522f9-74dc-456a-ae0c-05ba22bca976' {
+load_video
+set gfxpayload=keep
+insmod gzio
+insmod part_gpt
+insmod ext2
+if [ x$feature_platform_search_hint = xy ]; then
+  search --no-floppy --fs-uuid --set=root  a92522f9-74dc-456a-ae0c-05ba22bca976
+else
+  search --no-floppy --fs-uuid --set=root a92522f9-74dc-456a-ae0c-05ba22bca976
+fi
+linuxefi /ostree/rhcos-bf3b382/vmlinuz console=tty0 console=ttyS0,115200n8 rootflags=defaults,prjquota rw $ignition_firstboot root=UUID=cbac8cdc
+initrdefi /ostree/rhcos-bf3b382/initramfs.img
+}
+### END /etc/grub.d/15_ostree ###
+
+### BEGIN /etc/grub.d/20_linux_xen ###
+### END /etc/grub.d/20_linux_xen ###";
+
+        strip_grub_config_file(
+            BufReader::new(std::io::Cursor::new(content)),
+            &rootd,
+            stripped_config.to_str().unwrap(),
+        )?;
+        let stripped_content = fs::read_to_string(stripped_config)?;
+        let expected = r"
+### BEGIN /etc/grub.d/10_linux ###
+
+### END /etc/grub.d/10_linux ###
+
+
+### BEGIN /etc/grub.d/20_linux_xen ###
+### END /etc/grub.d/20_linux_xen ###
+";
+        assert_eq!(expected, stripped_content);
+        Ok(())
     }
 }
