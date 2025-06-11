@@ -7,6 +7,8 @@ use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 
+use crate::freezethaw::fsfreeze_thaw_cycle;
+
 /// The subdirectory of /boot we use
 const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
@@ -85,6 +87,8 @@ pub(crate) fn install(
         None
     };
 
+    fsfreeze_thaw_cycle(grub2dir.open_file(".")?)?;
+
     if let Some(vendordir) = installed_efi_vendor {
         log::debug!("vendordir={:?}", &vendordir);
         let vendor = PathBuf::from(vendordir);
@@ -104,6 +108,7 @@ pub(crate) fn install(
                     .context("Writing bootuuid.cfg to efi dir")?;
                 println!("Installed: {target:?}");
             }
+            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
         }
     }
 
