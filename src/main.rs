@@ -33,6 +33,7 @@ mod efi;
 mod failpoints;
 mod filesystem;
 mod filetree;
+mod freezethaw;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
