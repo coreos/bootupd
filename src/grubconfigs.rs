@@ -60,8 +60,9 @@ pub(crate) fn install(
         println!("Added {name}");
     }
 
-    bootdir
-        .write_file_contents(format!("{GRUB2DIR}/grub.cfg"), 0o644, config.as_bytes())
+    let grub2dir = bootdir.sub_dir(GRUB2DIR)?;
+    grub2dir
+        .write_file_contents("grub.cfg", 0o644, config.as_bytes())
         .context("Copying grub-static.cfg")?;
     println!("Installed: grub.cfg");
 
@@ -74,10 +75,11 @@ pub(crate) fn install(
             .uuid
             .ok_or_else(|| anyhow::anyhow!("Failed to find UUID for boot"))?;
         let grub2_uuid_contents = format!("set BOOT_UUID=\"{bootfs_uuid}\"\n");
-        let uuid_path = format!("{GRUB2DIR}/bootuuid.cfg");
-        bootdir
-            .write_file_contents(&uuid_path, 0o644, grub2_uuid_contents)
+        let uuid_path = "bootuuid.cfg";
+        grub2dir
+            .write_file_contents(uuid_path, 0o644, grub2_uuid_contents)
             .context("Writing bootuuid.cfg")?;
+        println!("Installed: bootuuid.cfg");
         Some(uuid_path)
     } else {
         None
@@ -96,12 +98,11 @@ pub(crate) fn install(
                 .context("Copying static EFI")?;
             println!("Installed: {target:?}");
             if let Some(uuid_path) = uuid_path {
-                // SAFETY: we always have a filename
-                let filename = Path::new(&uuid_path).file_name().unwrap();
-                let target = &vendor.join(filename);
-                bootdir
+                let target = &vendor.join(uuid_path);
+                grub2dir
                     .copy_file_at(uuid_path, &efidir, target)
                     .context("Writing bootuuid.cfg to efi dir")?;
+                println!("Installed: {target:?}");
             }
         }
     }
