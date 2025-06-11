@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+use crate::freezethaw::fsfreeze_thaw_cycle;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -330,23 +331,6 @@ pub(crate) struct ApplyUpdateOptions {
     pub(crate) skip_sync: bool,
 }
 
-// syncfs() is a Linux-specific system call, which doesn't seem
-// to be bound in nix today.  I found https://github.com/XuShaohua/nc
-// but that's a nontrivial dependency with not a lot of code review.
-// Let's just fork off a helper process for now.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
-pub(crate) fn syncfs(d: &openat::Dir) -> Result<()> {
-    use rustix::fs::{Mode, OFlags};
-    let d = unsafe { BorrowedFd::borrow_raw(d.as_raw_fd()) };
-    let oflags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY;
-    let d = rustix::fs::openat(d, ".", oflags, Mode::empty())?;
-    rustix::fs::syncfs(d).map_err(Into::into)
-}
-
 /// Copy from src to dst at root dir
 #[cfg(any(
     target_arch = "x86_64",
@@ -475,7 +459,7 @@ pub(crate) fn apply_diff(
     }
     // Ensure all of the updates & changes are written persistently to disk
     if !opts.skip_sync {
-        syncfs(destdir)?;
+        destdir.syncfs()?;
     }
 
     // finally remove the temp dir
@@ -486,7 +470,7 @@ pub(crate) fn apply_diff(
     // A second full filesystem sync to narrow any races rather than
     // waiting for writeback to kick in.
     if !opts.skip_sync {
-        syncfs(destdir)?;
+        fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
     }
     Ok(())
 }
