@@ -1,6 +1,7 @@
 //! On-disk saved state.
 
 use crate::model::SavedState;
+use crate::util::SignalTerminationGuard;
 use anyhow::{bail, Context, Result};
 use fn_error_context::context;
 use fs2::FileExt;
@@ -8,25 +9,6 @@ use openat_ext::OpenatDirExt;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
-
-/// Suppress SIGTERM while active
-// TODO: In theory we could record if we got SIGTERM and exit
-// on drop, but in practice we don't care since we're going to exit anyways.
-#[derive(Debug)]
-struct SignalTerminationGuard(signal_hook_registry::SigId);
-
-impl SignalTerminationGuard {
-    pub(crate) fn new() -> Result<Self> {
-        let signal = unsafe { signal_hook_registry::register(libc::SIGTERM, || {})? };
-        Ok(Self(signal))
-    }
-}
-
-impl Drop for SignalTerminationGuard {
-    fn drop(&mut self) {
-        signal_hook_registry::unregister(self.0);
-    }
-}
 
 impl SavedState {
     /// System-wide bootupd write lock (relative to sysroot).
