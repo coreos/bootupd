@@ -95,21 +95,6 @@ impl Bios {
         }
         Ok(())
     }
-
-    // check bios_boot partition on gpt type disk
-    #[allow(dead_code)]
-    fn get_bios_boot_partition(&self) -> Option<String> {
-        match blockdev::get_single_device("/") {
-            Ok(device) => {
-                let bios_boot_part =
-                    blockdev::get_bios_boot_partition(&device).expect("get bios_boot part");
-                return bios_boot_part;
-            }
-            Err(e) => log::warn!("Get error: {}", e),
-        }
-        log::debug!("Not found any bios_boot partition");
-        None
-    }
 }
 
 impl Component for Bios {

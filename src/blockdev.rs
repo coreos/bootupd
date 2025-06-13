@@ -36,20 +36,6 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     Ok(parent_devices)
 }
 
-// Get single device for the target root
-#[allow(dead_code)]
-pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
-    let mut devices = get_devices(&target_root)?.into_iter();
-    let Some(parent) = devices.next() else {
-        anyhow::bail!("Failed to find parent device");
-    };
-
-    if let Some(next) = devices.next() {
-        anyhow::bail!("Found multiple parent devices {parent} and {next}; not currently supported");
-    }
-    Ok(parent)
-}
-
 /// Find esp partition on the same device
 /// using sfdisk to get partitiontable
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
