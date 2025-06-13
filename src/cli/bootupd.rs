@@ -35,6 +35,11 @@ pub enum DVerb {
     GenerateUpdateMetadata(GenerateOpts),
     #[clap(name = "install", about = "Install components")]
     Install(InstallOpts),
+    #[clap(
+        name = "install-to-filesystem",
+        about = "Copy files between directories with ESP handling"
+    )]
+    InstallToFilesystem(InstallToFilesystemOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -82,16 +87,29 @@ pub struct GenerateOpts {
     sysroot: Option<String>,
 }
 
+#[derive(Debug, Parser)]
+pub struct InstallToFilesystemOpts {
+    #[clap(long, default_value_t = String::from("/") , help = "Source root directory")]
+    src_root: String,
+
+    #[clap(long, help = "Destination root directory")]
+    dest_root: String,
+
+    #[clap(value_parser, help = "file relative path")]
+    file_path: String,
+}
+
 impl DCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
         match self.cmd {
             DVerb::Install(opts) => Self::run_install(opts),
             DVerb::GenerateUpdateMetadata(opts) => Self::run_generate_meta(opts),
+            DVerb::InstallToFilesystem(opts) => Self::run_install_to_filesystem(opts),
         }
     }
 
-    /// Runner for `generate-install-metadata` verb.
+    /// Runner for `generate-install-metadata` verb.``
     pub(crate) fn run_generate_meta(opts: GenerateOpts) -> Result<()> {
         let sysroot = opts.sysroot.as_deref().unwrap_or("/");
         if sysroot != "/" {
@@ -120,6 +138,11 @@ impl DCommand {
             opts.auto,
         )
         .context("boot data installation failed")?;
+        Ok(())
+    }
+
+    pub(crate) fn run_install_to_filesystem(opts: InstallToFilesystemOpts) -> Result<()> {
+        crate::filesystem::copy_files(&opts.src_root, &opts.dest_root, &opts.file_path)?;
         Ok(())
     }
 }

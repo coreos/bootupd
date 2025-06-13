@@ -73,6 +73,8 @@ pub enum CtlBackend {
     Generate(super::bootupd::GenerateOpts),
     #[clap(name = "install", hide = true)]
     Install(super::bootupd::InstallOpts),
+    #[clap(name = "install-to-filesystem", hide = true)]
+    InstallToFilesystem(super::bootupd::InstallToFilesystemOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -101,6 +103,9 @@ impl CtlCommand {
             }
             CtlVerb::Backend(CtlBackend::Install(opts)) => {
                 super::bootupd::DCommand::run_install(opts)
+            }
+            CtlVerb::Backend(CtlBackend::InstallToFilesystem(opts)) => {
+                super::bootupd::DCommand::run_install_to_filesystem(opts)
             }
             CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
         }
