@@ -157,32 +157,16 @@ dependencies = [
 [[package]]
 name = "bootc-blockdev"
 version = "0.0.0"
-source = "git+https://github.com/containers/bootc?rev=v1.2.0#233e24bbb9a88bece39d1e2e678091ad1851fb92"
+source = "git+https://github.com/containers/bootc?rev=v1.3.0#b06d75fed73f26a974423a9db41e19413987fca3"
 dependencies = [
  "anyhow",
- "bootc-utils 0.0.0 (git+https://github.com/containers/bootc?rev=v1.2.0)",
+ "bootc-utils",
  "camino",
  "fn-error-context",
  "regex",
  "serde",
  "serde_json",
  "tracing",
-]
-
-[[package]]
-name = "bootc-utils"
-version = "0.0.0"
-source = "git+https://github.com/containers/bootc?rev=v1.2.0#233e24bbb9a88bece39d1e2e678091ad1851fb92"
-dependencies = [
- "anyhow",
- "rustix 1.0.7",
- "serde",
- "serde_json",
- "shlex",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -209,7 +193,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "bootc-blockdev",
- "bootc-utils 0.0.0 (git+https://github.com/containers/bootc?rev=v1.3.0)",
+ "bootc-utils",
  "camino",
  "cap-std-ext",
  "chrono",
