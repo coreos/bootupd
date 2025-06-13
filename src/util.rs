@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use openat_ext::OpenatDirExt;
 
+#[allow(dead_code)]
 pub(crate) trait CommandRunExt {
     fn run(&mut self) -> Result<()>;
 }
