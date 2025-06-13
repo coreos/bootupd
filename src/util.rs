@@ -5,20 +5,6 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use openat_ext::OpenatDirExt;
 
-pub(crate) trait CommandRunExt {
-    fn run(&mut self) -> Result<()>;
-}
-
-impl CommandRunExt for Command {
-    fn run(&mut self) -> Result<()> {
-        let r = self.status()?;
-        if !r.success() {
-            bail!("Child [{:?}] exited: {}", self, r);
-        }
-        Ok(())
-    }
-}
-
 /// Parse an environment variable as UTF-8
 #[allow(dead_code)]
 pub(crate) fn getenv_utf8(n: &str) -> Result<Option<String>> {

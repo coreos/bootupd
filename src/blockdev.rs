@@ -1,39 +1,39 @@
 use camino::Utf8Path;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use bootc_blockdev::PartitionTable;
 use fn_error_context::context;
 
-#[context("get parent devices from mount point boot")]
+#[context("get parent devices from mount point boot or sysroot")]
 pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     let target_root = target_root.as_ref();
-    let bootdir = target_root.join("boot");
-    if !bootdir.exists() {
-        bail!("{} does not exist", bootdir.display());
-    }
-    let bootdir = openat::Dir::open(&bootdir)?;
-    // Run findmnt to get the source path of mount point boot
-    let fsinfo = crate::filesystem::inspect_filesystem(&bootdir, ".")?;
-    // Find the parent devices of the source path
-    let parent_devices = bootc_blockdev::find_parent_devices(&fsinfo.source)
-        .with_context(|| format!("while looking for backing devices of {}", fsinfo.source))?;
-    log::debug!("Find parent devices: {parent_devices:?}");
-    Ok(parent_devices)
-}
+    let mut source = None;
 
-// Get single device for the target root
-#[allow(dead_code)]
-pub fn get_single_device<P: AsRef<Path>>(target_root: P) -> Result<String> {
-    let mut devices = get_devices(&target_root)?.into_iter();
-    let Some(parent) = devices.next() else {
-        anyhow::bail!("Failed to find parent device");
+    for path in ["boot", "sysroot"] {
+        let target_path = target_root.join(path);
+        if !target_path.exists() {
+            continue;
+        }
+
+        let target_dir = openat::Dir::open(&target_path)
+            .with_context(|| format!("Opening {}", target_path.display()))?;
+        if let Ok(fsinfo) = crate::filesystem::inspect_filesystem(&target_dir, ".") {
+            source = Some(fsinfo.source);
+            break;
+        }
+    }
+
+    let source = match source {
+        Some(s) => s,
+        None => anyhow::bail!("Failed to inspect filesystem from boot or sysroot"),
     };
 
-    if let Some(next) = devices.next() {
-        anyhow::bail!("Found multiple parent devices {parent} and {next}; not currently supported");
-    }
-    Ok(parent)
+    // Find the parent devices of the source path
+    let parent_devices = bootc_blockdev::find_parent_devices(&source)
+        .with_context(|| format!("While looking for backing devices of {}", source))?;
+    log::debug!("Found parent devices: {parent_devices:?}");
+    Ok(parent_devices)
 }
 
 /// Find esp partition on the same device

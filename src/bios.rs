@@ -95,21 +95,6 @@ impl Bios {
         }
         Ok(())
     }
-
-    // check bios_boot partition on gpt type disk
-    #[allow(dead_code)]
-    fn get_bios_boot_partition(&self) -> Option<String> {
-        match blockdev::get_single_device("/") {
-            Ok(device) => {
-                let bios_boot_part =
-                    blockdev::get_bios_boot_partition(&device).expect("get bios_boot part");
-                return bios_boot_part;
-            }
-            Err(e) => log::warn!("Get error: {}", e),
-        }
-        log::debug!("Not found any bios_boot partition");
-        None
-    }
 }
 
 impl Component for Bios {
@@ -167,18 +152,11 @@ impl Component for Bios {
             return Ok(None);
         };
 
-        let mut parent_devices = rootcxt.devices.iter();
-        let Some(parent) = parent_devices.next() else {
-            anyhow::bail!("Failed to find parent device");
-        };
-
-        if let Some(next) = parent_devices.next() {
-            anyhow::bail!(
-                "Found multiple parent devices {parent} and {next}; not currently supported"
-            );
+        for parent in rootcxt.devices.iter() {
+            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
+            log::debug!("Installed grub modules on {parent}");
         }
-        self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-        log::debug!("Installed grub modules on {parent}");
+
         Ok(Some(InstalledContent {
             meta: update.clone(),
             filetree: None,
@@ -195,19 +173,10 @@ impl Component for Bios {
             .query_update(&rootcxt.sysroot)?
             .expect("update available");
 
-        let mut parent_devices = rootcxt.devices.iter();
-        let Some(parent) = parent_devices.next() else {
-            anyhow::bail!("Failed to find parent device");
-        };
-
-        if let Some(next) = parent_devices.next() {
-            anyhow::bail!(
-                "Found multiple parent devices {parent} and {next}; not currently supported"
-            );
+        for parent in rootcxt.devices.iter() {
+            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
+            log::debug!("Installed grub modules on {parent}");
         }
-
-        self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-        log::debug!("Install grub modules on {parent}");
 
         let adopted_from = None;
         Ok(InstalledContent {
