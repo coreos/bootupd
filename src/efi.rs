@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use bootc_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use fn_error_context::context;
@@ -22,7 +23,7 @@ use widestring::U16CString;
 use crate::bootupd::RootContext;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::{self, CommandRunExt};
+use crate::util;
 use crate::{blockdev, filetree};
 use crate::{component::*, packagesystem};
 
@@ -256,32 +257,30 @@ impl Component for Efi {
             return Ok(None);
         };
 
-        let esp_devices = esp_devices.unwrap_or_default();
-        let mut devices = esp_devices.iter();
-        let Some(esp) = devices.next() else {
-            anyhow::bail!("Failed to find esp device");
-        };
-
-        if let Some(next_esp) = devices.next() {
-            anyhow::bail!(
-                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
-            );
-        }
-        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
-
-        let destdir = &openat::Dir::open(&destpath.join("EFI"))
-            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-        validate_esp_fstype(&destdir)?;
         let updated = rootcxt
             .sysroot
             .sub_dir(&component_updatedirname(self))
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
-        // For adoption, we should only touch files that we know about.
-        let diff = updatef.relative_diff_to(&destdir)?;
-        log::trace!("applying adoption diff: {}", &diff);
-        filetree::apply_diff(&updated, &destdir, &diff, None)
-            .context("applying filesystem changes")?;
+
+        let esp_devices = esp_devices.unwrap_or_default();
+        for esp in esp_devices {
+            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+
+            let efidir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            validate_esp_fstype(&efidir)?;
+
+            // For adoption, we should only touch files that we know about.
+            let diff = updatef.relative_diff_to(&efidir)?;
+            log::trace!("applying adoption diff: {}", &diff);
+            filetree::apply_diff(&updated, &efidir, &diff, None)
+                .context("applying filesystem changes")?;
+
+            // Do the sync before unmount
+            efidir.syncfs()?;
+            drop(efidir);
+            self.unmount().context("unmount after adopt")?;
+        }
         Ok(Some(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
@@ -354,24 +353,21 @@ impl Component for Efi {
         let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
             anyhow::bail!("Failed to find all esp devices");
         };
-        let mut devices = esp_devices.iter();
-        let Some(esp) = devices.next() else {
-            anyhow::bail!("Failed to find esp device");
-        };
 
-        if let Some(next_esp) = devices.next() {
-            anyhow::bail!(
-                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
-            );
+        for esp in esp_devices {
+            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+            let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            validate_esp_fstype(&destdir)?;
+            log::trace!("applying diff: {}", &diff);
+            filetree::apply_diff(&updated, &destdir, &diff, None)
+                .context("applying filesystem changes")?;
+
+            // Do the sync before unmount
+            destdir.syncfs()?;
+            drop(destdir);
+            self.unmount().context("unmount after update")?;
         }
-        let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
 
-        let destdir = &openat::Dir::open(&destpath.join("EFI"))
-            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-        validate_esp_fstype(&destdir)?;
-        log::trace!("applying diff: {}", &diff);
-        filetree::apply_diff(&updated, &destdir, &diff, None)
-            .context("applying filesystem changes")?;
         let adopted_from = None;
         Ok(InstalledContent {
             meta: updatemeta,
@@ -430,31 +426,26 @@ impl Component for Efi {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
 
-        let esp_devices = esp_devices.unwrap_or_default();
-        let mut devices = esp_devices.iter();
-        let Some(esp) = devices.next() else {
-            anyhow::bail!("Failed to find esp device");
-        };
-
-        if let Some(next_esp) = devices.next() {
-            anyhow::bail!(
-                "Found multiple esp devices {esp} and {next_esp}; not currently supported"
-            );
-        }
-        let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
-
-        let efidir = &openat::Dir::open(&destpath.join("EFI"))
-            .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-
-        let diff = currentf.relative_diff_to(&efidir)?;
         let mut errs = Vec::new();
-        for f in diff.changes.iter() {
-            errs.push(format!("Changed: {}", f));
+        let esp_devices = esp_devices.unwrap_or_default();
+        for esp in esp_devices.iter() {
+            let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
+
+            let efidir = openat::Dir::open(&destpath.join("EFI"))
+                .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
+            let diff = currentf.relative_diff_to(&efidir)?;
+
+            for f in diff.changes.iter() {
+                errs.push(format!("Changed: {}", f));
+            }
+            for f in diff.removals.iter() {
+                errs.push(format!("Removed: {}", f));
+            }
+            assert_eq!(diff.additions.len(), 0);
+            drop(efidir);
+            self.unmount().context("unmount after validate")?;
         }
-        for f in diff.removals.iter() {
-            errs.push(format!("Removed: {}", f));
-        }
-        assert_eq!(diff.additions.len(), 0);
+
         if !errs.is_empty() {
             Ok(ValidationResult::Errors(errs))
         } else {
