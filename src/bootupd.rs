@@ -9,6 +9,7 @@ use crate::coreos;
     target_arch = "riscv64"
 ))]
 use crate::efi;
+use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
@@ -17,7 +18,6 @@ use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
 use libc::{S_IRGRP, S_IROTH, S_IRUSR, S_IWUSR};
-use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -625,21 +625,14 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
 
             strip_grub_config_file(content, &dirfd, stripped_config)?;
 
-            // Sync changes to the filesystem (ignore failures)
-            let _ = dirfd.syncfs();
-
-            // Atomically exchange the configs
+            // Atomically replace the symlink
             dirfd
-                .local_exchange(stripped_config, "grub.cfg")
-                .context("Failed to exchange symlink with current GRUB config")?;
+                .local_rename(stripped_config, "grub.cfg")
+                .context("Failed to replace symlink with current GRUB config")?;
 
-            // Sync changes to the filesystem (ignore failures)
-            let _ = dirfd.syncfs();
+            fsfreeze_thaw_cycle(dirfd.open_file(".")?)?;
 
             println!("GRUB config symlink successfully replaced with the current config");
-
-            // Remove the now unused symlink (optional cleanup, ignore any failures)
-            _ = dirfd.remove_file(stripped_config);
         }
     };
 
@@ -690,8 +683,10 @@ fn strip_grub_config_file(
     }
 
     writer
-        .flush()
-        .context("Failed to write stripped GRUB config")?;
+        .into_inner()
+        .context("Failed to flush stripped GRUB config")?
+        .sync_data()
+        .context("Failed to sync stripped GRUB config")?;
 
     Ok(())
 }

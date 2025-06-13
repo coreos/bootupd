@@ -115,3 +115,22 @@ pub fn running_in_container() -> bool {
     }
     false
 }
+
+/// Suppress SIGTERM while active
+// TODO: In theory we could record if we got SIGTERM and exit
+// on drop, but in practice we don't care since we're going to exit anyways.
+#[derive(Debug)]
+pub(crate) struct SignalTerminationGuard(signal_hook_registry::SigId);
+
+impl SignalTerminationGuard {
+    pub(crate) fn new() -> Result<Self> {
+        let signal = unsafe { signal_hook_registry::register(libc::SIGTERM, || {})? };
+        Ok(Self(signal))
+    }
+}
+
+impl Drop for SignalTerminationGuard {
+    fn drop(&mut self) {
+        signal_hook_registry::unregister(self.0);
+    }
+}
