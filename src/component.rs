@@ -31,11 +31,15 @@ pub(crate) trait Component {
     /// and "synthesize" content metadata from it.
     fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>>;
 
+    // Backup the current grub config, and install static grub config from tree
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()>;
+
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
         &self,
         rootcxt: &RootContext,
         update: &ContentMetadata,
+        with_static_config: bool,
     ) -> Result<Option<InstalledContent>>;
 
     /// Implementation of `bootupd install` for a given component.  This should

@@ -56,7 +56,7 @@ pub enum CtlVerb {
     #[clap(name = "update", about = "Update all components")]
     Update,
     #[clap(name = "adopt-and-update", about = "Update all adoptable components")]
-    AdoptAndUpdate,
+    AdoptAndUpdate(AdoptAndUpdateOpts),
     #[clap(name = "validate", about = "Validate system state")]
     Validate,
     #[clap(
@@ -88,13 +88,20 @@ pub struct StatusOpts {
     json: bool,
 }
 
+#[derive(Debug, Parser)]
+pub struct AdoptAndUpdateOpts {
+    /// Install the static GRUB config files
+    #[clap(long, action)]
+    with_static_config: bool,
+}
+
 impl CtlCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
         match self.cmd {
             CtlVerb::Status(opts) => Self::run_status(opts),
             CtlVerb::Update => Self::run_update(),
-            CtlVerb::AdoptAndUpdate => Self::run_adopt_and_update(),
+            CtlVerb::AdoptAndUpdate(opts) => Self::run_adopt_and_update(opts),
             CtlVerb::Validate => Self::run_validate(),
             CtlVerb::Backend(CtlBackend::Generate(opts)) => {
                 super::bootupd::DCommand::run_generate_meta(opts)
@@ -133,9 +140,9 @@ impl CtlCommand {
     }
 
     /// Runner for `update` verb.
-    fn run_adopt_and_update() -> Result<()> {
+    fn run_adopt_and_update(opts: AdoptAndUpdateOpts) -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_adopt_and_update()
+        bootupd::client_run_adopt_and_update(opts.with_static_config)
     }
 
     /// Runner for `validate` verb.
