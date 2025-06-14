@@ -266,6 +266,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
 pub(crate) fn adopt_and_update(
     name: &str,
     rootcxt: &RootContext,
+    with_static_config: bool,
 ) -> Result<Option<ContentMetadata>> {
     let sysroot = &rootcxt.sysroot;
     let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
@@ -279,15 +280,25 @@ pub(crate) fn adopt_and_update(
     let Some(update) = component.query_update(sysroot)? else {
         anyhow::bail!("Component {} has no available update", name);
     };
+
     let sysroot = sysroot.try_clone()?;
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
 
     let inst = component
-        .adopt_update(&rootcxt, &update)
+        .adopt_update(&rootcxt, &update, with_static_config)
         .context("Failed adopt and update")?;
     if let Some(inst) = inst {
         state.installed.insert(component.name().into(), inst);
+        // Set static_configs metadata and save
+        if with_static_config && state.static_configs.is_none() {
+            let meta = get_static_config_meta()?;
+            state.static_configs = Some(meta);
+            // Set bootloader to none
+            ostreeutil::set_ostree_bootloader("none")?;
+
+            println!("Static GRUB configuration has been adopted successfully.");
+        }
         state_guard.update_state(&state)?;
         return Ok(Some(update));
     } else {
@@ -505,7 +516,7 @@ pub(crate) fn client_run_update() -> Result<()> {
     }
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
-            if let Some(r) = adopt_and_update(name, &rootcxt)? {
+            if let Some(r) = adopt_and_update(name, &rootcxt, false)? {
                 println!("Adopted and updated: {}: {}", name, r.version);
                 updated = true;
             }
@@ -519,14 +530,14 @@ pub(crate) fn client_run_update() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn client_run_adopt_and_update() -> Result<()> {
+pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
     let rootcxt = prep_before_update()?;
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
     } else {
         for (name, _) in status.adoptable.iter() {
-            if let Some(r) = adopt_and_update(name, &rootcxt)? {
+            if let Some(r) = adopt_and_update(name, &rootcxt, with_static_config)? {
                 println!("Adopted and updated: {}: {}", name, r.version);
             }
         }

@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use camino::Utf8PathBuf;
 #[cfg(target_arch = "powerpc64")]
 use std::borrow::Cow;
 use std::io::prelude::*;
@@ -8,6 +9,7 @@ use std::process::Command;
 use crate::blockdev;
 use crate::bootupd::RootContext;
 use crate::component::*;
+use crate::grubconfigs;
 use crate::model::*;
 use crate::packagesystem;
 
@@ -157,10 +159,64 @@ impl Component for Bios {
         crate::component::query_adopt_state()
     }
 
+    // Backup the current grub.cfg and install new static config
+    // - Backup "/boot/loader/grub.cfg" to "/boot/grub2/grub.cfg.bak"
+    // - Remove symlink "/boot/grub2/grub.cfg"
+    // - Install new static grub.cfg
+    // - Remove old "/boot/loader/grub.cfg"
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
+        use anyhow::Context;
+        use openat_ext::OpenatDirExt;
+
+        let grub_config_dir = Utf8PathBuf::from(sysroot_path).join("boot/grub2");
+        let grubdir = destdir
+            .sub_dir(grub_config_dir.as_std_path())
+            .context("Opening /boot/grub2")?;
+
+        let grubconfig = grub_config_dir.join(grubconfigs::GRUBCONFIG);
+
+        // On BIOS, /boot/grub2/grub.cfg is symlink to /boot/loader/grub.cfg,
+        // backup it to /boot/grub2/grub.cfg.bak
+        if !grubconfig.exists() {
+            anyhow::bail!("Not found '{}'", grubconfig);
+        } else if !grubconfig.is_symlink() {
+            anyhow::bail!("'{}' is not a symlink", grubconfig);
+        } else {
+            // Only migrate if /boot/grub2/grub.cfg is symlink
+            let realconfig = grubdir.read_link(grubconfigs::GRUBCONFIG)?;
+            let realconfig =
+                Utf8PathBuf::from_path_buf(realconfig).expect("Path should be valid UTF-8");
+            // Resolve symlink location
+            let mut current_config = grub_config_dir.clone();
+            current_config.push(realconfig);
+            let backup_config = grub_config_dir.join(grubconfigs::GRUBCONFIG_BACKUP);
+
+            // Backup the current GRUB config which is hopefully working right now
+            println!(
+                "Creating a backup of the current GRUB config '{}' in '{}'...",
+                current_config, backup_config
+            );
+            std::fs::copy(&current_config, &backup_config)
+                .context("Failed to backup GRUB config")?;
+            // Remove the symlink
+            grubdir.remove_file(grubconfigs::GRUBCONFIG)?;
+            // Remove the current config
+            grubdir.remove_file(current_config.as_std_path())?;
+
+            crate::grubconfigs::install(&destdir, None, true)?;
+
+            // Synchronize the filesystem containing /boot/grub2 to disk.
+            let _ = grubdir.syncfs();
+        }
+
+        Ok(())
+    }
+
     fn adopt_update(
         &self,
         rootcxt: &RootContext,
         update: &ContentMetadata,
+        with_static_config: bool,
     ) -> Result<Option<InstalledContent>> {
         let bios_devices = blockdev::find_colocated_bios_boot(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
@@ -177,8 +233,22 @@ impl Component for Bios {
                 "Found multiple parent devices {parent} and {next}; not currently supported"
             );
         }
-        self.run_grub_install(rootcxt.path.as_str(), &parent)?;
+
+        let root_path = rootcxt.path.as_str();
+        self.run_grub_install(root_path, &parent)?;
         log::debug!("Installed grub modules on {parent}");
+
+        if with_static_config {
+            // Install the static config if the OSTree bootloader is not set.
+            if let Some(bootloader) = crate::ostreeutil::get_ostree_bootloader()? {
+                println!(
+                    "ostree repo 'sysroot.bootloader' config option is currently set to: '{bootloader}'",
+                );
+            } else {
+                println!("ostree repo 'sysroot.bootloader' config option is not set yet");
+                self.migrate_static_grub_config(root_path, &rootcxt.sysroot)?;
+            };
+        }
         Ok(Some(InstalledContent {
             meta: update.clone(),
             filetree: None,

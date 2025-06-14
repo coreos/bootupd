@@ -13,7 +13,10 @@ use crate::freezethaw::fsfreeze_thaw_cycle;
 const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
 const DROPINDIR: &str = "configs.d";
+// The related grub files
 const GRUBENV: &str = "grubenv";
+pub(crate) const GRUBCONFIG: &str = "grub.cfg";
+pub(crate) const GRUBCONFIG_BACKUP: &str = "grub.cfg.backup";
 
 /// Install the static GRUB config files.
 #[context("Installing static GRUB configs")]
