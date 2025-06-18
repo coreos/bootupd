@@ -79,6 +79,9 @@ pub(crate) trait Component {
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>>;
+
+    /// Extending payload from input dir
+    fn extend_payload(&self, sysroot: &str, src_root: &str) -> Result<Option<bool>>;
 }
 
 /// Given a component name, create an implementation.
