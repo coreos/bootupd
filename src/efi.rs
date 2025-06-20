@@ -617,7 +617,7 @@ pub(crate) fn create_efi_boot_entry(
             "--disk",
             device,
             "--part",
-            partition_number.as_str(),
+            partition_number.trim(),
             "--loader",
             loader.as_str(),
             "--label",
