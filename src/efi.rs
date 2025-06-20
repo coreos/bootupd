@@ -579,10 +579,10 @@ pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
     for entry in boot_entries {
         if entry.name.to_lowercase() == target {
             log::debug!("Deleting matched target {:?}", entry);
-            Command::new(EFIBOOTMGR)
-                .args(["-b", entry.id.as_str(), "-B"])
-                .run()
-                .with_context(|| format!("Failed to invoke {EFIBOOTMGR}"))?;
+            let mut cmd = Command::new(EFIBOOTMGR);
+            cmd.args(["-b", entry.id.as_str(), "-B"]);
+            println!("Executing: {cmd:?}");
+            cmd.run_with_cmd_context()?;
         }
     }
 
@@ -611,23 +611,20 @@ pub(crate) fn create_efi_boot_entry(
     }
     let loader = format!("\\EFI\\{}\\{SHIM}", vendordir);
     log::debug!("Creating new EFI boot entry using '{target}'");
-    let st = Command::new(EFIBOOTMGR)
-        .args([
-            "--create",
-            "--disk",
-            device,
-            "--part",
-            partition_number.as_str(),
-            "--loader",
-            loader.as_str(),
-            "--label",
-            target,
-        ])
-        .status()?;
-    if !st.success() {
-        anyhow::bail!("Failed to invoke {EFIBOOTMGR}")
-    }
-    anyhow::Ok(())
+    let mut cmd = Command::new(EFIBOOTMGR);
+    cmd.args([
+        "--create",
+        "--disk",
+        device,
+        "--part",
+        partition_number.trim(),
+        "--loader",
+        loader.as_str(),
+        "--label",
+        target,
+    ]);
+    println!("Executing: {cmd:?}");
+    cmd.run_with_cmd_context()
 }
 
 #[context("Find target file recursively")]
