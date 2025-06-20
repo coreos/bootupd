@@ -9,7 +9,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bootc_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
@@ -452,6 +452,93 @@ impl Component for Efi {
         let meta = packagesystem::query_files(sysroot_path, files)?;
         write_update_metadata(sysroot_path, self, &meta)?;
         Ok(meta)
+    }
+
+    fn extend_payload(&self, sysroot_path: &str, src_input: &str) -> Result<Option<bool>> {
+        let dest_efidir_base = Path::new(sysroot_path).join("usr/lib/efi").join("firmware");
+
+        // Fetch version and release from the source input using query_files
+        let src_input_path = Path::new(src_input);
+        let meta_from_src = packagesystem::query_files(sysroot_path, [src_input_path])
+            .context(format!("Querying RPM metadata for {:?}", src_input_path))?;
+
+        let version_string_part = meta_from_src.version.split( ',').next()
+            .ok_or_else(|| anyhow!(
+                "RPM query returned an empty or malformed version string (no package name found in '{}').",
+                meta_from_src.version
+            ))?;
+
+        let parts: Vec<&str> = version_string_part.split('-').collect();
+
+        let (pkg_name, version_release_str) = if parts.len() >= 3 {
+            // Successfully extracted package name, version, and release
+            let actual_pkg_name = parts[0];
+            let version_part = parts[parts.len() - 2]; // version, e.g., "1.0"
+            let release_part = parts[parts.len() - 1]
+                .split('.')
+                .next()
+                .unwrap_or(parts[parts.len() - 1]); // release, e.g., "1" from "1.el8.noarch"
+            (
+                actual_pkg_name.to_string(),
+                format!("{}-{}", version_part, release_part),
+            )
+        } else {
+            return Err(anyhow!(
+                "Unexpected RPM version string format: '{}'. Expected at least <pkg_name>-<version>-<release>.",
+                version_string_part
+            ));
+        };
+
+        let final_dest_efi_path = dest_efidir_base
+            .join(&pkg_name) // add the package name as a directory
+            .join(&version_release_str)
+            .join("EFI/boot/efi");
+
+        // Ensure the destination directory exists
+        std::fs::create_dir_all(&final_dest_efi_path).with_context(|| {
+            format!(
+                "Failed to create destination directory {:?}",
+                &final_dest_efi_path
+            )
+        })?;
+
+        let src_metadata = std::fs::metadata(src_input_path)
+            .with_context(|| format!("Failed to get metadata for {:?}", src_input_path))?;
+
+        if src_metadata.is_dir() {
+            log::debug!(
+                "Copying contents of directory {:?} to {:?}",
+                src_input,
+                &final_dest_efi_path
+            );
+            Command::new("cp")
+                .args([
+                    "-rp",
+                    &format!("{}/.", src_input),
+                    final_dest_efi_path.to_str().unwrap(),
+                ])
+                .run()
+                .with_context(|| {
+                    format!(
+                        "Failed to copy contents of {:?} to {:?}",
+                        src_input, &final_dest_efi_path
+                    )
+                })?;
+        } else if src_metadata.is_file() {
+            log::debug!("Copying file {:?} to {:?}", src_input, &final_dest_efi_path);
+            Command::new("cp")
+                .args(["-p", src_input, final_dest_efi_path.to_str().unwrap()])
+                .run()
+                .with_context(|| {
+                    format!(
+                        "Failed to copy file {:?} to {:?}",
+                        src_input, &final_dest_efi_path
+                    )
+                })?;
+        } else {
+            anyhow::bail!("Unsupported src_input type: {:?}", src_input);
+        }
+        Ok(Some(true))
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
