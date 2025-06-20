@@ -32,10 +32,6 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Install grub2
-        run: |
-          set -xeu
-          dnf install -y grub2-tools-minimal
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
       - name: cargo build
@@ -53,10 +49,6 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      - name: Install grub2
-        run: |
-          set -xeu
-          dnf install -y grub2-tools-minimal
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
       - name: cargo build (release)
@@ -82,10 +74,6 @@ jobs:
           toolchain: ${{ env.MSRV }}
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
-      - name: Install grub2
-        run: |
-          set -xeu
-          dnf install -y grub2-tools-minimal
       - name: cargo build (release)
         run: cargo build --all-targets --release
       - name: cargo test (release)
@@ -123,10 +111,6 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ matrix.channel }}
-      - name: Install grub2
-        run: |
-          set -xeu
-          dnf install -y grub2-tools-minimal
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
       - name: cargo build
