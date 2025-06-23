@@ -30,6 +30,9 @@ use crate::{component::*, packagesystem};
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
 
+/// New efi dir under usr/lib
+const EFILIB: &str = "usr/lib/efi";
+
 /// The binary to change EFI boot ordering
 const EFIBOOTMGR: &str = "efibootmgr";
 #[cfg(target_arch = "aarch64")]
@@ -420,10 +423,12 @@ impl Component for Efi {
     }
 
     fn generate_update_metadata(&self, sysroot_path: &str) -> Result<ContentMetadata> {
+        let efilib_path = Path::new(sysroot_path).join(EFILIB);
         let ostreebootdir = Path::new(sysroot_path).join(ostreeutil::BOOT_PREFIX);
-        let dest_efidir = component_updatedir(sysroot_path, self);
 
-        if ostreebootdir.exists() {
+        if efilib_path.exists() {
+            println!("Found {}", efilib_path.display());
+        } else if ostreebootdir.exists() {
             let cruft = ["loader", "grub2"];
             for p in cruft.iter() {
                 let p = ostreebootdir.join(p);
@@ -436,20 +441,62 @@ impl Component for Efi {
             if !efisrc.exists() {
                 bail!("Failed to find {:?}", &efisrc);
             }
+            let sysroot_dir = openat::Dir::open(sysroot_path)
+                .with_context(|| format!("Opening {}", sysroot_path))?;
+            let efisrc_dir = sysroot_dir.sub_dir(&efisrc)?;
 
-            // Fork off mv() because on overlayfs one can't rename() a lower level
-            // directory today, and this will handle the copy fallback.
-            Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
-        }
+            sysroot_dir.ensure_dir_all(EFILIB, 0o755)?;
+            let efilib_dir = sysroot_dir.sub_dir(EFILIB)?;
 
-        let efidir = openat::Dir::open(&dest_efidir)
-            .with_context(|| format!("Opening {}", dest_efidir.display()))?;
-        let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
-            f.insert_str(0, "/boot/efi/EFI/");
-            f
-        });
+            // Walkthrough all files under legacy usr/lib/ostree-boot/efi/EFI
+            // and save them to usr/lib/efi/<pkg>/<version>
+            // eg. usr/lib/ostree-boot/efi/EFI/<vendor>/grubx64.efi ->
+            // usr/lib/efi/grub2/2.12-28.fc42/EFI/<vendor>/grubx64.efi
+            for entry in WalkDir::new(&efisrc)
+                .min_depth(1)
+                .max_depth(2)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let src_path = entry.path().to_path_buf();
 
-        let meta = packagesystem::query_files(sysroot_path, files)?;
+                // Reconstruct the "boot" path from ostree path (for rpm query)
+                let relative_efi_path = src_path.strip_prefix(&efisrc).unwrap();
+                let boot_path = format!("/boot/efi/EFI/{}", relative_efi_path.display());
+                let rpm_info = packagesystem::query_file(sysroot_path, &boot_path)?;
+                let parts: Vec<&str> = rpm_info.trim().split('/').collect();
+                if parts.len() != 2 {
+                    eprintln!("Unexpected rpm output: {}", rpm_info);
+                    continue;
+                }
+
+                let (pkg_name, version) = (parts[0], parts[1]);
+
+                // Construct target path under /usr/lib/efi/<pkg>/<ver>/EFI/...
+                let name = pkg_name.split('-').next().unwrap();
+                let pkg_efi_path = Path::new(name)
+                    .join(version)
+                    .join("EFI")
+                    .join(relative_efi_path);
+
+                // Create parent dirs and copy
+                if let Some(parent) = pkg_efi_path.parent() {
+                    efilib_dir.ensure_dir_all(parent, 0o755)?;
+                }
+
+                // Maybe should move instead of copy in future
+                efisrc_dir.copy_file_at(relative_efi_path, &efilib_dir, &pkg_efi_path)?;
+            }
+        } else {
+            bail!(
+                "No directories found {} or {}",
+                efilib_path.display(),
+                ostreebootdir.display()
+            );
+        };
+
+        let meta = get_update_metadata_from_usr(&efilib_path)?;
         write_update_metadata(sysroot_path, self, &meta)?;
         Ok(meta)
     }
@@ -647,6 +694,43 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
     }
 
     Ok(result)
+}
+
+#[context("Get update metadata from {EFILIB}")]
+fn get_update_metadata_from_usr(efilib_path: &Path) -> Result<ContentMetadata> {
+    let mut pkgs = std::collections::HashSet::new();
+
+    // usr/lib/efi/<pkg>/<version>/EFI
+    for entry in WalkDir::new(&efilib_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+
+        // Expecting: /usr/lib/efi/<pkg>/<version>/...
+        let relative = match path.strip_prefix(&efilib_path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        let mut components = relative.components();
+        let pkg = components.next().and_then(|c| c.as_os_str().to_str());
+        let ver = components.next().and_then(|c| c.as_os_str().to_str());
+
+        if let (Some(pkg), Some(ver)) = (pkg, ver) {
+            pkgs.insert(format!("{}-{}", pkg, ver));
+        }
+    }
+
+    let version = pkgs.into_iter().collect::<Vec<_>>().join(",");
+
+    let self_bin_meta = std::fs::metadata("/proc/self/exe")?;
+    let meta = ContentMetadata {
+        timestamp: self_bin_meta.modified()?.into(),
+        version,
+    };
+    Ok(meta)
 }
 
 #[cfg(test)]

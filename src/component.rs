@@ -117,6 +117,7 @@ pub(crate) fn component_updatedirname(component: &dyn Component) -> PathBuf {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
+#[allow(dead_code)]
 pub(crate) fn component_updatedir(sysroot: &str, component: &dyn Component) -> PathBuf {
     Path::new(sysroot).join(component_updatedirname(component))
 }

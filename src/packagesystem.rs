@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use bootc_utils::CommandRunExt;
 use chrono::prelude::*;
 
 use crate::model::*;
@@ -65,6 +66,21 @@ where
     }
 
     rpm_parse_metadata(&rpmout.stdout)
+}
+
+/// Query the rpm database and get the package info
+pub(crate) fn query_file(sysroot_path: &str, path: &str) -> Result<String> {
+    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
+    c.args([
+        "-q",
+        "--queryformat",
+        "%{NAME}/%{VERSION}-%{RELEASE}",
+        "-f",
+        path,
+    ]);
+
+    let rpmout = c.run_get_string()?.trim().to_string();
+    Ok(rpmout)
 }
 
 #[test]
