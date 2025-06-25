@@ -345,14 +345,22 @@ impl Component for Efi {
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
 
-        // Using `blockdev` to find the partition instead of partlabel because
-        // we know the target install toplevel device already.
-        let esp_device = blockdev::get_esp_partition(device)?
-            .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+        // Let's attempt to use an already mounted ESP at the target
+        // dest_root if one is already mounted there in a known ESP location.
+        let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
+            destdir
+        } else {
+            // Using `blockdev` to find the partition instead of partlabel because
+            // we know the target install toplevel device already.
+            if device.is_empty() {
+                anyhow::bail!("Device value not provided");
+            }
+            let esp_device = blockdev::get_esp_partition(device)?
+                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
+        };
 
-        let destpath = &self.ensure_mounted_esp(Path::new(dest_root), Path::new(&esp_device))?;
-
-        let destd = &openat::Dir::open(destpath)
+        let destd = &openat::Dir::open(&destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
