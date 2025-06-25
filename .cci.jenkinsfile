@@ -22,7 +22,7 @@ parallel build: {
         """)
       }
       shwrap("""
-        make install install-grub-static install-systemd-unit DESTDIR=\$(pwd)/insttree/
+        make install-all DESTDIR=\$(pwd)/insttree/
         tar -c -C insttree/ -zvf insttree.tar.gz .
       """)
       stash includes: 'insttree.tar.gz', name: 'build'
@@ -55,6 +55,7 @@ cosaPod(runAsUser: 0, memory: "4608Mi", cpu: "4") {
       rmdir insttree
       cosa fetch
       cosa build
+      cosa osbuild metal4k
     """)
   }
   // The e2e-adopt test will use the ostree commit we just generated above
