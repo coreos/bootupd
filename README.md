@@ -31,19 +31,30 @@ that's for tools like `grubby` and `ostree`.
 
 ## Status
 
-bootupd supports updating GRUB and shim for UEFI firmware on
-x86_64, aarch64, and riscv64, and GRUB for BIOS firmware on x86_64
-and ppc64le.
-The project is [deployed in Fedora CoreOS](https://docs.fedoraproject.org/en-US/fedora-coreos/bootloader-updates/) and derivatives,
-and is also used by the new [`bootc install`](https://github.com/containers/bootc/#using-bootc-install)
-functionality.  The bootupd CLI should be considered stable.
+bootupd supports updating GRUB and shim for UEFI firmware on x86_64, aarch64,
+and riscv64, and GRUB for BIOS firmware on x86_64 and ppc64le.
 
-bootupd does not yet perform updates in a way that is safe
-against a power failure at the wrong moment, or
-against a buggy bootloader update that fails to boot
-the system.
+The project is used in Bootable Containers and ostree/rpm-ostree based systems:
+  - [`bootc install`](https://github.com/containers/bootc/#using-bootc-install)
+  - [Fedora CoreOS](https://docs.fedoraproject.org/en-US/fedora-coreos/bootloader-updates/)
+  - Fedora Atomic Desktops
 
-Therefore, by default, bootupd updates the bootloader only when manually instructed to do so.
+On systems booted using a UEFI firmware, bootloader updates performed by
+bootupd are now considered safe, even in case of power failures (see:
+[issue#454](https://github.com/coreos/bootupd/issues/454)).
+
+On other systems (BIOS, etc.), bootloader updates performed by bootupd not safe
+against a power failures at the wrong time.
+
+Note that bootupd does not yet perform updates in a way that is safe against a
+buggy bootloader update that fails to boot the system. This is tracked in
+[issue#440](https://github.com/coreos/bootupd/issues/440).
+
+Bootloader updates are enabled by default on Fedora Atomic Desktops, and will
+soon be on all Bootable Containers systems. See
+[fedora-coreos-tracker#1468](https://github.com/coreos/fedora-coreos-tracker/issues/1468).
+
+The bootupd CLI should be considered stable.
 
 ## Relationship to other projects
 
