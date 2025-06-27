@@ -19,6 +19,7 @@ pub(crate) fn getenv_utf8(n: &str) -> Result<Option<String>> {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn filenames(dir: &openat::Dir) -> Result<HashSet<String>> {
     let mut ret = HashSet::new();
     for entry in dir.list_dir(".")? {
