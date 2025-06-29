@@ -86,6 +86,12 @@ jobs:
           fi
           sudo ls /mnt/EFI/centos/{grub.cfg,${shim}}
           sudo umount /mnt
+          # check /boot/grub2/grub.cfg permission
+          root_part=$(sudo sfdisk -l -J "${device}" | jq -r '.partitiontable.partitions[] | select(.name == "root").node')
+          sudo mount "${root_part}" /mnt/
+          sudo ls /mnt/boot/grub2/grub.cfg
+          [ $(sudo stat -c "%a" /mnt/boot/grub2/grub.cfg) == "600" ]
+          sudo umount /mnt
           sudo losetup -D "${device}"
           sudo rm -f myimage.raw
 
@@ -99,3 +105,4 @@ jobs:
             --disable-selinux --replace=alongside /target
           # Verify we injected static configs
           jq -re '.["static-configs"].version' /boot/bootupd-state.json
+          [ $(sudo stat -c "%a" /boot/grub2/grub.cfg) == "600" ]
