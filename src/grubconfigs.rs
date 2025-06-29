@@ -17,6 +17,9 @@ const DROPINDIR: &str = "configs.d";
 const GRUBENV: &str = "grubenv";
 pub(crate) const GRUBCONFIG: &str = "grub.cfg";
 pub(crate) const GRUBCONFIG_BACKUP: &str = "grub.cfg.backup";
+// File mode for /boot/grub2/grub.config
+// https://github.com/coreos/bootupd/issues/952
+const GRUBCONFIG_FILE_MODE: u32 = 0o600;
 
 /// Install the static GRUB config files.
 #[context("Installing static GRUB configs")]
@@ -67,7 +70,7 @@ pub(crate) fn install(
 
     let grub2dir = bootdir.sub_dir(GRUB2DIR)?;
     grub2dir
-        .write_file_contents("grub.cfg", 0o644, config.as_bytes())
+        .write_file_contents("grub.cfg", GRUBCONFIG_FILE_MODE, config.as_bytes())
         .context("Copying grub-static.cfg")?;
     println!("Installed: grub.cfg");
 
