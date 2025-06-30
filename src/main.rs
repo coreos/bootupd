@@ -48,6 +48,13 @@ mod packagesystem;
 mod sha512string;
 mod util;
 
+#[allow(dead_code)]
+#[path = "bootc/blockdev/src/blockdev.rs"]
+mod bootc_blockdev;
+#[allow(dead_code, unused_imports)]
+#[path = "bootc/utils/src/lib.rs"]
+mod bootc_utils;
+
 use clap::crate_name;
 
 /// Binary entrypoint, for both daemon and client logic.

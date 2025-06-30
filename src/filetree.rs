@@ -341,7 +341,7 @@ pub(crate) struct ApplyUpdateOptions {
     target_arch = "riscv64"
 ))]
 fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
-    use bootc_utils::CommandRunExt;
+    use crate::bootc_utils::CommandRunExt;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 

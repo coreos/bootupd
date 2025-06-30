@@ -3,10 +3,11 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use anyhow::Result;
-use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use rustix::fd::BorrowedFd;
 use serde::Deserialize;
+
+use crate::bootc_utils::CommandRunExt;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
