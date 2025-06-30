@@ -38,13 +38,14 @@ The project is used in Bootable Containers and ostree/rpm-ostree based systems:
   - [`bootc install`](https://github.com/containers/bootc/#using-bootc-install)
   - [Fedora CoreOS](https://docs.fedoraproject.org/en-US/fedora-coreos/bootloader-updates/)
   - Fedora Atomic Desktops
+  - Fedora IoT
 
 On systems booted using a UEFI firmware, bootloader updates performed by
 bootupd are now considered safe, even in case of power failures (see:
 [issue#454](https://github.com/coreos/bootupd/issues/454)).
 
-On other systems (BIOS, etc.), bootloader updates performed by bootupd not safe
-against a power failures at the wrong time.
+On other systems (BIOS, etc.), bootloader updates performed by bootupd are not
+safe against a power failures at the wrong time.
 
 Note that bootupd does not yet perform updates in a way that is safe against a
 buggy bootloader update that fails to boot the system. This is tracked in
