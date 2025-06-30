@@ -22,8 +22,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 bincode = "1.3.2"
-bootc-blockdev = { git = "https://github.com/containers/bootc", rev = "v1.3.0" }
-bootc-utils = { git = "https://github.com/containers/bootc", rev = "v1.3.0" }
+bootc-blockdev = { path = "bootc/blockdev" }
+bootc-utils = { path = "bootc/utils" }
 cap-std-ext = "4.0.6"
 camino = "1.1.9"
 chrono = { version = "0.4.41", features = ["serde"] }

@@ -1,0 +1,111 @@
+[workspace]
+members = [
+    "cli",
+    "system-reinstall-bootc",
+    "lib",
+    "mount",
+    "ostree-ext",
+    "utils",
+    "blockdev",
+    "xtask",
+    "tests-integration",
+    "tmpfiles",
+    "sysusers",
+]
+resolver = "2"
+
+[profile.dev]
+opt-level = 1 # No optimizations are too slow for us.
+
+[profile.release]
+lto = "thin"
+# We use FFI so this is safest
+panic = "abort"
+# We assume we're being delivered via e.g. RPM which supports split debuginfo
+debug = true
+
+[profile.thin]
+# drop bootc size when split debuginfo is not available and go a step
+# further in size optimization (when tested from 140mb, to 12mb without 
+# symbols/debuginfo, to 5.8mb with extra optimizations)
+# https://github.com/johnthagen/min-sized-rust
+# cargo build --profile=thin
+inherits = "release"
+debug = false       # Re-strip debug symbols
+strip = true        # Strip symbols from binary
+lto = true          # Use full lto to remove dead code
+opt-level = 's'     # Optimize for size with vector vectorization
+codegen-units = 1   # Reduce number of codegen units to increase optimizations
+
+[profile.releaselto]
+codegen-units = 1
+inherits = "release"
+lto = "yes"
+
+[workspace.dependencies]
+anstream = "0.6"
+anyhow = "1.0.82"
+camino = "1.1.6"
+cap-std-ext = "4.0.3"
+chrono = { version = "0.4.38", default-features = false }
+clap = "4.5.4"
+clap_mangen = { version = "0.2.20" }
+hex = "0.4.3"
+indoc = "2.0.5"
+indicatif = "0.17.0"
+fn-error-context = "0.2.1"
+libc = "0.2.154"
+openssl = "0.10.72"
+owo-colors = { version = "4" }
+rustix = { "version" = "1", features = ["thread", "net", "fs", "system", "process", "mount"] }
+serde = "1.0.199"
+serde_json = "1.0.116"
+similar-asserts = "1.5.0"
+static_assertions = "1.1.0"
+tempfile = "3.10.1"
+tracing = "0.1.40"
+thiserror = "2.0.11"
+tokio = ">= 1.37.0"
+tokio-util = { features = ["io-util"], version = "0.7.10" }
+
+# See https://github.com/coreos/cargo-vendor-filterer
+[workspace.metadata.vendor-filter]
+# For now we only care about tier 1+2 Linux.  (In practice, it's unlikely there is a tier3-only Linux dependency)
+platforms = ["*-unknown-linux-gnu"]
+tier = "2"
+all-features = true
+exclude-crate-paths = [ { name = "libz-sys", exclude = "src/zlib" },
+                        { name = "libz-sys", exclude = "src/zlib-ng" },
+                        # rustix includes pre-generated assembly for linux_raw, which we don't use
+                        { name = "rustix", exclude = "src/imp/linux_raw" },
+                        # Test files that include binaries
+                        { name = "system-deps", exclude = "src/tests" },
+                        # This stuff is giant, trim unused versions
+                        { name = "k8s-openapi", exclude = "src/v1_25" },
+                        { name = "k8s-openapi", exclude = "src/v1_27" },
+                      ]
+
+# This is an made up key for external binary dependencies.
+# setpriv is a proxy for util-linux, and systemctl is a proxy for systemd.
+[workspace.metadata.binary-dependencies]
+bins = ["skopeo", "podman", "ostree", "zstd", "setpriv", "systemctl"]
+
+[workspace.lints.rust]
+# Require an extra opt-in for unsafe
+unsafe_code = "deny"
+# Absolutely must handle errors
+unused_must_use = "forbid"
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+# Feel free to comment this one out locally during development of a patch.
+dead_code = "deny"
+
+[workspace.lints.clippy]
+disallowed_methods = "deny"
+# These should only be in local code
+dbg_macro = "deny"
+todo = "deny"
+# These two are in my experience the lints which are most likely
+# to trigger, and among the least valuable to fix.
+needless_borrow = "allow"
+needless_borrows_for_generic_args = "allow"
