@@ -5,11 +5,12 @@
  */
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bootc_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
@@ -328,6 +329,7 @@ impl Component for Efi {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
             adopted_from: Some(meta.version),
+            firmware: BTreeMap::new(),
         }))
     }
 
@@ -372,15 +374,67 @@ impl Component for Efi {
             .arg(destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
+
+        let mut found_firmware = BTreeMap::new();
+        // Scan and install supplemental firmware
+        let firmware_base_dir_path = Path::new("usr/lib/efi/firmware");
+        if src_root.exists(firmware_base_dir_path)? {
+            let firmware_base_dir = src_root.sub_dir(firmware_base_dir_path)?;
+            for pkg_entry in firmware_base_dir.list_dir(".")?.flatten() {
+                if firmware_base_dir.get_file_type(&pkg_entry)? != openat::SimpleType::Dir {
+                    continue;
+                }
+                let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+                let pkg_dir = firmware_base_dir.sub_dir(pkg_entry.file_name())?;
+
+                let mut versions: Vec<_> = pkg_dir.list_dir(".")?.filter_map(Result::ok).collect();
+                versions.sort_by_key(|e| e.file_name().to_owned());
+
+                if let Some(ver_entry) = versions.pop() {
+                    let ver_dir = pkg_dir.sub_dir(ver_entry.file_name())?;
+                    let meta_path = Path::new("EFI.json");
+
+                    if ver_dir.exists(meta_path)? {
+                        log::debug!(
+                            "Found supplemental firmware: {}/{}",
+                            pkg_name,
+                            ver_entry.file_name().to_string_lossy()
+                        );
+                        let firmware_meta: ContentMetadata =
+                            serde_json::from_reader(ver_dir.open_file(meta_path)?)?;
+                        let firmware_filetree = crate::filetree::FileTree::new_from_dir(&ver_dir)?;
+                        for file_path_str in firmware_filetree.children.keys() {
+                            let file_path = Path::new(file_path_str);
+                            if file_path != meta_path {
+                                ver_dir.copy_file_at(file_path, destd, file_path)?;
+                            }
+                        }
+
+                        found_firmware.insert(
+                            pkg_name.clone(),
+                            Box::new(InstalledContent {
+                                meta: firmware_meta,
+                                filetree: Some(firmware_filetree),
+                                adopted_from: None,
+                                firmware: BTreeMap::new(),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+            if let Some(vendordir) = self.get_efi_vendor(src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
+
         Ok(InstalledContent {
             meta,
             filetree: Some(ft),
             adopted_from: None,
+            firmware: found_firmware,
         })
     }
 
@@ -424,6 +478,7 @@ impl Component for Efi {
             meta: updatemeta,
             filetree: Some(updatef),
             adopted_from,
+            firmware: BTreeMap::new(),
         })
     }
 
@@ -460,6 +515,81 @@ impl Component for Efi {
         let meta = packagesystem::query_files(sysroot_path, files)?;
         write_update_metadata(sysroot_path, self, &meta)?;
         Ok(meta)
+    }
+
+    fn extend_payload(&self, sysroot_path: &str, src_input: &str) -> Result<Option<bool>> {
+        let dest_efidir_base = Path::new(sysroot_path).join("usr/lib/efi").join("firmware");
+
+        let src_input_path = Path::new(src_input);
+        let path_to_query = if src_input_path.is_dir() {
+            WalkDir::new(src_input_path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .find(|e| e.file_type().is_file())
+                .map(|e| e.path().to_path_buf())
+                .ok_or_else(|| anyhow!("No file found in directory {}", src_input))?
+        } else {
+            src_input_path.to_path_buf()
+        };
+
+        let meta_from_src = packagesystem::query_files(sysroot_path, [path_to_query])
+            .context(format!("Querying RPM metadata for {:?}", src_input_path))?;
+
+        let version_string_part =
+            meta_from_src.version.split(',').next().ok_or_else(|| {
+                anyhow!("RPM query returned an empty or malformed version string")
+            })?;
+
+        let parts: Vec<&str> = version_string_part.split('-').collect();
+        let (pkg_name, version_release_str) = if parts.len() >= 3 {
+            (
+                parts[0].to_string(),
+                format!(
+                    "{}-{}",
+                    parts[parts.len() - 2],
+                    parts[parts.len() - 1]
+                        .split('.')
+                        .next()
+                        .unwrap_or(parts[parts.len() - 1])
+                ),
+            )
+        } else {
+            anyhow::bail!("Unexpected RPM version string format");
+        };
+
+        // Use the flattened destination path
+        let final_dest_path = dest_efidir_base.join(&pkg_name).join(&version_release_str);
+        std::fs::create_dir_all(&final_dest_path)?;
+
+        // Copy the payload files
+        let src_metadata = std::fs::metadata(src_input_path)?;
+        if src_metadata.is_dir() {
+            Command::new("cp")
+                .args([
+                    "-rp",
+                    &format!("{}/.", src_input),
+                    final_dest_path.to_str().unwrap(),
+                ])
+                .run()
+                .with_context(|| {
+                    format!(
+                        "Failed to copy contents of {:?} to {:?}",
+                        src_input, &final_dest_path
+                    )
+                })?;
+        } else {
+            Command::new("cp")
+                .args(["-p", src_input, final_dest_path.to_str().unwrap()])
+                .run()?;
+        }
+
+        // Create the metadata file for the firmware
+        let firmware_meta_path = final_dest_path.join("EFI.json");
+        let meta_file = std::fs::File::create(firmware_meta_path)?;
+        serde_json::to_writer(meta_file, &meta_from_src)?;
+        log::debug!("Wrote firmware metadata for {}", pkg_name);
+
+        Ok(Some(true))
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
