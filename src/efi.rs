@@ -402,7 +402,9 @@ impl Component for Efi {
                         );
                         let firmware_meta: ContentMetadata =
                             serde_json::from_reader(ver_dir.open_file(meta_path)?)?;
-                        let firmware_filetree = crate::filetree::FileTree::new_from_dir(&ver_dir)?;
+                        let payload_src_dir = ver_dir.sub_dir("EFI")?;
+                        let firmware_filetree =
+                            crate::filetree::FileTree::new_from_dir(&payload_src_dir)?;
                         for file_path_str in firmware_filetree.children.keys() {
                             let file_path = Path::new(file_path_str);
                             if file_path != meta_path {
@@ -558,7 +560,10 @@ impl Component for Efi {
         };
 
         // Use the flattened destination path
-        let final_dest_path = dest_efidir_base.join(&pkg_name).join(&version_release_str);
+        let matadata_path = dest_efidir_base.join(&pkg_name).join(&version_release_str);
+        std::fs::create_dir_all(&matadata_path)?;
+
+        let final_dest_path = matadata_path.join("EFI");
         std::fs::create_dir_all(&final_dest_path)?;
 
         // Copy the payload files
@@ -584,7 +589,7 @@ impl Component for Efi {
         }
 
         // Create the metadata file for the firmware
-        let firmware_meta_path = final_dest_path.join("EFI.json");
+        let firmware_meta_path = matadata_path.join("EFI.json");
         let meta_file = std::fs::File::create(firmware_meta_path)?;
         serde_json::to_writer(meta_file, &meta_from_src)?;
         log::debug!("Wrote firmware metadata for {}", pkg_name);
