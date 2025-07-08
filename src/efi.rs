@@ -405,12 +405,13 @@ impl Component for Efi {
                         let payload_src_dir = ver_dir.sub_dir("EFI")?;
                         let firmware_filetree =
                             crate::filetree::FileTree::new_from_dir(&payload_src_dir)?;
-                        for file_path_str in firmware_filetree.children.keys() {
-                            let file_path = Path::new(file_path_str);
-                            if file_path != meta_path {
-                                ver_dir.copy_file_at(file_path, destd, file_path)?;
-                            }
-                        }
+                        // copy all by applying a diff with a empty filetree
+                        let empty_filetree = filetree::FileTree {
+                            children: Default::default(),
+                        };
+                        let diff = empty_filetree.diff(&firmware_filetree)?;
+                        filetree::apply_diff(&payload_src_dir, destd, &diff, None)
+                            .context("applying supplemental firmware")?;
 
                         found_firmware.insert(
                             pkg_name.clone(),
