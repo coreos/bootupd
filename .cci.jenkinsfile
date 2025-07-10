@@ -38,7 +38,8 @@ codestyle: {
 
 // Build FCOS and do a kola basic run
 // FIXME update to main branch once https://github.com/coreos/fedora-coreos-config/pull/595 merges
-cosaPod(runAsUser: 0, memory: "4608Mi", cpu: "4") {
+// The FCOS build process is memory-intensive; 6GiB is needed to prevent OOM errors.
+cosaPod(runAsUser: 0, memory: "6144Mi", cpu: "4") {
   stage("Build FCOS") {
     checkout scm
     unstash 'build'
