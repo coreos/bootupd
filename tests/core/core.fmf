@@ -1,0 +1,6 @@
+summary: check bootupd package installation
+tag:
+  - smoke
+test: |
+  set -x -e -o pipefail
+  rpm -q bootupd

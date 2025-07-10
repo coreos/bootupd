@@ -1,0 +1,46 @@
+name: TMT Tests
+
+on:
+  push:
+    branches: 
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      plan_filter:
+        description: |
+          Test plan filter name, ie: tag:smoke.
+          If provided, only tests matching this filter will be run, otherwise all tests will be run.
+        required: false
+        default: ''
+
+jobs:
+  tmt-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -x -e -o pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman libblkid-dev rsync
+          pip install --user tmt
+
+      - name: Run TMT tests
+        run: |
+          set -x -e -o pipefail
+          if [ "$ACT" = "true" ]; then
+            echo "Running locally using ACT"
+            TMT_PROVISION_OPTS="--how local --feeling-safe"
+          else
+            TMT_PROVISION_OPTS="--how container"
+          fi
+          if [ -n "${{ github.event.inputs.plan_filter }}" ]; then
+            PLAN_FILTER_PARAM="plan --filter '${{ github.event.inputs.plan_filter }}'"
+          fi
+          eval "tmt run --all --debug -vvvv provision $TMT_PROVISION_OPTS $PLAN_FILTER_PARAM"
