@@ -2,7 +2,7 @@ use camino::Utf8Path;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use bootc_blockdev::PartitionTable;
+use bootc_internal_blockdev::PartitionTable;
 use fn_error_context::context;
 
 #[context("get parent devices from mount point boot or sysroot")]
@@ -30,7 +30,7 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     };
 
     // Find the parent devices of the source path
-    let parent_devices = bootc_blockdev::find_parent_devices(&source)
+    let parent_devices = bootc_internal_blockdev::find_parent_devices(&source)
         .with_context(|| format!("While looking for backing devices of {}", source))?;
     log::debug!("Found parent devices: {parent_devices:?}");
     Ok(parent_devices)
@@ -40,7 +40,8 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 /// using sfdisk to get partitiontable
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
     const ESP_TYPE_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
-    let device_info: PartitionTable = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
+    let device_info: PartitionTable =
+        bootc_internal_blockdev::partitions_of(Utf8Path::new(device))?;
     let esp = device_info
         .partitions
         .into_iter()
@@ -70,7 +71,7 @@ pub fn find_colocated_esps(devices: &Vec<String>) -> Result<Option<Vec<String>>>
 /// Find bios_boot partition on the same device
 pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
     const BIOS_BOOT_TYPE_GUID: &str = "21686148-6449-6E6F-744E-656564454649";
-    let device_info = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
+    let device_info = bootc_internal_blockdev::partitions_of(Utf8Path::new(device))?;
     let bios_boot = device_info
         .partitions
         .into_iter()

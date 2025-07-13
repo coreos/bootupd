@@ -3,7 +3,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use bootc_utils::CommandRunExt;
+use bootc_internal_utils::CommandRunExt;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 

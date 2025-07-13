@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use bootc_utils::CommandRunExt;
+use bootc_internal_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use fn_error_context::context;
