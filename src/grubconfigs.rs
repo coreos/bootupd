@@ -163,6 +163,11 @@ mod tests {
     }
     #[test]
     fn test_write_grubenv() -> Result<()> {
+        // Skip this test if grub2-editenv is not installed
+        let editenv = Path::new("/usr/bin/grub2-editenv");
+        if !editenv.try_exists()? {
+            return Ok(());
+        }
         let td = tempfile::tempdir()?;
         let tdp = td.path();
         std::fs::create_dir_all(tdp.join("boot/grub2"))?;
