@@ -3,7 +3,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use anyhow::Result;
-use bootc_utils::CommandRunExt;
+use bootc_internal_utils::CommandRunExt;
 use fn_error_context::context;
 use rustix::fd::BorrowedFd;
 use serde::Deserialize;

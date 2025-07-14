@@ -24,13 +24,13 @@ fn target_device(device: &str) -> Result<Cow<str>> {
     const PREPBOOT_MBR_TYPE: &str = "41";
 
     // Here we use lsblk to see if the device has any partitions at all
-    let dev = bootc_blockdev::list_dev(device.into())?;
+    let dev = bootc_internal_blockdev::list_dev(device.into())?;
     if dev.children.is_none() {
         return Ok(device.into());
     };
     // If it does, directly call `sfdisk` and bypass lsblk because inside a container
     // we may not have all the cached udev state (that I think is in /run).
-    let device = bootc_blockdev::partitions_of(device.into())?;
+    let device = bootc_internal_blockdev::partitions_of(device.into())?;
     let prepdev = device
         .partitions
         .iter()

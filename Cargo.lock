@@ -155,12 +155,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootc-blockdev"
+name = "bootc-internal-blockdev"
 version = "0.0.0"
-source = "git+https://github.com/containers/bootc?rev=v1.3.0#b06d75fed73f26a974423a9db41e19413987fca3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12bb9c7f9e3f9ce605ae80d95f53a4957cacd95d8f022d9f7745bcdf1b9a94c4"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "fn-error-context",
  "regex",
@@ -170,9 +171,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootc-utils"
+name = "bootc-internal-utils"
 version = "0.0.0"
-source = "git+https://github.com/containers/bootc?rev=v1.3.0#b06d75fed73f26a974423a9db41e19413987fca3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7576a42b06b4d1d4005aac27f93b848bda3d80b6c80a6f1aa0f494b957351b81"
 dependencies = [
  "anyhow",
  "chrono",
@@ -192,8 +194,8 @@ version = "0.2.28"
 dependencies = [
  "anyhow",
  "bincode",
- "bootc-blockdev",
- "bootc-utils",
+ "bootc-internal-blockdev",
+ "bootc-internal-utils",
  "camino",
  "cap-std-ext",
  "chrono",
