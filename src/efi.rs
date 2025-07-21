@@ -21,6 +21,7 @@ use walkdir::WalkDir;
 use widestring::U16CString;
 
 use crate::bootupd::RootContext;
+use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
 use crate::util;
@@ -269,8 +270,7 @@ impl Component for Efi {
 
         grubconfigs::install(&sysroot, Some(&vendor), true)?;
         // Synchronize the filesystem containing /boot/efi/EFI/{vendor} to disk.
-        // (ignore failures)
-        let _ = efidir.syncfs();
+        fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
 
         Ok(())
     }
@@ -320,7 +320,7 @@ impl Component for Efi {
             }
 
             // Do the sync before unmount
-            efidir.syncfs()?;
+            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
             drop(efidir);
             self.unmount().context("unmount after adopt")?;
         }
@@ -414,7 +414,7 @@ impl Component for Efi {
                 .context("applying filesystem changes")?;
 
             // Do the sync before unmount
-            destdir.syncfs()?;
+            fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
             drop(destdir);
             self.unmount().context("unmount after update")?;
         }

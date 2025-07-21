@@ -10,6 +10,7 @@ use std::process::Command;
 use crate::blockdev;
 use crate::bootupd::RootContext;
 use crate::component::*;
+use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::grubconfigs;
 use crate::model::*;
 use crate::packagesystem;
@@ -199,7 +200,7 @@ impl Component for Bios {
         }
 
         // Synchronize the filesystem containing /boot/grub2 to disk.
-        let _ = grub_config_dir.syncfs();
+        fsfreeze_thaw_cycle(grub_config_dir.open_file(".")?)?;
 
         Ok(())
     }
