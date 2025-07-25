@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bootc_utils::CommandRunExt;
+use bootc_internal_utils::CommandRunExt;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use chrono::prelude::*;
@@ -465,14 +466,106 @@ impl Component for Efi {
         let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
             anyhow::bail!("Failed to find all esp devices");
         };
+        let mut updated_firmware = BTreeMap::new();
 
-        for esp in esp_devices {
-            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+        for esp in esp_devices.iter() {
+            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(esp))?;
             let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
                 .context("applying filesystem changes")?;
+            // update firmware
+            let firmware_base_dir_path = Path::new("usr/lib/efi/firmware");
+
+            let available_payloads = {
+                let mut payloads = BTreeMap::new();
+                if rootcxt.sysroot.exists(firmware_base_dir_path)? {
+                    let firmware_base_dir = rootcxt.sysroot.sub_dir(firmware_base_dir_path)?;
+                    for pkg_entry in firmware_base_dir.list_dir(".")?.flatten() {
+                        if firmware_base_dir.get_file_type(&pkg_entry)? == openat::SimpleType::Dir {
+                            let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+                            payloads.insert(pkg_name, pkg_entry.file_name().to_owned());
+                        }
+                    }
+                }
+                payloads
+            };
+
+            let old_keys: std::collections::HashSet<_> = current.firmware.keys().collect();
+            let new_keys: std::collections::HashSet<_> = available_payloads.keys().collect();
+            let all_keys: std::collections::HashSet<_> = old_keys.union(&new_keys).collect();
+
+            //  determine if it should be added, updated, or removed.
+            for pkg_name in all_keys {
+                let old_payload = current.firmware.get(*pkg_name);
+                let new_payload_path = available_payloads.get(*pkg_name);
+
+                let (diff, src_dir, new_content) = match (old_payload, new_payload_path) {
+                    // Payload exists in both old state and new source.
+                    (Some(old), Some(new_path)) => {
+                        let new_ver_dir = rootcxt
+                            .sysroot
+                            .sub_dir(firmware_base_dir_path)?
+                            .sub_dir(new_path.as_os_str())?;
+                        let new_payload_dir = new_ver_dir.sub_dir("EFI")?;
+                        let new_ft = crate::filetree::FileTree::new_from_dir(&new_payload_dir)?;
+                        let old_ft = old.filetree.as_ref().unwrap_or(&new_ft);
+                        let diff = old_ft.diff(&new_ft)?;
+
+                        let meta: ContentMetadata =
+                            serde_json::from_reader(new_ver_dir.open_file("EFI.json")?)?;
+                        let content = Box::new(InstalledContent {
+                            meta,
+                            filetree: Some(new_ft),
+                            adopted_from: None,
+                            firmware: BTreeMap::new(),
+                        });
+                        (diff, Some(new_payload_dir), Some(content))
+                    }
+                    // add as old payload is none
+                    (None, Some(new_path)) => {
+                        let new_ver_dir = rootcxt
+                            .sysroot
+                            .sub_dir(firmware_base_dir_path)?
+                            .sub_dir(new_path.as_os_str())?;
+                        let new_payload_dir = new_ver_dir.sub_dir("EFI")?;
+                        let new_ft = crate::filetree::FileTree::new_from_dir(&new_payload_dir)?;
+                        let empty_ft = crate::filetree::FileTree {
+                            children: BTreeMap::new(),
+                        };
+                        let diff = empty_ft.diff(&new_ft)?;
+
+                        let meta: ContentMetadata =
+                            serde_json::from_reader(new_ver_dir.open_file("EFI.json")?)?;
+                        let content = Box::new(InstalledContent {
+                            meta,
+                            filetree: Some(new_ft),
+                            adopted_from: None,
+                            firmware: BTreeMap::new(),
+                        });
+                        (diff, Some(new_payload_dir), Some(content))
+                    }
+                    // continue with old firmware
+                    (Some(_old), None) => continue,
+                    // Should not happen.
+                    (None, None) => continue,
+                };
+
+                //apply the above diffs
+                for esp in esp_devices.iter() {
+                    let destpath =
+                        &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(esp))?;
+                    let destdir = openat::Dir::open(destpath)?;
+                    let src_dir = src_dir.as_ref().unwrap_or(&destdir);
+                    filetree::apply_diff(src_dir, &destdir, &diff, None)
+                        .context(format!("applying firmware diff for {}", pkg_name))?;
+                }
+
+                if let Some(content) = new_content {
+                    updated_firmware.insert(pkg_name.to_string(), content);
+                }
+            }
 
             // Do the sync before unmount
             fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
@@ -485,7 +578,7 @@ impl Component for Efi {
             meta: updatemeta,
             filetree: Some(updatef),
             adopted_from,
-            firmware: BTreeMap::new(),
+            firmware: updated_firmware,
         })
     }
 
@@ -1008,7 +1101,9 @@ Boot0003* test";
             paths,
             ["usr/lib/efi/FOO/1.1/EFI", "usr/lib/efi/BAR/1.1/EFI"]
         );
+        Ok(())
     }
+
     #[test]
     fn test_extend_payload() -> Result<()> {
         use std::fs;
@@ -1175,4 +1270,3 @@ exit 1
         Ok(())
     }
 }
-
