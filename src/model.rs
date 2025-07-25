@@ -39,6 +39,9 @@ pub(crate) struct InstalledContent {
     pub(crate) filetree: Option<crate::filetree::FileTree>,
     /// The version this was originally adopted from
     pub(crate) adopted_from: Option<ContentMetadata>,
+    /// Nested map of supplemental firmware payloads.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) firmware: BTreeMap<String, Box<InstalledContent>>,
 }
 
 /// Will be serialized into /boot/bootupd-state.json

@@ -268,4 +268,7 @@ impl Component for Bios {
     fn get_efi_vendor(&self, _: &openat::Dir) -> Result<Option<String>> {
         Ok(None)
     }
+    fn extend_payload(&self, _: &str, _: &str) -> Result<Option<bool>> {
+        Ok(None)
+    }
 }
