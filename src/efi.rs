@@ -14,6 +14,7 @@ use bootc_internal_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
+use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
@@ -458,9 +459,10 @@ impl Component for Efi {
                 }
             }
 
-            let self_bin_meta = std::fs::metadata("/proc/self/exe")?;
+            // change to now to workaround https://github.com/coreos/bootupd/issues/933
+            let timestamp = std::time::SystemTime::now();
             ContentMetadata {
-                timestamp: self_bin_meta.modified()?.into(),
+                timestamp: chrono::DateTime::<Utc>::from(timestamp),
                 version: packages.join(","),
             }
         } else {
