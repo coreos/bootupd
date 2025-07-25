@@ -3,6 +3,7 @@ use camino::Utf8PathBuf;
 use openat_ext::OpenatDirExt;
 #[cfg(target_arch = "powerpc64")]
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::io::prelude::*;
 use std::path::Path;
 use std::process::Command;
@@ -122,6 +123,7 @@ impl Component for Bios {
             meta,
             filetree: None,
             adopted_from: None,
+            firmware: BTreeMap::new(),
         })
     }
 
@@ -236,6 +238,7 @@ impl Component for Bios {
             meta: update.clone(),
             filetree: None,
             adopted_from: Some(meta.version),
+            firmware: BTreeMap::new(),
         }))
     }
 
@@ -258,6 +261,7 @@ impl Component for Bios {
             meta: updatemeta,
             filetree: None,
             adopted_from,
+            firmware: BTreeMap::new(),
         })
     }
 

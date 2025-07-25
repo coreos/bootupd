@@ -5,6 +5,7 @@
  */
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -332,6 +333,7 @@ impl Component for Efi {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
             adopted_from: Some(meta.version),
+            firmware: BTreeMap::new(),
         }))
     }
 
@@ -376,15 +378,70 @@ impl Component for Efi {
             .arg(destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
+
+        let mut found_firmware = BTreeMap::new();
+        // Scan and install supplemental firmware
+        let firmware_base_dir_path = Path::new("usr/lib/efi/firmware");
+        if src_root.exists(firmware_base_dir_path)? {
+            let firmware_base_dir = src_root.sub_dir(firmware_base_dir_path)?;
+            for pkg_entry in firmware_base_dir.list_dir(".")?.flatten() {
+                if firmware_base_dir.get_file_type(&pkg_entry)? != openat::SimpleType::Dir {
+                    continue;
+                }
+                let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+                let pkg_dir = firmware_base_dir.sub_dir(pkg_entry.file_name())?;
+
+                let mut versions: Vec<_> = pkg_dir.list_dir(".")?.filter_map(Result::ok).collect();
+                versions.sort_by_key(|e| e.file_name().to_owned());
+
+                if let Some(ver_entry) = versions.pop() {
+                    let ver_dir = pkg_dir.sub_dir(ver_entry.file_name())?;
+                    let meta_path = Path::new("EFI.json");
+
+                    if ver_dir.exists(meta_path)? {
+                        log::debug!(
+                            "Found supplemental firmware: {}/{}",
+                            pkg_name,
+                            ver_entry.file_name().to_string_lossy()
+                        );
+                        let firmware_meta: ContentMetadata =
+                            serde_json::from_reader(ver_dir.open_file(meta_path)?)?;
+                        let payload_src_dir = ver_dir.sub_dir("EFI")?;
+                        let firmware_filetree =
+                            crate::filetree::FileTree::new_from_dir(&payload_src_dir)?;
+                        // copy all by applying a diff with a empty filetree
+                        let empty_filetree = filetree::FileTree {
+                            children: Default::default(),
+                        };
+                        let diff = empty_filetree.diff(&firmware_filetree)?;
+                        filetree::apply_diff(&payload_src_dir, destd, &diff, None)
+                            .context("applying supplemental firmware")?;
+
+                        found_firmware.insert(
+                            pkg_name.clone(),
+                            Box::new(InstalledContent {
+                                meta: firmware_meta,
+                                filetree: Some(firmware_filetree),
+                                adopted_from: None,
+                                firmware: BTreeMap::new(),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+            if let Some(vendordir) = self.get_efi_vendor(src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
+
         Ok(InstalledContent {
             meta,
             filetree: Some(ft),
             adopted_from: None,
+            firmware: found_firmware,
         })
     }
 
@@ -428,6 +485,7 @@ impl Component for Efi {
             meta: updatemeta,
             filetree: Some(updatef),
             adopted_from,
+            firmware: BTreeMap::new(),
         })
     }
 
