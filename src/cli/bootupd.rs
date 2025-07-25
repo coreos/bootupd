@@ -35,6 +35,11 @@ pub enum DVerb {
     GenerateUpdateMetadata(GenerateOpts),
     #[clap(name = "install", about = "Install components")]
     Install(InstallOpts),
+    #[clap(
+        name = "extend-payload-to-esp",
+        about = "Extend bootloader payload with additional files"
+    )]
+    ExtendPayload(ExtendPayloadOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -82,12 +87,20 @@ pub struct GenerateOpts {
     sysroot: Option<String>,
 }
 
+#[derive(Debug, Parser)]
+pub struct ExtendPayloadOpts {
+    /// Source directory containing files to add
+    #[clap(value_parser)]
+    src_root: String,
+}
+
 impl DCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
         match self.cmd {
             DVerb::Install(opts) => Self::run_install(opts),
             DVerb::GenerateUpdateMetadata(opts) => Self::run_generate_meta(opts),
+            DVerb::ExtendPayload(opts) => Self::run_extend_payload(opts),
         }
     }
 
@@ -120,6 +133,19 @@ impl DCommand {
             opts.auto,
         )
         .context("boot data installation failed")?;
+        Ok(())
+    }
+
+    pub(crate) fn run_extend_payload(opts: ExtendPayloadOpts) -> Result<()> {
+        let components = crate::bootupd::get_components();
+        let sysroot = "/";
+        for component in components.values() {
+            if let Some(updated) = component.extend_payload(sysroot, &opts.src_root)? {
+                if updated {
+                    println!("Extended payload for {} successfully", component.name());
+                }
+            }
+        }
         Ok(())
     }
 }
