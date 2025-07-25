@@ -106,3 +106,36 @@ jobs:
           # Verify we injected static configs
           jq -re '.["static-configs"].version' /boot/bootupd-state.json
           [ $(sudo stat -c "%a" /boot/grub2/grub.cfg) == "600" ]
+
+      - name: bootupctl generate-update-metadata
+        run: |
+          set -xeuo pipefail
+          # This will be helpful when we extend /usr
+          sudo podman run --rm -it --privileged localhost/bootupd:latest \
+            bash -c '
+              updates=/usr/lib/bootupd/updates
+              rm -fv ${updates}/{BIOS,EFI}.json
+              cp -r ${updates}/EFI /usr/lib/ostree-boot/efi
+              # prepare /usr/lib/efi/<grub2|shim>/<ver>
+              if [ ! -d "/usr/lib/efi" ]; then
+                arch="$(uname --machine)"
+                if [[ "${arch}" == "x86_64" ]]; then
+                  surfix="x64"
+                else
+                  # Assume aarch64 for now
+                  surfix="aa64"
+                fi
+
+                grub_ver=$(rpm -qa grub2-efi-${surfix} --queryformat '%{VERSION}-%{RELEASE}')
+                mkdir -p /usr/lib/efi/grub2/${grub_ver}/EFI/centos
+                mv ${updates}/EFI/centos/grub${surfix}.efi /usr/lib/efi/grub2/${grub_ver}/EFI/centos/
+
+                shim_ver=$(rpm -qa shim-${surfix} --queryformat '%{VERSION}-%{RELEASE}')
+                mkdir -p /usr/lib/efi/shim/${shim_ver}/EFI/
+                mv ${updates}/EFI /usr/lib/efi/shim/${shim_ver}/
+              else
+                rm -rf ${updates}/EFI
+              fi
+              bootupctl backend generate-update-metadata -vvv
+              cat ${updates}/EFI.json | jq
+            '

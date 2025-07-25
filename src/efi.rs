@@ -11,8 +11,10 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use bootc_internal_utils::CommandRunExt;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
+use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
@@ -30,6 +32,9 @@ use crate::{component::*, packagesystem};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
+
+/// New efi dir under usr/lib
+const EFILIB: &str = "usr/lib/efi";
 
 /// The binary to change EFI boot ordering
 const EFIBOOTMGR: &str = "efibootmgr";
@@ -427,38 +432,77 @@ impl Component for Efi {
         })
     }
 
-    fn generate_update_metadata(&self, sysroot_path: &str) -> Result<ContentMetadata> {
-        let ostreebootdir = Path::new(sysroot_path).join(ostreeutil::BOOT_PREFIX);
-        let dest_efidir = component_updatedir(sysroot_path, self);
+    fn generate_update_metadata(&self, sysroot: &str) -> Result<ContentMetadata> {
+        let sysroot_path = Utf8Path::new(sysroot);
 
-        if ostreebootdir.exists() {
-            let cruft = ["loader", "grub2"];
-            for p in cruft.iter() {
-                let p = ostreebootdir.join(p);
-                if p.exists() {
-                    std::fs::remove_dir_all(&p)?;
+        // copy EFI files to updates dir from usr/lib/efi
+        let meta = if sysroot_path.join(EFILIB).exists() {
+            let mut packages = Vec::new();
+            for efi_dir in get_efi_path_from_usr(&sysroot_path)? {
+                let efi_dir = efi_dir.context("Invalid EFI directory path")?;
+
+                let sysroot_dir =
+                    Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
+                Command::new("cp")
+                    .args(["-rp", "--reflink=auto"])
+                    .arg(&efi_dir)
+                    .arg(crate::model::BOOTUPD_UPDATES_DIR)
+                    .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
+                    .run()?;
+
+                if let Ok(relative) = efi_dir.strip_prefix(EFILIB) {
+                    let mut components = relative.components();
+
+                    if let (Some(pkg), Some(ver)) = (components.next(), components.next()) {
+                        packages.push(format!("{}-{}", pkg.as_str(), ver.as_str()));
+                    }
                 }
             }
 
-            let efisrc = ostreebootdir.join("efi/EFI");
-            if !efisrc.exists() {
-                bail!("Failed to find {:?}", &efisrc);
+            // change to now to workaround https://github.com/coreos/bootupd/issues/933
+            let timestamp = std::time::SystemTime::now();
+            ContentMetadata {
+                timestamp: chrono::DateTime::<Utc>::from(timestamp),
+                version: packages.join(","),
             }
+        } else {
+            let ostreebootdir = sysroot_path.join(ostreeutil::BOOT_PREFIX);
 
-            // Fork off mv() because on overlayfs one can't rename() a lower level
-            // directory today, and this will handle the copy fallback.
-            Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
-        }
+            // move EFI files to updates dir from /usr/lib/ostree-boot
+            if ostreebootdir.exists() {
+                let cruft = ["loader", "grub2"];
+                for p in cruft.iter() {
+                    let p = ostreebootdir.join(p);
+                    if p.exists() {
+                        std::fs::remove_dir_all(&p)?;
+                    }
+                }
 
-        let efidir = openat::Dir::open(&dest_efidir)
-            .with_context(|| format!("Opening {}", dest_efidir.display()))?;
-        let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
-            f.insert_str(0, "/boot/efi/EFI/");
-            f
-        });
+                let efisrc = ostreebootdir.join("efi/EFI");
+                if !efisrc.exists() {
+                    bail!("Failed to find {:?}", &efisrc);
+                }
 
-        let meta = packagesystem::query_files(sysroot_path, files)?;
-        write_update_metadata(sysroot_path, self, &meta)?;
+                let dest_efidir = component_updatedir(sysroot, self);
+                let dest_efidir =
+                    Utf8PathBuf::from_path_buf(dest_efidir).expect("Path is invalid UTF-8");
+                // Fork off mv() because on overlayfs one can't rename() a lower level
+                // directory today, and this will handle the copy fallback.
+                Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
+
+                let efidir = openat::Dir::open(dest_efidir.as_std_path())
+                    .with_context(|| format!("Opening {}", dest_efidir))?;
+                let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
+                    f.insert_str(0, "/boot/efi/EFI/");
+                    f
+                });
+                packagesystem::query_files(sysroot, files)?
+            } else {
+                anyhow::bail!("Failed to find {ostreebootdir}");
+            }
+        };
+
+        write_update_metadata(sysroot, self, &meta)?;
         Ok(meta)
     }
 
@@ -654,6 +698,29 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
     Ok(result)
 }
 
+/// Get EFI path under usr/lib/efi, eg. usr/lib/efi/<package>/<version>/EFI
+fn get_efi_path_from_usr(
+    sysroot: &Utf8Path,
+) -> Result<impl Iterator<Item = Result<Utf8PathBuf>> + use<'_>> {
+    let efilib_path = sysroot.join(EFILIB);
+
+    Ok(WalkDir::new(efilib_path)
+        .min_depth(3)
+        .max_depth(3)
+        .into_iter()
+        .filter_entry(|e| e.file_type().is_dir() && e.file_name() == "EFI")
+        .map(move |entry| {
+            let abs_path = entry.context("Failed to read directory entry")?.into_path();
+
+            let rel_path = abs_path
+                .strip_prefix(sysroot)
+                .context("Failed to strip sysroot prefix")?;
+
+            Utf8PathBuf::from_path_buf(rel_path.to_path_buf())
+                .map_err(|e| anyhow::anyhow!("Invalid UTF-8 path : {}", e.display()))
+        }))
+}
+
 #[cfg(test)]
 mod tests {
     use cap_std_ext::dirext::CapStdExtDirExt;
@@ -772,6 +839,25 @@ Boot0003* test";
             let name = get_product_name(&tmpd)?;
             assert!(name.len() > 0);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_efi_path_from_usr() -> Result<()> {
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+        std::fs::create_dir_all(efi_path.join("FOO/1.1/EFI"))?;
+        std::fs::create_dir_all(efi_path.join("BAR/1.1/EFI"))?;
+        std::fs::create_dir_all(efi_path.join("FOOBAR/1.1/test"))?;
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let efi_path_iter = get_efi_path_from_usr(utf8_tpath)?;
+        let paths: Vec<Utf8PathBuf> = efi_path_iter.filter_map(Result::ok).collect();
+        assert_eq!(
+            paths,
+            ["usr/lib/efi/FOO/1.1/EFI", "usr/lib/efi/BAR/1.1/EFI"]
+        );
         Ok(())
     }
 }
