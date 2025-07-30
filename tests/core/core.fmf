@@ -3,30 +3,30 @@ tag:
   - smoke
 test: |
   set -x -e -o pipefail
-
- # Check if bootupctl is available
+  
+  # Check if bootupctl is available
   if ! command -v bootupctl &> /dev/null; then
     echo "bootupctl command not found"
     exit 1
   fi
-
+  
   # Get architecture
   arch="$(uname --machine)"
-
+  
   # Run bootupctl status and check output
   output=$(bootupctl status | tr -d '\r')
-
+  
   if [[ "${arch}" == "x86_64" ]]; then
     expected_components='Available components: BIOS EFI'
   else
-  # Assume aarch64 for now
+    # Assume aarch64 for now
     expected_components='Available components: EFI'
   fi
-
+  
   if [ "${expected_components}" != "${output}" ]; then
     echo "Expected: ${expected_components}"
     echo "Got: ${output}"
     exit 1
   fi
-
+  
   echo "bootupd package and bootupctl status test passed"
