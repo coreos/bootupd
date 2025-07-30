@@ -25,7 +25,7 @@ bincode = "1.3.2"
 bootc-internal-blockdev = "0.0.0"
 bootc-internal-utils = "0.0.0"
 cap-std-ext = "4.0.6"
-camino = "1.1.9"
+camino = "1.1.10"
 chrono = { version = "0.4.41", features = ["serde"] }
 clap = { version = "4.5", default-features = false, features = ["cargo", "derive", "std", "help", "usage", "suggestions"] }
 env_logger = "0.11"
@@ -41,13 +41,13 @@ openat-ext = ">= 0.2.2, < 0.3.0"
 openssl = "^0.10"
 os-release = "0.1.0"
 regex = "1.11.1"
-rustix = { version = "1.0.7", features = ["process", "fs"] }
+rustix = { version = "1.0.8", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
 tempfile = "^3.20"
 widestring = "1.2.0"
 walkdir = "2.3.2"
-signal-hook-registry = "1.4.2"
+signal-hook-registry = "1.4.5"
 
 [profile.release]
 # We assume we're being delivered via e.g. RPM which supports split debuginfo
