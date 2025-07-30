@@ -15,6 +15,10 @@ on:
           If provided, only tests matching this filter will be run, otherwise all tests will be run.
         required: false
         default: ''
+      use_built_from_src:
+          description: 'Built bootupd from source instead of install distro package'
+          required: false
+          default: 'true'
 
 jobs:
   tmt-tests:
