@@ -183,6 +183,7 @@ jobs:
               echo "✓ extend-payload completed successfully"
               # Now test install to disk with extended firmware
               bootc install to-disk --skip-fetch-check \
+                -vv \
                 --disable-selinux --generic-image --via-loopback /target/myimage-extend.raw
             '
             
