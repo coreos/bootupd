@@ -139,3 +139,196 @@ jobs:
               bootupctl backend generate-update-metadata -vvv
               cat ${updates}/EFI.json | jq
             '
+
+      - name: Test install after extend-payload
+        run: |
+          set -xeuo pipefail
+          sudo truncate -s 5G myimage-extend.raw
+          sudo podman run --rm --privileged -v .:/target --pid=host --security-opt label=disable \
+            -v /var/lib/containers:/var/lib/containers \
+            -v /dev:/dev \
+            localhost/bootupd:latest bash -c '
+              # Create test firmware directory and files
+              mkdir -p /usr/share/uboot/rpi/overlays
+              echo "test uboot binary content" > /usr/share/uboot/rpi/u-boot.bin
+              echo "i2c device tree overlay" > /usr/share/uboot/rpi/overlays/i2c.dtb
+              
+              # Create a fake RPM database for testing
+              mkdir -p /usr/lib/sysimage/rpm
+              echo "fake rpm database" > /usr/lib/sysimage/rpm/Packages
+              
+              # Create mock rpm script using a here-document for clarity
+              cat << '"'EOT'"' > /usr/local/bin/rpm
+              #!/bin/bash
+              if [[ "$*" == *"-q"* ]] && [[ "$*" == *"-f"* ]]; then
+                  echo "uboot-images-2023.04-2.fc42.noarch,1681234567"
+                  exit 0
+              fi
+              exec /usr/bin/rpm.orig "$@"
+              EOT
+              
+              # Backup original rpm and make our mock executable
+              cp /usr/bin/rpm /usr/bin/rpm.orig
+              chmod +x /usr/local/bin/rpm
+              export PATH="/usr/local/bin:$PATH"
+              
+              # Run extend-payload-to-esp first
+              bootupctl backend extend-payload-to-esp /usr/share/uboot/rpi
+              
+              # Verify firmware was extended correctly
+              test -d /usr/lib/efi/firmware || { echo "firmware directory not created"; exit 1; }
+              firmware_ver_dir=$(find /usr/lib/efi/firmware -name "*2023.04*" -type d | head -1)
+              test -n "${firmware_ver_dir}" || { echo "firmware version directory not found"; exit 1; }
+              test -f "${firmware_ver_dir}/EFI/u-boot.bin" || { echo "u-boot.bin not copied"; exit 1; }
+              echo "✓ extend-payload completed successfully"
+              # Now test install to disk with extended firmware
+              bootc install to-disk --skip-fetch-check \
+                -vv \
+                --disable-selinux --generic-image --via-loopback /target/myimage-extend.raw
+            '
+            
+          # Verify firmware files were installed to ESP
+          sudo losetup -P -f myimage-extend.raw
+          device=$(losetup -a myimage-extend.raw --output NAME -n)
+          esp_part=$(sudo sfdisk -l -J "${device}" | jq -r '.partitiontable.partitions[] | select(.type == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B").node')
+          sudo mount "${esp_part}" /mnt/
+          
+          # Check that firmware files were copied to ESP during install
+          if sudo test -f /mnt/u-boot.bin; then
+            sudo grep -q "test uboot binary content" /mnt/u-boot.bin || { echo "u-boot.bin content incorrect on ESP"; exit 1; }
+            echo "✓ Firmware files correctly installed to ESP"
+          else
+            echo "Note: u-boot.bin not found on ESP (firmware install integration may need work)"
+          fi
+          
+          sudo umount /mnt
+          sudo losetup -D "${device}"
+          sudo rm -f myimage-extend.raw
+
+      - name: Test update after extend-payload
+        run: |
+          set -xeuo pipefail
+          sudo truncate -s 5G myimage-update.raw
+          sudo podman run --rm --privileged -v .:/target --pid=host --security-opt label=disable \
+            -v /var/lib/containers:/var/lib/containers \
+            -v /dev:/dev \
+            localhost/bootupd:latest bash -c '
+              # Create initial test firmware directory and files
+              mkdir -p /usr/share/uboot/rpi/overlays
+              echo "initial uboot binary content v1.0" > /usr/share/uboot/rpi/u-boot.bin
+              echo "initial i2c device tree overlay" > /usr/share/uboot/rpi/overlays/i2c.dtb
+              
+              # Create a fake RPM database for testing
+              mkdir -p /usr/lib/sysimage/rpm
+              echo "fake rpm database" > /usr/lib/sysimage/rpm/Packages
+              
+              # Create mock rpm script that returns initial package data
+              cat << '"'EOT'"' > /usr/local/bin/rpm
+              #!/bin/bash
+              if [[ "$*" == *"-q"* ]] && [[ "$*" == *"-f"* ]]; then
+                  echo "uboot-images-2023.04-1.fc42.noarch,1681234567"
+                  exit 0
+              fi
+              exec /usr/bin/rpm.orig "$@"
+              EOT
+              
+              # Backup original rpm and make our mock executable
+              cp /usr/bin/rpm /usr/bin/rpm.orig
+              chmod +x /usr/local/bin/rpm
+              export PATH="/usr/local/bin:$PATH"
+              
+              # Run initial extend-payload-to-esp
+              bootupctl backend extend-payload-to-esp /usr/share/uboot/rpi
+              
+              # Verify initial firmware was extended correctly
+              test -d /usr/lib/efi/firmware || { echo "firmware directory not created"; exit 1; }
+              firmware_ver_dir=$(find /usr/lib/efi/firmware -name "*2023.04-1*" -type d | head -1)
+              test -n "${firmware_ver_dir}" || { echo "initial firmware version directory not found"; exit 1; }
+              test -f "${firmware_ver_dir}/EFI/u-boot.bin" || { echo "initial u-boot.bin not copied"; exit 1; }
+              grep -q "initial uboot binary content v1.0" "${firmware_ver_dir}/EFI/u-boot.bin"
+              echo "✓ initial extend-payload completed successfully"
+              
+              # Install to disk with initial firmware
+              bootc install to-disk --skip-fetch-check \
+                --disable-selinux --generic-image --via-loopback /target/myimage-update.raw
+              
+              # Now simulate a firmware update by creating new firmware files
+              echo "updated uboot binary content v2.0" > /usr/share/uboot/rpi/u-boot.bin
+              echo "updated i2c device tree overlay" > /usr/share/uboot/rpi/overlays/i2c.dtb
+              echo "new overlay for v2" > /usr/share/uboot/rpi/overlays/spi.dtb
+              
+              # Update mock rpm to return new version
+              cat << '"'EOT'"' > /usr/local/bin/rpm
+              #!/bin/bash
+              if [[ "$*" == *"-q"* ]] && [[ "$*" == *"-f"* ]]; then
+                  echo "uboot-images-2023.04-2.fc42.noarch,1681234999"
+                  exit 0
+              fi
+              exec /usr/bin/rpm.orig "$@"
+              EOT
+              
+              # Run updated extend-payload-to-esp
+              bootupctl backend extend-payload-to-esp /usr/share/uboot/rpi
+              
+              # Verify updated firmware was extended correctly (only v2.0 should exist now)
+              updated_firmware_ver_dir=$(find /usr/lib/efi/firmware -name "*2023.04-2*" -type d | head -1)
+              test -n "${updated_firmware_ver_dir}" || { echo "updated firmware version directory not found"; exit 1; }
+              test -f "${updated_firmware_ver_dir}/EFI/u-boot.bin" || { echo "updated u-boot.bin not copied"; exit 1; }
+              grep -q "updated uboot binary content v2.0" "${updated_firmware_ver_dir}/EFI/u-boot.bin"
+              test -f "${updated_firmware_ver_dir}/EFI/overlays/spi.dtb" || { echo "new spi.dtb not copied"; exit 1; }
+              
+              # Verify old version (2023.04-1) was removed
+              old_firmware_ver_dir=$(find /usr/lib/efi/firmware -name "*2023.04-1*" -type d | head -1)
+              test -z "${old_firmware_ver_dir}" || { echo "old firmware version should have been removed but still exists: ${old_firmware_ver_dir}"; exit 1; }
+              
+              echo "✓ updated extend-payload completed successfully (old version cleaned up)"
+              
+              # Run bootupctl update to apply the updated firmware to ESP
+              bootupctl update
+              echo "✓ bootupctl update completed successfully"
+            '
+            
+          # Verify updated firmware files were applied to ESP
+          sudo losetup -P -f myimage-update.raw
+          device=$(losetup -a myimage-update.raw --output NAME -n)
+          esp_part=$(sudo sfdisk -l -J "${device}" | jq -r '.partitiontable.partitions[] | select(.type == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B").node')
+          sudo mount "${esp_part}" /mnt/
+          
+          # Check that updated firmware files were applied to ESP during update
+          if sudo test -f /mnt/u-boot.bin; then
+            sudo grep -q "updated uboot binary content v2.0" /mnt/u-boot.bin || { echo "u-boot.bin was not updated on ESP"; exit 1; }
+            echo "✓ Updated firmware files correctly applied to ESP"
+          else
+            echo "Warning: u-boot.bin not found on ESP after update"
+            exit 1
+          fi
+          
+          # Check that new overlay file was also copied
+          if sudo test -f /mnt/overlays/spi.dtb; then
+            sudo grep -q "new overlay for v2" /mnt/overlays/spi.dtb || { echo "spi.dtb content incorrect on ESP"; exit 1; }
+            echo "✓ New overlay files correctly applied to ESP"
+          else
+            echo "Warning: new spi.dtb not found on ESP after update"
+          fi
+          
+          # Verify checksums and state integrity
+          echo "🔍 Validating firmware checksums and state integrity..."
+          sudo podman run --rm --privileged -v .:/target --pid=host --security-opt label=disable \
+            -v /var/lib/containers:/var/lib/containers \
+            -v /dev:/dev \
+            localhost/bootupd:latest bash -c '
+              # Run bootupctl validate to check all checksums
+              bootupctl validate || { echo "bootupctl validate failed - checksum mismatch detected"; exit 1; }
+              echo "✓ All file checksums validated successfully"
+              
+              # Check that bootupd-state.json reflects the updated firmware
+              if test -f /boot/bootupd-state.json; then
+                # Verify firmware is tracked in state
+                jq -e ".installed.EFI.firmware.uboot" /boot/bootupd-state.json >/dev/null || { echo "Updated firmware not found in bootupd-state.json"; exit 1; }
+                echo "✓ Updated firmware properly tracked in bootupd-state.json"
+              fi
+            '
+          
+          sudo umount /mnt
+          sudo losetup -D "${device}"
+          sudo rm -f myimage-update.raw

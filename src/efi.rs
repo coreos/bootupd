@@ -5,11 +5,12 @@
  */
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bootc_internal_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
@@ -333,6 +334,7 @@ impl Component for Efi {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
             adopted_from: Some(meta.version),
+            firmware: BTreeMap::new(),
         }))
     }
 
@@ -377,15 +379,70 @@ impl Component for Efi {
             .arg(destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
+
+        let mut found_firmware = BTreeMap::new();
+        // Scan and install supplemental firmware
+        let firmware_base_dir_path = Path::new("usr/lib/efi/firmware");
+        if src_root.exists(firmware_base_dir_path)? {
+            let firmware_base_dir = src_root.sub_dir(firmware_base_dir_path)?;
+            for pkg_entry in firmware_base_dir.list_dir(".")?.flatten() {
+                if firmware_base_dir.get_file_type(&pkg_entry)? != openat::SimpleType::Dir {
+                    continue;
+                }
+                let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+                let pkg_dir = firmware_base_dir.sub_dir(pkg_entry.file_name())?;
+
+                let mut versions: Vec<_> = pkg_dir.list_dir(".")?.filter_map(Result::ok).collect();
+                versions.sort_by_key(|e| e.file_name().to_owned());
+
+                if let Some(ver_entry) = versions.pop() {
+                    let ver_dir = pkg_dir.sub_dir(ver_entry.file_name())?;
+                    let meta_path = Path::new("EFI.json");
+
+                    if ver_dir.exists(meta_path)? {
+                        log::debug!(
+                            "Found supplemental firmware: {}/{}",
+                            pkg_name,
+                            ver_entry.file_name().to_string_lossy()
+                        );
+                        let firmware_meta: ContentMetadata =
+                            serde_json::from_reader(ver_dir.open_file(meta_path)?)?;
+                        let payload_src_dir = ver_dir.sub_dir("EFI")?;
+                        let firmware_filetree =
+                            crate::filetree::FileTree::new_from_dir(&payload_src_dir)?;
+                        // copy all by applying a diff with a empty filetree
+                        let empty_filetree = filetree::FileTree {
+                            children: Default::default(),
+                        };
+                        let diff = empty_filetree.diff(&firmware_filetree)?;
+                        filetree::apply_diff(&payload_src_dir, destd, &diff, None)
+                            .context("applying supplemental firmware")?;
+
+                        found_firmware.insert(
+                            pkg_name.clone(),
+                            Box::new(InstalledContent {
+                                meta: firmware_meta,
+                                filetree: Some(firmware_filetree),
+                                adopted_from: None,
+                                firmware: BTreeMap::new(),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+            if let Some(vendordir) = self.get_efi_vendor(src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
+
         Ok(InstalledContent {
             meta,
             filetree: Some(ft),
             adopted_from: None,
+            firmware: found_firmware,
         })
     }
 
@@ -409,14 +466,106 @@ impl Component for Efi {
         let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
             anyhow::bail!("Failed to find all esp devices");
         };
+        let mut updated_firmware = BTreeMap::new();
 
-        for esp in esp_devices {
-            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+        for esp in esp_devices.iter() {
+            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(esp))?;
             let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
                 .context("applying filesystem changes")?;
+            // update firmware
+            let firmware_base_dir_path = Path::new("usr/lib/efi/firmware");
+
+            let available_payloads = {
+                let mut payloads = BTreeMap::new();
+                if rootcxt.sysroot.exists(firmware_base_dir_path)? {
+                    let firmware_base_dir = rootcxt.sysroot.sub_dir(firmware_base_dir_path)?;
+                    for pkg_entry in firmware_base_dir.list_dir(".")?.flatten() {
+                        if firmware_base_dir.get_file_type(&pkg_entry)? == openat::SimpleType::Dir {
+                            let pkg_name = pkg_entry.file_name().to_string_lossy().to_string();
+                            payloads.insert(pkg_name, pkg_entry.file_name().to_owned());
+                        }
+                    }
+                }
+                payloads
+            };
+
+            let old_keys: std::collections::HashSet<_> = current.firmware.keys().collect();
+            let new_keys: std::collections::HashSet<_> = available_payloads.keys().collect();
+            let all_keys: std::collections::HashSet<_> = old_keys.union(&new_keys).collect();
+
+            //  determine if it should be added, updated, or removed.
+            for pkg_name in all_keys {
+                let old_payload = current.firmware.get(*pkg_name);
+                let new_payload_path = available_payloads.get(*pkg_name);
+
+                let (diff, src_dir, new_content) = match (old_payload, new_payload_path) {
+                    // Payload exists in both old state and new source.
+                    (Some(old), Some(new_path)) => {
+                        let new_ver_dir = rootcxt
+                            .sysroot
+                            .sub_dir(firmware_base_dir_path)?
+                            .sub_dir(new_path.as_os_str())?;
+                        let new_payload_dir = new_ver_dir.sub_dir("EFI")?;
+                        let new_ft = crate::filetree::FileTree::new_from_dir(&new_payload_dir)?;
+                        let old_ft = old.filetree.as_ref().unwrap_or(&new_ft);
+                        let diff = old_ft.diff(&new_ft)?;
+
+                        let meta: ContentMetadata =
+                            serde_json::from_reader(new_ver_dir.open_file("EFI.json")?)?;
+                        let content = Box::new(InstalledContent {
+                            meta,
+                            filetree: Some(new_ft),
+                            adopted_from: None,
+                            firmware: BTreeMap::new(),
+                        });
+                        (diff, Some(new_payload_dir), Some(content))
+                    }
+                    // add as old payload is none
+                    (None, Some(new_path)) => {
+                        let new_ver_dir = rootcxt
+                            .sysroot
+                            .sub_dir(firmware_base_dir_path)?
+                            .sub_dir(new_path.as_os_str())?;
+                        let new_payload_dir = new_ver_dir.sub_dir("EFI")?;
+                        let new_ft = crate::filetree::FileTree::new_from_dir(&new_payload_dir)?;
+                        let empty_ft = crate::filetree::FileTree {
+                            children: BTreeMap::new(),
+                        };
+                        let diff = empty_ft.diff(&new_ft)?;
+
+                        let meta: ContentMetadata =
+                            serde_json::from_reader(new_ver_dir.open_file("EFI.json")?)?;
+                        let content = Box::new(InstalledContent {
+                            meta,
+                            filetree: Some(new_ft),
+                            adopted_from: None,
+                            firmware: BTreeMap::new(),
+                        });
+                        (diff, Some(new_payload_dir), Some(content))
+                    }
+                    // continue with old firmware
+                    (Some(_old), None) => continue,
+                    // Should not happen.
+                    (None, None) => continue,
+                };
+
+                //apply the above diffs
+                for esp in esp_devices.iter() {
+                    let destpath =
+                        &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(esp))?;
+                    let destdir = openat::Dir::open(destpath)?;
+                    let src_dir = src_dir.as_ref().unwrap_or(&destdir);
+                    filetree::apply_diff(src_dir, &destdir, &diff, None)
+                        .context(format!("applying firmware diff for {}", pkg_name))?;
+                }
+
+                if let Some(content) = new_content {
+                    updated_firmware.insert(pkg_name.to_string(), content);
+                }
+            }
 
             // Do the sync before unmount
             fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
@@ -429,6 +578,7 @@ impl Component for Efi {
             meta: updatemeta,
             filetree: Some(updatef),
             adopted_from,
+            firmware: updated_firmware,
         })
     }
 
@@ -504,6 +654,99 @@ impl Component for Efi {
 
         write_update_metadata(sysroot, self, &meta)?;
         Ok(meta)
+    }
+
+    fn extend_payload(&self, sysroot_path: &str, src_input: &str) -> Result<Option<bool>> {
+        let dest_efidir_base = Path::new(sysroot_path).join("usr/lib/efi").join("firmware");
+
+        let src_input_path = Path::new(src_input);
+        let path_to_query = if src_input_path.is_dir() {
+            WalkDir::new(src_input_path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .find(|e| e.file_type().is_file())
+                .map(|e| e.path().to_path_buf())
+                .ok_or_else(|| anyhow!("No file found in directory {}", src_input))?
+        } else {
+            src_input_path.to_path_buf()
+        };
+
+        let meta_from_src = packagesystem::query_files(sysroot_path, [path_to_query])
+            .context(format!("Querying RPM metadata for {:?}", src_input_path))?;
+
+        let version_string_part =
+            meta_from_src.version.split(',').next().ok_or_else(|| {
+                anyhow!("RPM query returned an empty or malformed version string")
+            })?;
+
+        let parts: Vec<&str> = version_string_part.split('-').collect();
+        let (pkg_name, version_release_str) = if parts.len() >= 3 {
+            (
+                parts[0].to_string(),
+                format!(
+                    "{}-{}",
+                    parts[parts.len() - 2],
+                    parts[parts.len() - 1]
+                        .split('.')
+                        .next()
+                        .unwrap_or(parts[parts.len() - 1])
+                ),
+            )
+        } else {
+            anyhow::bail!("Unexpected RPM version string format");
+        };
+
+        // Clean up any existing firmware versions for this package to ensure only one version
+        let pkg_firmware_dir = dest_efidir_base.join(&pkg_name);
+        if pkg_firmware_dir.exists() {
+            log::debug!(
+                "Removing existing firmware versions for package: {}",
+                pkg_name
+            );
+            std::fs::remove_dir_all(&pkg_firmware_dir).with_context(|| {
+                format!(
+                    "Failed to remove existing firmware directory {:?}",
+                    pkg_firmware_dir
+                )
+            })?;
+        }
+
+        // Use the flattened destination path
+        let final_dest_path = dest_efidir_base.join(&pkg_name).join(&version_release_str);
+        std::fs::create_dir_all(&final_dest_path)?;
+
+        let efi_dest_path = final_dest_path.join("EFI");
+        std::fs::create_dir_all(&efi_dest_path)?;
+
+        // Copy the payload files
+        let src_metadata = std::fs::metadata(src_input_path)?;
+        if src_metadata.is_dir() {
+            Command::new("cp")
+                .args([
+                    "-rp",
+                    &format!("{}/.", src_input),
+                    efi_dest_path.to_str().unwrap(),
+                ])
+                .run()
+                .with_context(|| {
+                    format!(
+                        "Failed to copy contents of {:?} to {:?}",
+                        src_input, &efi_dest_path
+                    )
+                })?;
+        } else {
+            Command::new("cp")
+                .args(["-p", src_input, efi_dest_path.to_str().unwrap()])
+                .run()?;
+        }
+
+        // Create the metadata file for the firmware
+        let firmware_meta_path = final_dest_path.join("EFI.json");
+        let meta_file = std::fs::File::create(firmware_meta_path)?;
+        serde_json::to_writer(meta_file, &meta_from_src)?;
+        log::debug!("Wrote firmware metadata for {}", pkg_name);
+
+        Ok(Some(true))
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
@@ -858,6 +1101,172 @@ Boot0003* test";
             paths,
             ["usr/lib/efi/FOO/1.1/EFI", "usr/lib/efi/BAR/1.1/EFI"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_extend_payload() -> Result<()> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_sysroot = TempDir::new()?;
+        let temp_src = TempDir::new()?;
+
+        let sysroot_path = temp_sysroot.path().to_str().unwrap();
+        let src_path = temp_src.path().to_str().unwrap();
+
+        // mockup data source: /usr/share/uboot/rpi/
+        // content: u-boot.bin, overlays/i2c.dtb
+        // mockup rpm: uboot-images-2023.04-2.fc42.noarch
+        // mockup rpm_db: /usr/lib/sysimage/rpm/Packages
+        let src_uboot_dir = temp_src
+            .path()
+            .join("usr")
+            .join("share")
+            .join("uboot")
+            .join("rpi");
+        fs::create_dir_all(&src_uboot_dir)?;
+
+        let src_overlays_dir = src_uboot_dir.join("overlays");
+        fs::create_dir_all(&src_overlays_dir)?;
+
+        // Create content files
+        let uboot_bin = src_uboot_dir.join("u-boot.bin");
+        fs::write(&uboot_bin, b"uboot binary content")?;
+        let overlay_dtb = src_overlays_dir.join("i2c.dtb");
+        fs::write(&overlay_dtb, b"device tree overlay content")?;
+
+        // Create a mockup RPM database structure
+        let rpm_db_dir = temp_sysroot
+            .path()
+            .join("usr")
+            .join("lib")
+            .join("sysimage")
+            .join("rpm");
+        fs::create_dir_all(&rpm_db_dir)?;
+        fs::write(rpm_db_dir.join("Packages"), b"fake rpm database file")?;
+
+        // Create a mock rpm script that returns uboot-images package data
+        let mock_rpm_dir = TempDir::new()?;
+        let mock_rpm_script = mock_rpm_dir.path().join("rpm");
+
+        let mock_script_content = r#"#!/bin/bash
+# Mock rpm script for testing
+if [[ "$*" == *"-q"* ]] && [[ "$*" == *"-f"* ]]; then
+    # Return mock uboot-images package data in the expected format: nevra,buildtime
+    echo "uboot-images-2023.04-2.fc42.noarch,1681234567"
+    exit 0
+fi
+# For any other rpm command, just fail
+exit 1
+"#
+        .to_string();
+
+        fs::write(&mock_rpm_script, mock_script_content)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&mock_rpm_script)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&mock_rpm_script, perms)?;
+        }
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", mock_rpm_dir.path().display(), original_path);
+        std::env::set_var("PATH", &new_path);
+
+        // Test extend_payload
+        let efi_component = Efi::default();
+
+        let result = efi_component
+            .extend_payload(sysroot_path, &format!("{}/usr/share/uboot/rpi", src_path));
+
+        // validation beigins
+        std::env::set_var("PATH", &original_path);
+        match result {
+            Ok(Some(true)) => {
+                // Verify the files were copied to the right location
+                let firmware_base = temp_sysroot
+                    .path()
+                    .join("usr")
+                    .join("lib")
+                    .join("efi")
+                    .join("firmware");
+                assert!(
+                    firmware_base.exists(),
+                    "Firmware base directory should be created"
+                );
+
+                // Look for the uboot package directory (package name is extracted from first part)
+                // From "uboot-images-2023.04-2.fc42.noarch" -> package: "uboot", version: "2023.04-2"
+                let uboot_dir = firmware_base.join("uboot").join("2023.04-2");
+                assert!(
+                    uboot_dir.exists(),
+                    "Package directory uboot/2023.04-2 should be created"
+                );
+
+                // Files should be copied to the EFI subdirectory
+                let efi_dir = uboot_dir.join("EFI");
+                assert!(efi_dir.exists(), "EFI directory should be created");
+
+                // Verify that u-boot.bin was copied to EFI subdirectory
+                let copied_uboot_bin = efi_dir.join("u-boot.bin");
+                assert!(copied_uboot_bin.exists(), "u-boot.bin should be copied");
+                let uboot_content = fs::read_to_string(&copied_uboot_bin)?;
+                assert_eq!(
+                    uboot_content, "uboot binary content",
+                    "u-boot.bin content should be preserved"
+                );
+
+                // Verify that overlays directory and i2c.dtb were copied to EFI subdirectory
+                let copied_overlays_dir = efi_dir.join("overlays");
+                assert!(
+                    copied_overlays_dir.exists(),
+                    "overlays directory should be copied"
+                );
+
+                let copied_overlay_dtb = copied_overlays_dir.join("i2c.dtb");
+                assert!(copied_overlay_dtb.exists(), "i2c.dtb should be copied");
+                let overlay_content = fs::read_to_string(&copied_overlay_dtb)?;
+                assert_eq!(
+                    overlay_content, "device tree overlay content",
+                    "i2c.dtb content should be preserved"
+                );
+
+                // Verify the EFI.json metadata
+                let metadata_file = uboot_dir.join("EFI.json");
+                assert!(
+                    metadata_file.exists(),
+                    "EFI.json metadata file should be created"
+                );
+                let metadata_content = fs::read_to_string(&metadata_file)?;
+                let parsed: ContentMetadata = serde_json::from_str(&metadata_content)?;
+                assert!(
+                    parsed
+                        .version
+                        .contains("uboot-images-2023.04-2.fc42.noarch"),
+                    "Metadata should contain uboot package"
+                );
+
+                println!("extend_payload test completed successfully!");
+                println!("✓ Files copied to: {:?}", efi_dir);
+                println!("✓ u-boot.bin: {:?}", copied_uboot_bin);
+                println!("✓ overlays/i2c.dtb: {:?}", copied_overlay_dtb);
+                println!("✓ Metadata created: {:?}", metadata_file);
+                println!("✓ Package version: {}", parsed.version);
+            }
+            Ok(Some(false)) => {
+                panic!("extend_payload returned false - expected success");
+            }
+            Ok(None) => {
+                panic!("extend_payload returned None - expected success");
+            }
+            Err(e) => {
+                panic!("extend_payload failed when it should have succeeded: {}", e);
+            }
+        }
+
         Ok(())
     }
 }

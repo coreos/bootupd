@@ -30,6 +30,8 @@ pub(crate) struct InstalledContent01 {
     pub(crate) meta: ContentMetadata01,
     /// File tree
     pub(crate) filetree: Option<crate::filetree::FileTree>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) firmware: BTreeMap<String, Box<InstalledContent01>>,
 }
 
 /// Will be serialized into /boot/bootupd-state.json
@@ -59,6 +61,11 @@ impl InstalledContent01 {
             meta: self.meta.upconvert(),
             filetree: self.filetree,
             adopted_from: None,
+            firmware: self
+                .firmware
+                .into_iter()
+                .map(|(k, v)| (k, Box::new(v.upconvert())))
+                .collect(),
         }
     }
 }
