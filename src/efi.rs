@@ -436,27 +436,22 @@ impl Component for Efi {
         let sysroot_path = Utf8Path::new(sysroot);
 
         // copy EFI files to updates dir from usr/lib/efi
-        let meta = if sysroot_path.join(EFILIB).exists() {
+        let efilib_path = sysroot_path.join(EFILIB);
+        let meta = if efilib_path.exists() {
             let mut packages = Vec::new();
-            for efi_dir in get_efi_path_from_usr(&sysroot_path)? {
-                let efi_dir = efi_dir.context("Invalid EFI directory path")?;
-
-                let sysroot_dir =
-                    Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
+            let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
+            let efi_components = get_efi_component_from_usr(&sysroot_path, EFILIB)?;
+            if efi_components.len() == 0 {
+                bail!("Failed to find EFI components from {efilib_path}");
+            }
+            for efi in efi_components {
                 Command::new("cp")
                     .args(["-rp", "--reflink=auto"])
-                    .arg(&efi_dir)
+                    .arg(&efi.path)
                     .arg(crate::model::BOOTUPD_UPDATES_DIR)
                     .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
                     .run()?;
-
-                if let Ok(relative) = efi_dir.strip_prefix(EFILIB) {
-                    let mut components = relative.components();
-
-                    if let (Some(pkg), Some(ver)) = (components.next(), components.next()) {
-                        packages.push(format!("{}-{}", pkg.as_str(), ver.as_str()));
-                    }
-                }
+                packages.push(format!("{}-{}", efi.name, efi.version));
             }
 
             // change to now to workaround https://github.com/coreos/bootupd/issues/933
@@ -698,27 +693,51 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
     Ok(result)
 }
 
-/// Get EFI path under usr/lib/efi, eg. usr/lib/efi/<package>/<version>/EFI
-fn get_efi_path_from_usr(
-    sysroot: &Utf8Path,
-) -> Result<impl Iterator<Item = Result<Utf8PathBuf>> + use<'_>> {
-    let efilib_path = sysroot.join(EFILIB);
+#[derive(Debug, PartialEq, Eq)]
+pub struct EFIComponent {
+    name: String,
+    version: String,
+    path: Utf8PathBuf,
+}
 
-    Ok(WalkDir::new(efilib_path)
-        .min_depth(3)
+/// Get EFIComponents from e.g. usr/lib/efi, like "usr/lib/efi/<name>/<version>/EFI"
+fn get_efi_component_from_usr<'a>(
+    sysroot: &'a Utf8Path,
+    usr_path: &'a str,
+) -> Result<Vec<EFIComponent>> {
+    let efilib_path = sysroot.join(usr_path);
+    let skip_count = Utf8Path::new(usr_path).components().count();
+
+    let mut components: Vec<EFIComponent> = WalkDir::new(&efilib_path)
+        .min_depth(3) // <name>/<version>/EFI: so 3 levels down
         .max_depth(3)
         .into_iter()
-        .filter_entry(|e| e.file_type().is_dir() && e.file_name() == "EFI")
-        .map(move |entry| {
-            let abs_path = entry.context("Failed to read directory entry")?.into_path();
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().is_dir() || entry.file_name() != "EFI" {
+                return None;
+            }
 
-            let rel_path = abs_path
-                .strip_prefix(sysroot)
-                .context("Failed to strip sysroot prefix")?;
+            let abs_path = entry.path();
+            let rel_path = abs_path.strip_prefix(sysroot).ok()?;
+            let utf8_rel_path = Utf8PathBuf::from_path_buf(rel_path.to_path_buf()).ok()?;
 
-            Utf8PathBuf::from_path_buf(rel_path.to_path_buf())
-                .map_err(|e| anyhow::anyhow!("Invalid UTF-8 path : {}", e.display()))
-        }))
+            let mut components = utf8_rel_path.components();
+
+            let name = components.nth(skip_count)?.to_string();
+            let version = components.next()?.to_string();
+
+            Some(EFIComponent {
+                name,
+                version,
+                path: utf8_rel_path,
+            })
+        })
+        .collect();
+
+    components.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(components)
 }
 
 #[cfg(test)]
@@ -843,21 +862,35 @@ Boot0003* test";
     }
 
     #[test]
-    fn test_get_efi_path_from_usr() -> Result<()> {
+    fn test_get_efi_component_from_usr() -> Result<()> {
         let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
         let tpath = tmpdir.path();
         let efi_path = tpath.join("usr/lib/efi");
-        std::fs::create_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         std::fs::create_dir_all(efi_path.join("BAR/1.1/EFI"))?;
+        std::fs::create_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         std::fs::create_dir_all(efi_path.join("FOOBAR/1.1/test"))?;
         let utf8_tpath =
             Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
-        let efi_path_iter = get_efi_path_from_usr(utf8_tpath)?;
-        let paths: Vec<Utf8PathBuf> = efi_path_iter.filter_map(Result::ok).collect();
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(
-            paths,
-            ["usr/lib/efi/FOO/1.1/EFI", "usr/lib/efi/BAR/1.1/EFI"]
+            efi_comps,
+            vec![
+                EFIComponent {
+                    name: "BAR".to_string(),
+                    version: "1.1".to_string(),
+                    path: Utf8PathBuf::from("usr/lib/efi/BAR/1.1/EFI"),
+                },
+                EFIComponent {
+                    name: "FOO".to_string(),
+                    version: "1.1".to_string(),
+                    path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
+                },
+            ]
         );
+        std::fs::remove_dir_all(efi_path.join("BAR/1.1/EFI"))?;
+        std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+        assert_eq!(efi_comps, []);
         Ok(())
     }
 }
