@@ -20,7 +20,6 @@ use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
 use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
-use widestring::U16CString;
 
 use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
@@ -47,9 +46,9 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
 
-/// Systemd boot loader info EFI variable names
-const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+// /// Systemd boot loader info EFI variable names
+// const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+// const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
@@ -169,69 +168,69 @@ fn get_product_name(sysroot: &Dir) -> Result<String> {
     Ok(release.name)
 }
 
-/// Convert a nul-terminated UTF-16 byte array to a String.
-fn string_from_utf16_bytes(slice: &[u8]) -> String {
-    // For some reason, systemd appends 3 nul bytes after the string.
-    // Drop the last byte if there's an odd number.
-    let size = slice.len() / 2;
-    let v: Vec<u16> = (0..size)
-        .map(|i| u16::from_ne_bytes([slice[2 * i], slice[2 * i + 1]]))
-        .collect();
-    U16CString::from_vec(v).unwrap().to_string_lossy()
-}
+// /// Convert a nul-terminated UTF-16 byte array to a String.
+// fn string_from_utf16_bytes(slice: &[u8]) -> String {
+//     // For some reason, systemd appends 3 nul bytes after the string.
+//     // Drop the last byte if there's an odd number.
+//     let size = slice.len() / 2;
+//     let v: Vec<u16> = (0..size)
+//         .map(|i| u16::from_ne_bytes([slice[2 * i], slice[2 * i + 1]]))
+//         .collect();
+//     U16CString::from_vec(v).unwrap().to_string_lossy()
+// }
 
-/// Read a nul-terminated UTF-16 string from an EFI variable.
-fn read_efi_var_utf16_string(name: &str) -> Option<String> {
-    let efivars = Path::new("/sys/firmware/efi/efivars");
-    if !efivars.exists() {
-        log::trace!("No efivars mount at {:?}", efivars);
-        return None;
-    }
-    let path = efivars.join(name);
-    if !path.exists() {
-        log::trace!("No EFI variable {name}");
-        return None;
-    }
-    match std::fs::read(&path) {
-        Ok(buf) => {
-            // Skip the first 4 bytes, those are the EFI variable attributes.
-            if buf.len() < 4 {
-                log::warn!("Read less than 4 bytes from {:?}", path);
-                return None;
-            }
-            Some(string_from_utf16_bytes(&buf[4..]))
-        }
-        Err(reason) => {
-            log::warn!("Failed reading {:?}: {reason}", path);
-            None
-        }
-    }
-}
+// /// Read a nul-terminated UTF-16 string from an EFI variable.
+// fn read_efi_var_utf16_string(name: &str) -> Option<String> {
+//     let efivars = Path::new("/sys/firmware/efi/efivars");
+//     if !efivars.exists() {
+//         log::trace!("No efivars mount at {:?}", efivars);
+//         return None;
+//     }
+//     let path = efivars.join(name);
+//     if !path.exists() {
+//         log::trace!("No EFI variable {name}");
+//         return None;
+//     }
+//     match std::fs::read(&path) {
+//         Ok(buf) => {
+//             // Skip the first 4 bytes, those are the EFI variable attributes.
+//             if buf.len() < 4 {
+//                 log::warn!("Read less than 4 bytes from {:?}", path);
+//                 return None;
+//             }
+//             Some(string_from_utf16_bytes(&buf[4..]))
+//         }
+//         Err(reason) => {
+//             log::warn!("Failed reading {:?}: {reason}", path);
+//             None
+//         }
+//     }
+// }
 
-/// Read the LoaderInfo EFI variable if it exists.
-fn get_loader_info() -> Option<String> {
-    read_efi_var_utf16_string(LOADER_INFO_VAR_STR)
-}
+// /// Read the LoaderInfo EFI variable if it exists.
+// fn get_loader_info() -> Option<String> {
+//     read_efi_var_utf16_string(LOADER_INFO_VAR_STR)
+// }
 
-/// Read the StubInfo EFI variable if it exists.
-fn get_stub_info() -> Option<String> {
-    read_efi_var_utf16_string(STUB_INFO_VAR_STR)
-}
+// /// Read the StubInfo EFI variable if it exists.
+// fn get_stub_info() -> Option<String> {
+//     read_efi_var_utf16_string(STUB_INFO_VAR_STR)
+// }
 
-/// Whether to skip adoption if a systemd bootloader is found.
-fn skip_systemd_bootloaders() -> bool {
-    if let Some(loader_info) = get_loader_info() {
-        if loader_info.starts_with("systemd") {
-            log::trace!("Skipping adoption for {:?}", loader_info);
-            return true;
-        }
-    }
-    if let Some(stub_info) = get_stub_info() {
-        log::trace!("Skipping adoption for {:?}", stub_info);
-        return true;
-    }
-    false
-}
+// /// Whether to skip adoption if a systemd bootloader is found.
+// fn skip_systemd_bootloaders() -> bool {
+//     if let Some(loader_info) = get_loader_info() {
+//         if loader_info.starts_with("systemd") {
+//             log::trace!("Skipping adoption for {:?}", loader_info);
+//             return true;
+//         }
+//     }
+//     if let Some(stub_info) = get_stub_info() {
+//         log::trace!("Skipping adoption for {:?}", stub_info);
+//         return true;
+//     }
+//     false
+// }
 
 impl Component for Efi {
     fn name(&self) -> &'static str {
@@ -244,11 +243,11 @@ impl Component for Efi {
             return Ok(None);
         };
 
-        // Don't adopt if the system is booted with systemd-boot or
-        // systemd-stub since those will be managed with bootctl.
-        if skip_systemd_bootloaders() {
-            return Ok(None);
-        }
+        // // Don't adopt if the system is booted with systemd-boot or
+        // // systemd-stub since those will be managed with bootctl.
+        // if skip_systemd_bootloaders() {
+        //     return Ok(None);
+        // }
         crate::component::query_adopt_state()
     }
 
