@@ -96,7 +96,7 @@ pub(crate) fn install(
         let meta = component
             .install(&source_root, dest_root, device, update_firmware)
             .with_context(|| format!("installing component {}", component.name()))?;
-        log::info!("Installed {} {}", component.name(), meta.meta.version);
+        log::warn!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
         // Yes this is a hack...the Component thing just turns out to be too generic.
         if let Some(vendor) = component.get_efi_vendor(&source_root)? {
@@ -303,7 +303,7 @@ pub(crate) fn adopt_and_update(
         return Ok(Some(update));
     } else {
         // Nothing adopted, skip
-        log::info!("Component '{}' skipped adoption", component.name());
+        log::warn!("Component '{}' skipped adoption", component.name());
         return Ok(None);
     }
 }

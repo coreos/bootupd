@@ -47,6 +47,7 @@ mod ostreeutil;
 mod packagesystem;
 mod sha512string;
 mod util;
+mod systemd_boot_configs;
 
 use clap::crate_name;
 

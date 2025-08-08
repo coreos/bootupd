@@ -16,10 +16,13 @@ use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use chrono::prelude::*;
 use fn_error_context::context;
+use log::{info, warn};
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
+use std::io::Write;
 use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
+use widestring::U16CString;
 
 use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
@@ -45,10 +48,6 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
-
-// /// Systemd boot loader info EFI variable names
-// const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-// const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
@@ -152,6 +151,35 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, espdir, vendordir, &product_name)
     }
+
+    /// Find a kernel and optional initramfs/uki file in the update directory for systemd-boot
+    fn find_kernel_and_initrd(dir: &openat::Dir) -> Result<(String, Option<String>)> {
+        let mut kernel: Option<String> = None;
+        let mut initrd: Option<String> = None;
+        log::warn!("Searching for kernel and initrd in update dir: {:?}", dir.recover_path());
+        for entry in dir.list_dir(".")? {
+            log::warn!("Found entry: {:?}", entry);
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy();
+            if fname.starts_with("vmlinuz") || fname.ends_with(".efi") || fname.ends_with(".uki") {
+                log::warn!("Found kernel/UKI file: {}", fname);
+                if kernel.is_some() {
+                    log::warn!("Multiple kernel/UKI files found in update dir");
+                    bail!("Multiple kernel/UKI files found in update dir");
+                }
+                kernel = Some(fname.to_string());
+            } else if fname.starts_with("initrd") || fname.ends_with(".img") || fname.ends_with(".cpio.gz") {
+                log::warn!("Found initramfs file: {}", fname);
+                if initrd.is_some() {
+                    log::warn!("Multiple initramfs files found in update dir");
+                    bail!("Multiple initramfs files found in update dir");
+                }
+                initrd = Some(fname.to_string());
+            }
+        }
+        let kernel = kernel.ok_or_else(|| anyhow::anyhow!("No kernel or UKI file found in update dir"))?;
+        Ok((kernel, initrd))
+    }
 }
 
 #[context("Get product name")]
@@ -167,70 +195,6 @@ fn get_product_name(sysroot: &Dir) -> Result<String> {
     let release: OsRelease = OsRelease::new()?;
     Ok(release.name)
 }
-
-// /// Convert a nul-terminated UTF-16 byte array to a String.
-// fn string_from_utf16_bytes(slice: &[u8]) -> String {
-//     // For some reason, systemd appends 3 nul bytes after the string.
-//     // Drop the last byte if there's an odd number.
-//     let size = slice.len() / 2;
-//     let v: Vec<u16> = (0..size)
-//         .map(|i| u16::from_ne_bytes([slice[2 * i], slice[2 * i + 1]]))
-//         .collect();
-//     U16CString::from_vec(v).unwrap().to_string_lossy()
-// }
-
-// /// Read a nul-terminated UTF-16 string from an EFI variable.
-// fn read_efi_var_utf16_string(name: &str) -> Option<String> {
-//     let efivars = Path::new("/sys/firmware/efi/efivars");
-//     if !efivars.exists() {
-//         log::trace!("No efivars mount at {:?}", efivars);
-//         return None;
-//     }
-//     let path = efivars.join(name);
-//     if !path.exists() {
-//         log::trace!("No EFI variable {name}");
-//         return None;
-//     }
-//     match std::fs::read(&path) {
-//         Ok(buf) => {
-//             // Skip the first 4 bytes, those are the EFI variable attributes.
-//             if buf.len() < 4 {
-//                 log::warn!("Read less than 4 bytes from {:?}", path);
-//                 return None;
-//             }
-//             Some(string_from_utf16_bytes(&buf[4..]))
-//         }
-//         Err(reason) => {
-//             log::warn!("Failed reading {:?}: {reason}", path);
-//             None
-//         }
-//     }
-// }
-
-// /// Read the LoaderInfo EFI variable if it exists.
-// fn get_loader_info() -> Option<String> {
-//     read_efi_var_utf16_string(LOADER_INFO_VAR_STR)
-// }
-
-// /// Read the StubInfo EFI variable if it exists.
-// fn get_stub_info() -> Option<String> {
-//     read_efi_var_utf16_string(STUB_INFO_VAR_STR)
-// }
-
-// /// Whether to skip adoption if a systemd bootloader is found.
-// fn skip_systemd_bootloaders() -> bool {
-//     if let Some(loader_info) = get_loader_info() {
-//         if loader_info.starts_with("systemd") {
-//             log::trace!("Skipping adoption for {:?}", loader_info);
-//             return true;
-//         }
-//     }
-//     if let Some(stub_info) = get_stub_info() {
-//         log::trace!("Skipping adoption for {:?}", stub_info);
-//         return true;
-//     }
-//     false
-// }
 
 impl Component for Efi {
     fn name(&self) -> &'static str {
@@ -342,10 +306,11 @@ impl Component for Efi {
         device: &str,
         update_firmware: bool,
     ) -> Result<InstalledContent> {
+        log::warn!("Installing component: {}", self.name());
         let Some(meta) = get_component_update(src_root, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
-        log::debug!("Found metadata {}", meta.version);
+        log::warn!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
         let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
 
@@ -364,23 +329,94 @@ impl Component for Efi {
             self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
         };
 
+        let destpath_clone = destpath.clone();
+
         let destd = &openat::Dir::open(&destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
+
+        // let using_systemd_boot = skip_systemd_bootloaders();
+        let using_systemd_boot = true;
 
         // TODO - add some sort of API that allows directly setting the working
         // directory to a file descriptor.
         std::process::Command::new("cp")
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
-            .arg(destpath)
+            .arg(&destpath)
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
-        if update_firmware {
+
+        // Configure systemd-boot loader config/entry
+        if using_systemd_boot {
+            let loader_dir = destpath.join("loader");
+            if !loader_dir.exists() {
+                log::warn!("Creating systemd-boot loader directory at {}", loader_dir.display());
+                std::fs::create_dir_all(&loader_dir)
+                    .with_context(|| format!("creating systemd-boot loader directory {}", loader_dir.display()))?;
+            }
+            let entries_dir = loader_dir.join("entries");
+            log::warn!("Using systemd-boot, creating entries dir at {}", entries_dir.display());
+            std::fs::create_dir_all(&entries_dir)
+                .with_context(|| format!("creating entries dir {}", entries_dir.display()))?;
+            log::warn!("Installing systemd-boot entry in {}/bootupd.conf", entries_dir.display());
+            // Write loader.conf if it doesn't exist
+            let loader_conf_path = loader_dir.join("loader.conf");
+            if !loader_conf_path.exists() {
+                let mut loader_conf = std::fs::File::create(&loader_conf_path)
+                    .with_context(|| format!("creating loader.conf at {}", loader_conf_path.display()))?;
+                writeln!(loader_conf, "default auto")?;
+                writeln!(loader_conf, "timeout 20")?;
+                writeln!(loader_conf, "editor no")?;
+            }
+            log::warn!("Installed: {}/bootupd.conf", entries_dir.display());
+
+            // let sysroot = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+            // let product_name = get_product_name(&sysroot).unwrap_or("Unknown Product".to_string());
+            // log::warn!("Get product name: '{product_name}'");
+
+            // Find the kernel/UKI and optional initramfs in the update dir
+            log::warn!(
+                "Searching for kernel and initrd in update dir: {:?}",
+                crate::model::BOOTUPD_UPDATES_DIR
+            );
+            let update_dir = src_root.sub_dir(&srcdir_name)
+                .context("opening update dir")?;
+            log::debug!("Searching for kernel and initrd in update dir: {:?}", update_dir.recover_path());
+            let (kernel_file, initrd_file) = Self::find_kernel_and_initrd(&update_dir)?;
+
+            log::warn!(
+                "Installing systemd-boot entry for kernel: {}, initrd: {:?}",
+                kernel_file, initrd_file
+            );
+            crate::systemd_boot_configs::install(
+                &destd,
+                true,
+                "Unknown Product",
+                &kernel_file,
+                initrd_file.as_deref(),
+            ).context("installing systemd-boot entry")?;
+        }
+
+        // If using systemd-boot, run `bootctl install` to set up the bootloader.
+        if using_systemd_boot {
+            log::warn!("Using systemd-boot, running bootctl install");
+            let status = std::process::Command::new("bootctl")
+                .args(["install", "--esp-path", destpath_clone.to_str().unwrap()])
+                .status()
+                .context("running bootctl install")?;
+            log::warn!("bootctl install status: {}", status);
+            if !status.success() {
+                bail!("bootctl install failed with status: {}", status);
+            }
+        }
+
+        if update_firmware && !using_systemd_boot {
             if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
+
         Ok(InstalledContent {
             meta,
             filetree: Some(ft),
@@ -714,8 +750,11 @@ fn get_efi_component_from_usr<'a>(
         .filter_map(|entry| {
             let entry = entry.ok()?;
             if !entry.file_type().is_dir() || entry.file_name() != "EFI" {
+                info!("Skipping non-directory or non-EFI entry: {}", entry.path().display());
                 return None;
             }
+
+            info!("Found EFI component at {}", entry.path().display());
 
             let abs_path = entry.path();
             let rel_path = abs_path.strip_prefix(sysroot).ok()?;
