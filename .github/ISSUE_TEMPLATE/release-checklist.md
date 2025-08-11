@@ -1,3 +1,10 @@
+---
+name: release checklist
+about: release checklist template
+title: New release for Bootupd
+labels: jira,kind/release
+---
+
 # Release process
 
 The release process follows the usual PR-and-review flow, allowing an external reviewer to have a final check before publishing.
