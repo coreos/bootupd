@@ -6,6 +6,7 @@
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 /// The directory where updates are stored
@@ -21,12 +22,8 @@ pub(crate) struct ContentMetadata {
 }
 
 impl ContentMetadata {
-    /// Returns `true` if `target` is different and chronologically newer
-    pub(crate) fn can_upgrade_to(&self, target: &Self) -> bool {
-        if self.version == target.version {
-            return false;
-        }
-        target.timestamp > self.timestamp
+    pub(crate) fn can_upgrade_to(&self, target: &Self) -> Ordering {
+        crate::packagesystem::compare_package_versions(&self.version, &target.version)
     }
 }
 
@@ -68,12 +65,10 @@ impl ComponentUpdatable {
     pub(crate) fn from_metadata(from: &ContentMetadata, to: Option<&ContentMetadata>) -> Self {
         match to {
             Some(to) => {
-                if from.version == to.version {
-                    ComponentUpdatable::AtLatestVersion
-                } else if from.can_upgrade_to(to) {
-                    ComponentUpdatable::Upgradable
-                } else {
-                    ComponentUpdatable::WouldDowngrade
+                match from.can_upgrade_to(to) {
+                    Ordering::Equal => return ComponentUpdatable::AtLatestVersion, // from == to
+                    Ordering::Less => return ComponentUpdatable::Upgradable,       // from < to
+                    Ordering::Greater => return ComponentUpdatable::WouldDowngrade, // from > to
                 }
             }
             None => ComponentUpdatable::NoUpdateAvailable,
@@ -132,14 +127,14 @@ mod test {
         let t = Utc::now();
         let a = ContentMetadata {
             timestamp: t,
-            version: "v1".into(),
+            version: "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
         };
         let b = ContentMetadata {
             timestamp: t + Duration::try_seconds(1).unwrap(),
-            version: "v2".into(),
+            version: "grub2-efi-ia32-1:2.12-28.fc41.x86_64,grub2-efi-x64-1:2.12-28.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
         };
-        assert!(a.can_upgrade_to(&b));
-        assert!(!b.can_upgrade_to(&a));
+        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
+        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
     }
 
     /// Validate we're not breaking the serialized format of /boot/bootupd-state.json

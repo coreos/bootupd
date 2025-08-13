@@ -232,8 +232,11 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     let sysroot = &rootcxt.sysroot;
     let update = component.query_update(sysroot)?;
     let update = match update.as_ref() {
-        Some(p) if inst.meta.can_upgrade_to(p) => p,
-        _ => return Ok(ComponentUpdateResult::AtLatestVersion),
+        Some(p) => match inst.meta.can_upgrade_to(p) {
+            std::cmp::Ordering::Less => p, // current < available -> upgrade
+            _ => return Ok(ComponentUpdateResult::AtLatestVersion),
+        },
+        None => return Ok(ComponentUpdateResult::AtLatestVersion),
     };
 
     ensure_writable_boot()?;
