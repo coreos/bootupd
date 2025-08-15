@@ -17,7 +17,10 @@ Refs:
 #![deny(clippy::dbg_macro)]
 
 mod backend;
-#[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
+#[cfg(all(
+    any(target_arch = "x86_64", target_arch = "powerpc64"),
+    feature = "grub"
+))]
 mod bios;
 mod blockdev;
 mod bootupd;
@@ -34,18 +37,24 @@ mod failpoints;
 mod filesystem;
 mod filetree;
 mod freezethaw;
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "powerpc64",
-    target_arch = "riscv64"
+#[cfg(all(
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ),
+    feature = "grub"
 ))]
 mod grubconfigs;
 mod model;
 mod model_legacy;
+#[cfg(feature = "grub")]
 mod ostreeutil;
+#[cfg(feature = "grub")]
 mod packagesystem;
 mod sha512string;
+#[cfg(feature = "systemd-boot")]
 mod systemd_boot_configs;
 mod util;
 

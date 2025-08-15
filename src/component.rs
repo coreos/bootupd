@@ -29,12 +29,15 @@ pub(crate) trait Component {
     /// In an operating system whose initially booted disk image is not
     /// using bootupd, detect whether it looks like the component exists
     /// and "synthesize" content metadata from it.
+    #[cfg(feature = "grub")]
     fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>>;
 
     // Backup the current grub config, and install static grub config from tree
+    #[cfg(feature = "grub")]
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()>;
 
     /// Given an adoptable system and an update, perform the update.
+    #[cfg(feature = "grub")]
     fn adopt_update(
         &self,
         rootcxt: &RootContext,
@@ -75,9 +78,11 @@ pub(crate) trait Component {
     ) -> Result<InstalledContent>;
 
     /// Used on the client to validate an installed version.
+    #[cfg(feature = "grub")]
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
+    #[cfg(feature = "grub")]
     fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>>;
 }
 
@@ -91,7 +96,10 @@ pub(crate) fn new_from_name(name: &str) -> Result<Box<dyn Component>> {
         ))]
         #[allow(clippy::box_default)]
         "EFI" => Box::new(crate::efi::Efi::default()),
-        #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "powerpc64"),
+            feature = "grub"
+        ))]
         #[allow(clippy::box_default)]
         "BIOS" => Box::new(crate::bios::Bios::default()),
         _ => anyhow::bail!("No component {}", name),
@@ -117,6 +125,7 @@ pub(crate) fn component_updatedirname(component: &dyn Component) -> PathBuf {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
+#[cfg(feature = "grub")]
 pub(crate) fn component_updatedir(sysroot: &str, component: &dyn Component) -> PathBuf {
     Path::new(sysroot).join(component_updatedirname(component))
 }
@@ -194,9 +203,11 @@ pub(crate) fn query_adopt_state() -> Result<Option<Adoptable>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "grub")]
     use super::*;
 
     #[test]
+    #[cfg(feature = "grub")]
     fn test_get_efi_vendor() -> Result<()> {
         let td = tempfile::tempdir()?;
         let tdp = td.path();

@@ -1,7 +1,12 @@
-#[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
+#[cfg(all(
+    any(target_arch = "x86_64", target_arch = "powerpc64"),
+    feature = "grub"
+))]
 use crate::bios;
 use crate::component;
-use crate::component::{Component, ValidationResult};
+use crate::component::Component;
+#[cfg(feature = "grub")]
+use crate::component::ValidationResult;
 use crate::coreos;
 #[cfg(any(
     target_arch = "x86_64",
@@ -9,37 +14,52 @@ use crate::coreos;
     target_arch = "riscv64"
 ))]
 use crate::efi;
+
+#[cfg(feature = "grub")]
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
-use crate::{ostreeutil, util};
-use anyhow::{anyhow, bail, Context, Result};
+#[cfg(feature = "grub")]
+use crate::ostreeutil;
+use crate::util;
+use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(feature = "grub")]
 use clap::crate_version;
+#[cfg(feature = "grub")]
 use fn_error_context::context;
+#[cfg(feature = "grub")]
 use libc::mode_t;
+#[cfg(feature = "grub")]
 use libc::{S_IRGRP, S_IROTH, S_IRUSR, S_IWUSR};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+
+#[cfg(feature = "grub")]
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "grub")]
+use std::io::{BufRead, BufWriter, Write};
+
+#[cfg(feature = "grub")]
+use std::io::BufReader;
+use std::path::Path;
+#[cfg(feature = "grub")]
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigMode {
     None,
     Static,
     WithUUID,
-    SystemdBoot,
 }
 
+#[cfg(feature = "grub")]
 impl ConfigMode {
     pub(crate) fn enabled_with_uuid(&self) -> Option<bool> {
         match self {
             ConfigMode::None => None,
             ConfigMode::Static => Some(false),
             ConfigMode::WithUUID => Some(true),
-            ConfigMode::SystemdBoot => Some(false),
         }
     }
 }
@@ -48,7 +68,8 @@ pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
     device: Option<&str>,
-    configs: ConfigMode,
+    #[cfg(feature = "grub")] configs: ConfigMode,
+    #[cfg(not(feature = "grub"))] _configs: ConfigMode,
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
@@ -85,6 +106,7 @@ pub(crate) fn install(
     }
 
     let mut state = SavedState::default();
+    #[cfg(feature = "grub")]
     let mut installed_efi_vendor = None;
     for &component in target_components.iter() {
         // skip for BIOS if device is empty
@@ -101,18 +123,18 @@ pub(crate) fn install(
             .with_context(|| format!("installing component {}", component.name()))?;
         log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
-        // If not systemd-boot, try to get the efi vendor
-        if configs != ConfigMode::SystemdBoot {
-            // Yes this is a hack...the Component thing just turns out to be too generic.
-            if let Some(vendor) = component.get_efi_vendor(&source_root)? {
-                assert!(installed_efi_vendor.is_none());
-                installed_efi_vendor = Some(vendor);
-            }
+
+        // Yes this is a hack...the Component thing just turns out to be too generic.
+        #[cfg(feature = "grub")]
+        if let Some(vendor) = component.get_efi_vendor(&source_root)? {
+            assert!(installed_efi_vendor.is_none());
+            installed_efi_vendor = Some(vendor);
         }
     }
 
     let sysroot = &openat::Dir::open(dest_root)?;
 
+    #[cfg(feature = "grub")]
     match configs.enabled_with_uuid() {
         Some(uuid) => {
             let meta = get_static_config_meta()?;
@@ -129,14 +151,15 @@ pub(crate) fn install(
         None => {}
     }
 
-    if configs == ConfigMode::SystemdBoot {
+    #[cfg(feature = "systemd-boot")]
+    {
         let efi = crate::efi::Efi::default();
         log::warn!("Installing systemd-boot entries");
         if let Ok(Some(mnt)) = efi.get_mounted_esp(Path::new(dest_root)) {
             let esp_dir = openat::Dir::open(&mnt).context("Opening mounted ESP")?;
             crate::systemd_boot_configs::install(&esp_dir, false)?;
         } else {
-            bail!("ESP not mounted, cannot install systemd-boot entries");
+            anyhow::bail!("ESP not mounted, cannot install systemd-boot entries");
         }
     }
 
@@ -153,6 +176,7 @@ pub(crate) fn install(
 }
 
 #[context("Get static config metadata")]
+#[cfg(feature = "grub")]
 fn get_static_config_meta() -> Result<ContentMetadata> {
     let self_bin_meta = std::fs::metadata("/proc/self/exe").context("Querying self meta")?;
     let self_meta = ContentMetadata {
@@ -185,9 +209,11 @@ pub(crate) fn get_components_impl(auto: bool) -> Components {
             if is_efi_booted {
                 insert_component(&mut components, Box::new(efi::Efi::default()));
             } else {
+                #[cfg(feature = "grub")]
                 insert_component(&mut components, Box::new(bios::Bios::default()));
             }
         } else {
+            #[cfg(feature = "grub")]
             insert_component(&mut components, Box::new(bios::Bios::default()));
             insert_component(&mut components, Box::new(efi::Efi::default()));
         }
@@ -281,6 +307,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
 }
 
 /// daemon implementation of component adoption
+#[cfg(feature = "grub")]
 pub(crate) fn adopt_and_update(
     name: &str,
     rootcxt: &RootContext,
@@ -327,6 +354,7 @@ pub(crate) fn adopt_and_update(
 }
 
 /// daemon implementation of component validate
+#[cfg(feature = "grub")]
 pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let state = SavedState::load_from_disk("/")?.unwrap_or_default();
     let component = component::new_from_name(name)?;
@@ -532,6 +560,8 @@ pub(crate) fn client_run_update() -> Result<()> {
         }
         updated = true;
     }
+
+    #[cfg(feature = "grub")]
     for (name, adoptable) in status.adoptable.iter() {
         if adoptable.confident {
             if let Some(r) = adopt_and_update(name, &rootcxt, false)? {
@@ -548,6 +578,7 @@ pub(crate) fn client_run_update() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "grub")]
 pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
     let rootcxt = prep_before_update()?;
     let status: Status = status()?;
@@ -563,6 +594,7 @@ pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()
     Ok(())
 }
 
+#[cfg(feature = "grub")]
 pub(crate) fn client_run_validate() -> Result<()> {
     let status: Status = status()?;
     if status.components.is_empty() {
@@ -593,6 +625,7 @@ pub(crate) fn client_run_validate() -> Result<()> {
 }
 
 #[context("Migrating to a static GRUB config")]
+#[cfg(feature = "grub")]
 pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     // Did we already complete the migration?
     // We need to migrate if bootloader is not none (or not set)
@@ -679,6 +712,7 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
 
 /// Writes a stripped GRUB config to `stripped_config_name`, removing lines between
 /// `### BEGIN /etc/grub.d/15_ostree ###` and `### END /etc/grub.d/15_ostree ###`.
+#[cfg(feature = "grub")]
 fn strip_grub_config_file(
     current_config_content: impl BufRead,
     dirfd: &openat::Dir,
@@ -739,6 +773,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "grub")]
     fn test_strip_grub_config_file() -> Result<()> {
         let root: &tempfile::TempDir = &tempfile::tempdir()?;
         let root_path = root.path();

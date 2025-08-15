@@ -15,8 +15,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use chrono::prelude::*;
+#[cfg(feature = "grub")]
 use fn_error_context::context;
+#[cfg(feature = "grub")]
 use openat_ext::OpenatDirExt;
+#[cfg(feature = "grub")]
 use os_release::OsRelease;
 use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
@@ -24,10 +27,15 @@ use walkdir::WalkDir;
 use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
+
+#[cfg(feature = "grub")]
 use crate::ostreeutil;
 use crate::util;
-use crate::{blockdev, filetree, grubconfigs};
-use crate::{component::*, packagesystem};
+use crate::{blockdev, filetree};
+
+use crate::component::*;
+#[cfg(feature = "grub")]
+use crate::{grubconfigs, packagesystem};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
@@ -36,11 +44,12 @@ pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
 const EFILIB: &str = "usr/lib/efi";
 
 /// The binary to change EFI boot ordering
+#[cfg(feature = "grub")]
 const EFIBOOTMGR: &str = "efibootmgr";
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "grub"))]
 pub(crate) const SHIM: &str = "shimaa64.efi";
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "grub"))]
 pub(crate) const SHIM: &str = "shimx64.efi";
 
 #[cfg(target_arch = "riscv64")]
@@ -135,6 +144,7 @@ impl Efi {
     }
 
     #[context("Updating EFI firmware variables")]
+    #[cfg(feature = "grub")]
     fn update_firmware(&self, device: &str, espdir: &openat::Dir, vendordir: &str) -> Result<()> {
         if !is_efi_booted()? {
             log::debug!("Not booted via EFI, skipping firmware update");
@@ -151,6 +161,7 @@ impl Efi {
 }
 
 #[context("Get product name")]
+#[cfg(feature = "grub")]
 fn get_product_name(sysroot: &Dir) -> Result<String> {
     let release_path = "etc/system-release";
     if sysroot.exists(release_path) {
@@ -169,6 +180,7 @@ impl Component for Efi {
         "EFI"
     }
 
+    #[cfg(feature = "grub")]
     fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
         if devices.is_none() {
             log::trace!("No ESP detected");
@@ -180,6 +192,7 @@ impl Component for Efi {
 
     // Backup "/boot/efi/EFI/{vendor}/grub.cfg" to "/boot/efi/EFI/{vendor}/grub.cfg.bak"
     // Replace "/boot/efi/EFI/{vendor}/grub.cfg" with new static "grub.cfg"
+    #[cfg(feature = "grub")]
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
         let sysroot =
             openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
@@ -207,11 +220,13 @@ impl Component for Efi {
     }
 
     /// Given an adoptable system and an update, perform the update.
+    #[cfg(feature = "grub")]
     fn adopt_update(
         &self,
         rootcxt: &RootContext,
         updatemeta: &ContentMetadata,
-        with_static_config: bool,
+        #[cfg(feature = "grub")] with_static_config: bool,
+        #[cfg(not(feature = "grub"))] _with_static_config: bool,
     ) -> Result<Option<InstalledContent>> {
         let esp_devices = blockdev::find_colocated_esps(&rootcxt.devices)?;
         let Some(meta) = self.query_adopt(&esp_devices)? else {
@@ -238,6 +253,7 @@ impl Component for Efi {
                 .context("applying filesystem changes")?;
 
             // Backup current config and install static config
+            #[cfg(feature = "grub")]
             if with_static_config {
                 // Install the static config if the OSTree bootloader is not set.
                 if let Some(bootloader) = crate::ostreeutil::get_ostree_bootloader()? {
@@ -267,7 +283,8 @@ impl Component for Efi {
         src_root: &openat::Dir,
         dest_root: &str,
         device: &str,
-        update_firmware: bool,
+        #[cfg(feature = "grub")] update_firmware: bool,
+        #[cfg(not(feature = "grub"))] _update_firmware: bool,
     ) -> Result<InstalledContent> {
         let Some(meta) = get_component_update(src_root, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
@@ -304,6 +321,7 @@ impl Component for Efi {
             .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
             .run()?;
 
+        #[cfg(feature = "grub")]
         if update_firmware {
             if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
                 self.update_firmware(device, destd, &vendordir)?
@@ -389,39 +407,47 @@ impl Component for Efi {
                 version: packages.join(","),
             }
         } else {
-            let ostreebootdir = sysroot_path.join(ostreeutil::BOOT_PREFIX);
+            #[cfg(feature = "grub")]
+            {
+                let ostreebootdir = sysroot_path.join(ostreeutil::BOOT_PREFIX);
 
-            // move EFI files to updates dir from /usr/lib/ostree-boot
-            if ostreebootdir.exists() {
-                let cruft = ["loader", "grub2"];
-                for p in cruft.iter() {
-                    let p = ostreebootdir.join(p);
-                    if p.exists() {
-                        std::fs::remove_dir_all(&p)?;
+                // move EFI files to updates dir from /usr/lib/ostree-boot
+                if ostreebootdir.exists() {
+                    let cruft = ["loader", "grub2"];
+                    for p in cruft.iter() {
+                        let p = ostreebootdir.join(p);
+                        if p.exists() {
+                            std::fs::remove_dir_all(&p)?;
+                        }
                     }
+
+                    let efisrc = ostreebootdir.join("efi/EFI");
+                    if !efisrc.exists() {
+                        bail!("Failed to find {:?}", &efisrc);
+                    }
+
+                    let dest_efidir = component_updatedir(sysroot, self);
+                    let dest_efidir =
+                        Utf8PathBuf::from_path_buf(dest_efidir).expect("Path is invalid UTF-8");
+                    // Fork off mv() because on overlayfs one can't rename() a lower level
+                    // directory today, and this will handle the copy fallback.
+                    Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
+
+                    let efidir = openat::Dir::open(dest_efidir.as_std_path())
+                        .with_context(|| format!("Opening {}", dest_efidir))?;
+                    let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
+                        f.insert_str(0, "/boot/efi/EFI/");
+                        f
+                    });
+                    packagesystem::query_files(sysroot, files)?
+                } else {
+                    anyhow::bail!("Failed to find {ostreebootdir}");
                 }
+            }
 
-                let efisrc = ostreebootdir.join("efi/EFI");
-                if !efisrc.exists() {
-                    bail!("Failed to find {:?}", &efisrc);
-                }
-
-                let dest_efidir = component_updatedir(sysroot, self);
-                let dest_efidir =
-                    Utf8PathBuf::from_path_buf(dest_efidir).expect("Path is invalid UTF-8");
-                // Fork off mv() because on overlayfs one can't rename() a lower level
-                // directory today, and this will handle the copy fallback.
-                Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
-
-                let efidir = openat::Dir::open(dest_efidir.as_std_path())
-                    .with_context(|| format!("Opening {}", dest_efidir))?;
-                let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
-                    f.insert_str(0, "/boot/efi/EFI/");
-                    f
-                });
-                packagesystem::query_files(sysroot, files)?
-            } else {
-                anyhow::bail!("Failed to find {ostreebootdir}");
+            #[cfg(not(feature = "grub"))]
+            {
+                anyhow::bail!("Systemd-boot is not supported with ostree");
             }
         };
 
@@ -433,6 +459,7 @@ impl Component for Efi {
         get_component_update(sysroot, self)
     }
 
+    #[cfg(feature = "grub")]
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
         let devices = crate::blockdev::get_devices("/").context("get parent devices")?;
         let esp_devices = blockdev::find_colocated_esps(&devices)?;
@@ -471,6 +498,7 @@ impl Component for Efi {
         }
     }
 
+    #[cfg(feature = "grub")]
     fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>> {
         let updated = sysroot
             .sub_dir(&component_updatedirname(self))
@@ -514,12 +542,14 @@ fn validate_esp_fstype(dir: &openat::Dir) -> Result<()> {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg(feature = "grub")]
 struct BootEntry {
     id: String,
     name: String,
 }
 
 /// Parse boot entries from efibootmgr output
+#[cfg(feature = "grub")]
 fn parse_boot_entries(output: &str) -> Vec<BootEntry> {
     let mut entries = Vec::new();
 
@@ -542,6 +572,7 @@ fn parse_boot_entries(output: &str) -> Vec<BootEntry> {
 }
 
 #[context("Clearing EFI boot entries that match target {target}")]
+#[cfg(feature = "grub")]
 pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
     let target = target.to_lowercase();
     let output = Command::new(EFIBOOTMGR).output()?;
@@ -565,6 +596,7 @@ pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
 }
 
 #[context("Adding new EFI boot entry")]
+#[cfg(feature = "grub")]
 pub(crate) fn create_efi_boot_entry(
     device: &str,
     espdir: &openat::Dir,
@@ -603,6 +635,7 @@ pub(crate) fn create_efi_boot_entry(
 }
 
 #[context("Find target file recursively")]
+#[cfg(feature = "grub")]
 fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<PathBuf>> {
     let mut result = Vec::new();
 
@@ -670,11 +703,13 @@ fn get_efi_component_from_usr<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "grub")]
     use cap_std_ext::dirext::CapStdExtDirExt;
 
     use super::*;
 
     #[test]
+    #[cfg(feature = "grub")]
     fn test_parse_boot_entries() -> Result<()> {
         let output = r"
 BootCurrent: 0003
@@ -745,13 +780,15 @@ Boot0003* test";
         );
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grub"))]
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir("etc")?;
         Ok(tempdir)
     }
+
     #[test]
+    #[cfg(feature = "grub")]
     fn test_get_product_name() -> Result<()> {
         let tmpd = fixture()?;
         {
