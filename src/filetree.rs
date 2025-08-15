@@ -203,14 +203,14 @@ impl FileTree {
     /// Determine any changes only using the files tracked in self as
     /// a reference.  In other words, this will ignore any unknown
     /// files and not count them as additions.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grub"))]
     pub(crate) fn changes(&self, current: &Self) -> Result<FileTreeDiff> {
         self.diff_impl(current, false)
     }
 
     /// The inverse of `changes` - determine if there are any files
     /// changed or added in `current` compared to self.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "grub"))]
     pub(crate) fn updates(&self, current: &Self) -> Result<FileTreeDiff> {
         current.diff_impl(self, false)
     }
@@ -251,10 +251,13 @@ impl FileTree {
 
     /// Create a diff from a target directory.  This will ignore
     /// any files or directories that are not part of the original tree.
-    #[cfg(any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        target_arch = "riscv64"
+    #[cfg(all(
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        ),
+        feature = "grub"
     ))]
     pub(crate) fn relative_diff_to(&self, dir: &openat::Dir) -> Result<FileTreeDiff> {
         let mut removals = HashSet::new();
@@ -487,6 +490,7 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
+    #[cfg(feature = "grub")]
     fn run_diff(a: &openat::Dir, b: &openat::Dir) -> Result<FileTreeDiff> {
         let ta = FileTree::new_from_dir(a)?;
         let tb = FileTree::new_from_dir(b)?;
@@ -494,6 +498,7 @@ mod tests {
         Ok(diff)
     }
 
+    #[cfg(feature = "grub")]
     fn test_one_apply<AP: AsRef<Path>, BP: AsRef<Path>>(
         a: AP,
         b: BP,
@@ -539,6 +544,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "grub")]
     fn test_apply<AP: AsRef<Path>, BP: AsRef<Path>>(a: AP, b: BP) -> Result<()> {
         let a = a.as_ref();
         let b = b.as_ref();
@@ -552,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "grub")]
     fn test_filetree() -> Result<()> {
         let tmpd = tempfile::tempdir()?;
         let p = tmpd.path();
@@ -694,7 +701,7 @@ mod tests {
         Ok(())
     }
     // Waiting on https://github.com/rust-lang/rust/pull/125692
-    #[cfg(not(target_env = "musl"))]
+    #[cfg(all(not(target_env = "musl"), feature = "grub"))]
     #[test]
     fn test_apply_with_file() -> Result<()> {
         let tmpd = tempfile::tempdir()?;

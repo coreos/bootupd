@@ -2,3 +2,6 @@
 fastbuild*.qcow2
 _kola_temp
 .cosa
+*.img
+*.tar
+bootupctl

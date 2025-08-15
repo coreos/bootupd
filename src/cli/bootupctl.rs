@@ -55,10 +55,13 @@ pub enum CtlVerb {
     Status(StatusOpts),
     #[clap(name = "update", about = "Update all components")]
     Update,
+    #[cfg(feature = "grub")]
     #[clap(name = "adopt-and-update", about = "Update all adoptable components")]
     AdoptAndUpdate(AdoptAndUpdateOpts),
+    #[cfg(feature = "grub")]
     #[clap(name = "validate", about = "Validate system state")]
     Validate,
+    #[cfg(feature = "grub")]
     #[clap(
         name = "migrate-static-grub-config",
         hide = true,
@@ -89,6 +92,7 @@ pub struct StatusOpts {
 }
 
 #[derive(Debug, Parser)]
+#[cfg(feature = "grub")]
 pub struct AdoptAndUpdateOpts {
     /// Install the static GRUB config files
     #[clap(long, action)]
@@ -101,7 +105,9 @@ impl CtlCommand {
         match self.cmd {
             CtlVerb::Status(opts) => Self::run_status(opts),
             CtlVerb::Update => Self::run_update(),
+            #[cfg(feature = "grub")]
             CtlVerb::AdoptAndUpdate(opts) => Self::run_adopt_and_update(opts),
+            #[cfg(feature = "grub")]
             CtlVerb::Validate => Self::run_validate(),
             CtlVerb::Backend(CtlBackend::Generate(opts)) => {
                 super::bootupd::DCommand::run_generate_meta(opts)
@@ -109,6 +115,7 @@ impl CtlCommand {
             CtlVerb::Backend(CtlBackend::Install(opts)) => {
                 super::bootupd::DCommand::run_install(opts)
             }
+            #[cfg(feature = "grub")]
             CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
         }
     }
@@ -140,18 +147,21 @@ impl CtlCommand {
     }
 
     /// Runner for `update` verb.
+    #[cfg(feature = "grub")]
     fn run_adopt_and_update(opts: AdoptAndUpdateOpts) -> Result<()> {
         ensure_running_in_systemd()?;
         bootupd::client_run_adopt_and_update(opts.with_static_config)
     }
 
     /// Runner for `validate` verb.
+    #[cfg(feature = "grub")]
     fn run_validate() -> Result<()> {
         ensure_running_in_systemd()?;
         bootupd::client_run_validate()
     }
 
     /// Runner for `migrate-static-grub-config` verb.
+    #[cfg(feature = "grub")]
     fn run_migrate_static_grub_config() -> Result<()> {
         ensure_running_in_systemd()?;
         bootupd::client_run_migrate_static_grub_config()

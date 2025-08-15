@@ -110,6 +110,7 @@ impl DCommand {
         } else {
             ConfigMode::None
         };
+
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,

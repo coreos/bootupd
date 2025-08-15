@@ -1,0 +1,23 @@
+FROM quay.io/fedora/fedora-bootc:42
+
+# RUN dnf remove -y grub2-efi grub2-common grub2-tools grub2-pc grub2-efi-x64 shim-x64 shim-x64-efi grub2-tools-minimal
+RUN dnf install -y \
+    systemd-boot \
+    systemd-ukify \
+    tree
+
+COPY bootupctl /usr/bin/bootupctl
+# COPY loader.conf /usr/lib/bootupd/systemd-boot/loader.conf
+
+RUN set -x && \
+    KVER=$(rpm -q --qf '%{version}-%{release}.%{arch}\n' kernel | head -n 1) && \
+    KVER_SIMPLE=$(rpm -q --qf '%{version}' kernel) && \
+    mkdir -p /usr/lib/efi/sdboot/$KVER_SIMPLE/EFI && \
+    ukify build \
+    --linux=/usr/lib/modules/$KVER/vmlinuz \
+    --initrd=/usr/lib/modules/$KVER/initramfs.img \
+    --output /usr/lib/efi/sdboot/$KVER_SIMPLE/EFI/ukify.efi
+
+# RUN rm -rf /usr/lib/bootupd/updates/EFI
+
+# RUN tree /usr/lib/bootupd/updates

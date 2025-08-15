@@ -1,8 +1,10 @@
+#[cfg(feature = "grub")]
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+#[cfg(feature = "grub")]
 use openat_ext::OpenatDirExt;
 
 /// Parse an environment variable as UTF-8
@@ -19,6 +21,7 @@ pub(crate) fn getenv_utf8(n: &str) -> Result<Option<String>> {
     }
 }
 
+#[cfg(feature = "grub")]
 pub(crate) fn filenames(dir: &openat::Dir) -> Result<HashSet<String>> {
     let mut ret = HashSet::new();
     for entry in dir.list_dir(".")? {

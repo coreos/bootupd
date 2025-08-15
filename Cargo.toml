@@ -19,6 +19,11 @@ tier = "2"
 name = "bootupd"
 path = "src/main.rs"
 
+[features]
+default = ["grub"]
+grub = []
+systemd-boot = []
+
 [dependencies]
 anyhow = "1.0"
 bincode = "1.3.2"
