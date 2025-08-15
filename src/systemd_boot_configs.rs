@@ -1,72 +1,70 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use fn_error_context::context;
-use openat_ext::OpenatDirExt;
-
-const SYSTEMD_BOOT_ENTRIES_DIR: &str = "loader/entries";
-
-pub(crate) struct SystemdBootEntry {
-    title: String,
-    linux: String,
-    initrd: Option<String>,
-    options: String,
-}
+use log::warn;
 
 /// Install the systemd-boot entry files
 #[context("Installing systemd-boot entries")]
 pub(crate) fn install(
     target_root: &openat::Dir,   // This should be mounted ESP root dir (not /boot inside ESP)
-    write_uuid: bool,
-    os_title: &str,
-    linux_path: &str,
-    initrd_path: Option<&str>,
+    _write_uuid: bool,
 ) -> Result<()> {
-    // Ensure /loader/entries exist on ESP root
-    if !target_root.exists(SYSTEMD_BOOT_ENTRIES_DIR)? {
-        target_root.create_dir(SYSTEMD_BOOT_ENTRIES_DIR, 0o700)?;
+    let status = std::process::Command::new("bootctl")
+        .args([
+            "install",
+            "--esp-path",
+            target_root.recover_path()?.to_str().context("ESP path is not valid UTF-8")?,
+        ])
+        .status()
+        .context("running  install")?;
+    warn!("bootctl install status: {}", status);
+    if !status.success() {
+        bail!("bootctl install failed with status: {}", status);
     }
-
-    // Inspect root filesystem UUID - for root=UUID=... kernel parameter
-    let rootfs_meta = crate::filesystem::inspect_filesystem(target_root, ".")?;
-    let root_uuid = rootfs_meta
-        .uuid
-        .ok_or_else(|| anyhow::anyhow!("Failed to find UUID for root"))?;
-
-    // Compose entry config
-    let config = SystemdBootEntry {
-        title: os_title.to_string(),
-        // For UKI, path is relative to ESP root, e.g. /EFI/ukify.efi
-        linux: format!("/EFI/{}", linux_path.trim_start_matches('/')),
-        initrd: initrd_path.map(|p| format!("{}/{}", SYSTEMD_BOOT_ENTRIES_DIR, p)),
-        options: if write_uuid {
-            format!("root=UUID={} quiet", root_uuid)
-        } else {
-            "quiet".to_string()
-        },
-    };
-
-    let mut entry_content = format!("title {}\n", config.title);
-
-    if linux_path.ends_with(".efi") {
-        // UKI boot entry
-        log::warn!("Installing UKI entry: {}", config.linux);
-        entry_content.push_str(&format!("efi {}\n", config.linux));
-    } else {
-        // Kernel/initrd entry
-        entry_content.push_str(&format!("linux {}\n", config.linux));
-        if let Some(initrd) = &config.initrd {
-            entry_content.push_str(&format!("initrd {}\n", initrd));
-        }
-        entry_content.push_str(&format!("options {}\n", config.options));
-    }
-
-    // Write the entry file under /loader/entries/bootupd.conf on ESP root
-    let entries_dir = target_root.sub_dir(SYSTEMD_BOOT_ENTRIES_DIR)?;
-    entries_dir.write_file_contents(
-        "bootupd.conf",
-        0o644,
-        entry_content.as_bytes(),
-    ).context("Writing systemd-boot loader entry")?;
-    log::warn!("Installed: {}/bootupd.conf", SYSTEMD_BOOT_ENTRIES_DIR);
 
     Ok(())
 }
+
+// use anyhow::{Context, Result};
+// use fn_error_context::context;
+// use log::warn;
+// use std::fs;
+// use std::path::Path;
+
+// /// Install the systemd-boot entry files
+// #[context("Installing systemd-boot entries")]
+// pub(crate) fn install(
+//     target_root: &openat::Dir,   // This should be mounted ESP root dir (not /boot inside ESP)
+//     _write_uuid: bool,
+// ) -> Result<()> {
+//     let esp_path = target_root.recover_path()?.to_str().context("ESP path is not valid UTF-8")?.to_string();
+
+//     let dirs = [
+//         "EFI/systemd",
+//         "EFI/BOOT",
+//         "loader",
+//         "loader/keys",
+//         "loader/entries",
+//         "EFI/Linux",
+//     ];
+//     for dir in dirs.iter() {
+//         let full_path = Path::new(&esp_path).join(dir);
+//         if !full_path.exists() {
+//             fs::create_dir_all(&full_path).context(format!("Creating {}", full_path.display()))?;
+//             warn!("Created \"{}\".", full_path.display());
+//         }
+//     }
+
+//     let src_efi = "/usr/lib/systemd/boot/efi/systemd-bootx64.efi";
+//     let dst_systemd = Path::new(&esp_path).join("EFI/systemd/systemd-bootx64.efi");
+//     let dst_boot = Path::new(&esp_path).join("EFI/BOOT/BOOTX64.EFI");
+
+//     fs::copy(src_efi, &dst_systemd)
+//         .context(format!("Copying {} to {}", src_efi, dst_systemd.display()))?;
+//     warn!("Copied \"{}\" to \"{}\".", src_efi, dst_systemd.display());
+
+//     fs::copy(src_efi, &dst_boot)
+//         .context(format!("Copying {} to {}", src_efi, dst_boot.display()))?;
+//     warn!("Copied \"{}\" to \"{}\".", src_efi, dst_boot.display());
+
+//     Ok(())
+// }

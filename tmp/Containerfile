@@ -3,7 +3,10 @@ FROM quay.io/fedora/fedora-bootc:42
 # RUN dnf remove -y grub2-efi grub2-common grub2-tools grub2-pc grub2-efi-x64 shim-x64 shim-x64-efi grub2-tools-minimal
 RUN dnf install -y \
     systemd-boot \
-    systemd-ukify
+    systemd-ukify \
+    tree
+
+COPY bootupctl /usr/bin/bootupctl
 
 RUN set -x && \
     KVER=$(rpm -q --qf '%{version}-%{release}.%{arch}\n' kernel | head -n 1) && \
@@ -14,8 +17,6 @@ RUN set -x && \
     --initrd=/usr/lib/modules/$KVER/initramfs.img \
     --output /usr/lib/efi/sdboot/$KVER_SIMPLE/EFI/ukify.efi
 
-# COPY bootc /usr/bin/bootc
-COPY bootupctl /usr/bin/bootupctl
+# RUN rm -rf /usr/lib/bootupd/updates/EFI
 
-RUN bootupctl backend generate-update-metadata -vvv
-# RUN rm /usr/bin/bootupctl
+# RUN tree /usr/lib/bootupd/updates

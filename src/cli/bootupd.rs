@@ -73,6 +73,10 @@ pub struct InstallOpts {
     /// then only enable installation to the ESP.
     #[clap(long)]
     auto: bool,
+
+    /// The bootloader to use
+    #[clap(long, default_value = "systemd-boot")]
+    bootloader: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -103,13 +107,18 @@ impl DCommand {
 
     /// Runner for `install` verb.
     pub(crate) fn run_install(opts: InstallOpts) -> Result<()> {
-        let configmode = if opts.write_uuid {
+        let mut configmode = if opts.write_uuid {
             ConfigMode::WithUUID
         } else if opts.with_static_configs {
             ConfigMode::Static
         } else {
             ConfigMode::None
         };
+
+        if opts.bootloader.as_deref() == Some("systemd-boot") {
+            configmode = ConfigMode::SystemdBoot;
+        }
+
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,

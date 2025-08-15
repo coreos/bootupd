@@ -12,7 +12,7 @@ use crate::efi;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::{ostreeutil, util};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
@@ -25,10 +25,12 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigMode {
     None,
     Static,
     WithUUID,
+    SystemdBoot,
 }
 
 impl ConfigMode {
@@ -37,6 +39,7 @@ impl ConfigMode {
             ConfigMode::None => None,
             ConfigMode::Static => Some(false),
             ConfigMode::WithUUID => Some(true),
+            ConfigMode::SystemdBoot => Some(false),
         }
     }
 }
@@ -96,14 +99,18 @@ pub(crate) fn install(
         let meta = component
             .install(&source_root, dest_root, device, update_firmware)
             .with_context(|| format!("installing component {}", component.name()))?;
-        log::warn!("Installed {} {}", component.name(), meta.meta.version);
+        log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&source_root)? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+        // If not systemd-boot, try to get the efi vendor
+        if configs != ConfigMode::SystemdBoot {
+            // Yes this is a hack...the Component thing just turns out to be too generic.
+            if let Some(vendor) = component.get_efi_vendor(&source_root)? {
+                assert!(installed_efi_vendor.is_none());
+                installed_efi_vendor = Some(vendor);
+            }
         }
     }
+
     let sysroot = &openat::Dir::open(dest_root)?;
 
     match configs.enabled_with_uuid() {
@@ -120,6 +127,17 @@ pub(crate) fn install(
             // On other architectures, assume that there's nothing to do.
         }
         None => {}
+    }
+
+    if configs == ConfigMode::SystemdBoot {
+        let efi = crate::efi::Efi::default();
+        log::warn!("Installing systemd-boot entries");
+        if let Ok(Some(mnt)) = efi.get_mounted_esp(Path::new(dest_root)) {
+            let esp_dir = openat::Dir::open(&mnt).context("Opening mounted ESP")?;
+            crate::systemd_boot_configs::install(&esp_dir, false)?;
+        } else {
+            bail!("ESP not mounted, cannot install systemd-boot entries");
+        }
     }
 
     // Unmount the ESP, etc.
@@ -303,7 +321,7 @@ pub(crate) fn adopt_and_update(
         return Ok(Some(update));
     } else {
         // Nothing adopted, skip
-        log::warn!("Component '{}' skipped adoption", component.name());
+        log::info!("Component '{}' skipped adoption", component.name());
         return Ok(None);
     }
 }
