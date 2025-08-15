@@ -46,8 +46,8 @@ mod model_legacy;
 mod ostreeutil;
 mod packagesystem;
 mod sha512string;
-mod util;
 mod systemd_boot_configs;
+mod util;
 
 use clap::crate_name;
 

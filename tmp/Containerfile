@@ -7,6 +7,7 @@ RUN dnf install -y \
     tree
 
 COPY bootupctl /usr/bin/bootupctl
+# COPY loader.conf /usr/lib/bootupd/systemd-boot/loader.conf
 
 RUN set -x && \
     KVER=$(rpm -q --qf '%{version}-%{release}.%{arch}\n' kernel | head -n 1) && \
