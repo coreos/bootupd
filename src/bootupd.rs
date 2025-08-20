@@ -145,6 +145,7 @@ fn get_static_config_meta() -> Result<ContentMetadata> {
     let self_meta = ContentMetadata {
         timestamp: self_bin_meta.modified()?.into(),
         version: crate_version!().into(),
+        versions: None,
     };
     Ok(self_meta)
 }
