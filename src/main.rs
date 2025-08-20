@@ -46,6 +46,8 @@ mod model_legacy;
 mod ostreeutil;
 mod packagesystem;
 mod sha512string;
+#[cfg(feature = "systemd-boot")]
+mod systemdbootconfigs;
 mod util;
 
 use clap::crate_name;

@@ -342,51 +342,81 @@ impl Component for Efi {
         dest_root: &str,
         device: &str,
         update_firmware: bool,
+        bootloader: crate::bootupd::Bootloader,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
-            anyhow::bail!("No update metadata for component {} found", self.name());
-        };
-        log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-
-        // Let's attempt to use an already mounted ESP at the target
-        // dest_root if one is already mounted there in a known ESP location.
-        let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
-            destdir
-        } else {
-            // Using `blockdev` to find the partition instead of partlabel because
-            // we know the target install toplevel device already.
+        let esp_path = self.get_mounted_esp(Path::new(dest_root))?.or_else(|| {
             if device.is_empty() {
-                anyhow::bail!("Device value not provided");
+                None
+            } else {
+                let esp_device = blockdev::get_esp_partition(device).ok().flatten()?;
+                self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))
+                    .ok()
             }
-            let esp_device = blockdev::get_esp_partition(device)?
-                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
-            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
-        };
+        });
 
-        let destd = &openat::Dir::open(&destpath)
-            .with_context(|| format!("opening dest dir {}", destpath.display()))?;
-        validate_esp_fstype(destd)?;
+        match bootloader {
+            crate::bootupd::Bootloader::SystemdBoot => {
+                log::info!("Installing systemd-boot via bootctl");
+                let esp_dir = openat::Dir::open(esp_path.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("No ESP mount found for systemd-boot install")
+                })?)
+                .context("Opening mounted ESP directory for systemd-boot")?;
+                crate::systemdbootconfigs::install(&esp_dir)?;
+                Ok(InstalledContent {
+                    meta: ContentMetadata {
+                        timestamp: chrono::Utc::now(),
+                        version: "systemd-boot".to_string(),
+                    },
+                    filetree: None,
+                    adopted_from: None,
+                })
+            }
+            crate::bootupd::Bootloader::Grub | crate::bootupd::Bootloader::_Auto => {
+                let meta = match get_component_update(src_root, self)? {
+                    Some(meta) => meta,
+                    None => {
+                        log::debug!(
+                            "No update metadata for component {} found, continuing (GRUB case)",
+                            self.name()
+                        );
+                        return Ok(InstalledContent {
+                            meta: ContentMetadata {
+                                timestamp: chrono::Utc::now(),
+                                version: "grub".to_string(),
+                            },
+                            filetree: None,
+                            adopted_from: None,
+                        });
+                    }
+                };
+                log::debug!("Found metadata {}", meta.version);
+                let srcdir_name = component_updatedirname(self);
+                let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
 
-        // TODO - add some sort of API that allows directly setting the working
-        // directory to a file descriptor.
-        std::process::Command::new("cp")
-            .args(["-rp", "--reflink=auto"])
-            .arg(&srcdir_name)
-            .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
-            .run()?;
-        if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
-                self.update_firmware(device, destd, &vendordir)?
+                let destpath = esp_path
+                    .ok_or_else(|| anyhow::anyhow!("No ESP mount found for GRUB install"))?;
+                let destd = &openat::Dir::open(&destpath)
+                    .with_context(|| format!("opening dest dir {}", destpath.display()))?;
+                validate_esp_fstype(destd)?;
+
+                std::process::Command::new("cp")
+                    .args(["-rp", "--reflink=auto"])
+                    .arg(&srcdir_name)
+                    .arg(&destpath)
+                    .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
+                    .run()?;
+                if update_firmware {
+                    if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+                        self.update_firmware(device, destd, &vendordir)?
+                    }
+                }
+                Ok(InstalledContent {
+                    meta,
+                    filetree: Some(ft),
+                    adopted_from: None,
+                })
             }
         }
-        Ok(InstalledContent {
-            meta,
-            filetree: Some(ft),
-            adopted_from: None,
-        })
     }
 
     fn run_update(

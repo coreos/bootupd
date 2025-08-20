@@ -25,6 +25,14 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// TODO: Implement dynamic bootloader detection
+pub(crate) enum Bootloader {
+    _Auto,
+    Grub,
+    SystemdBoot,
+}
+
 pub(crate) enum ConfigMode {
     None,
     Static,
@@ -46,9 +54,10 @@ pub(crate) fn install(
     dest_root: &str,
     device: Option<&str>,
     configs: ConfigMode,
-    update_firmware: bool,
+    mut update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
+    bootloader: Bootloader,
 ) -> Result<()> {
     // TODO: Change this to an Option<&str>; though this probably balloons into having
     // DeviceComponent and FileBasedComponent
@@ -93,15 +102,33 @@ pub(crate) fn install(
             continue;
         }
 
+        if component.name() == "BIOS" && bootloader == Bootloader::SystemdBoot {
+            println!(
+                "Skip installing component {} for systemd-boot",
+                component.name()
+            );
+            continue;
+        }
+
+        if bootloader == Bootloader::SystemdBoot {
+            log::warn!(
+                "Disabling firmware updates for component {}",
+                component.name()
+            );
+            update_firmware = false;
+        }
         let meta = component
-            .install(&source_root, dest_root, device, update_firmware)
+            .install(&source_root, dest_root, device, update_firmware, bootloader)
             .with_context(|| format!("installing component {}", component.name()))?;
         log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&source_root)? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+
+        if bootloader != Bootloader::SystemdBoot {
+            // Yes this is a hack...the Component thing just turns out to be too generic.
+            if let Some(vendor) = component.get_efi_vendor(&source_root)? {
+                assert!(installed_efi_vendor.is_none());
+                installed_efi_vendor = Some(vendor);
+            }
         }
     }
     let sysroot = &openat::Dir::open(dest_root)?;
@@ -119,7 +146,9 @@ pub(crate) fn install(
             crate::grubconfigs::install(sysroot, installed_efi_vendor.as_deref(), uuid)?;
             // On other architectures, assume that there's nothing to do.
         }
-        None => {}
+        None => {
+            log::info!("Skipping static config generation");
+        }
     }
 
     // Unmount the ESP, etc.
