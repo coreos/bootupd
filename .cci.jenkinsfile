@@ -56,6 +56,7 @@ cosaPod(runAsUser: 0, memory: "7168Mi", cpu: "4") {
       rmdir insttree
       cosa fetch
       cosa build
+      cosa osbuild qemu
       cosa osbuild metal4k
     """)
   }
@@ -71,7 +72,7 @@ cosaPod(runAsUser: 0, memory: "7168Mi", cpu: "4") {
     }
     stage("Kola testing") {
       // The previous e2e leaves things only having built an ostree update
-      shwrap("cosa build")
+      shwrap("cosa build && cosa osbuild qemu")
       // bootupd really can't break upgrades for the OS
       kola(cosaDir: "${env.WORKSPACE}", extraArgs: "ext.*bootupd*", skipUpgrade: true, skipBasicScenarios: true)
     }
