@@ -219,6 +219,7 @@ dependencies = [
  "serde_json",
  "signal-hook-registry",
  "tempfile",
+ "uapi-version",
  "walkdir",
  "widestring",
 ]
@@ -1523,6 +1524,12 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+
+[[package]]
+name = "uapi-version"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "849f6b1fe8a0fb07170737d7f3acf72cac5462fb3f4e86614474a49f7fac3b65"
 
 [[package]]
 name = "unicode-ident"
