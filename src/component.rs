@@ -167,6 +167,7 @@ pub(crate) fn query_adopt_state() -> Result<Option<Adoptable>> {
         let meta = ContentMetadata {
             timestamp: coreos_aleph.ts,
             version: coreos_aleph.aleph.version,
+            versions: None,
         };
         log::trace!("Adoptable: {:?}", &meta);
         return Ok(Some(Adoptable {
@@ -183,6 +184,7 @@ pub(crate) fn query_adopt_state() -> Result<Option<Adoptable>> {
         let meta = ContentMetadata {
             timestamp,
             version: "unknown".to_string(),
+            versions: None,
         };
         return Ok(Some(Adoptable {
             version: meta,
