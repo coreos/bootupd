@@ -54,6 +54,7 @@ if test -z "${e2e_skip_build:-}"; then
     # Version from F42 prior to GA
     add_override grub2-2.12-26.fc42
     runv cosa build
+    runv cosa osbuild qemu
     prev_image=$(runv cosa meta --image-path qemu)
     # Modify manifest to include `test-bootupd-payload` RPM
     runv git -C src/config checkout manifest.yaml # first make sure it's clean

@@ -6,4 +6,5 @@ export COSA_SKIP_OVERLAY=1
 cosa init --force https://github.com/coreos/fedora-coreos-config/
 cosa fetch
 cosa build
+cosa osbuild qemu
 cosa kola run --qemu-firmware uefi 'ext.bootupd.*'
