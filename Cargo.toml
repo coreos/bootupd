@@ -15,6 +15,10 @@ include = ["src", "LICENSE", "Makefile", "systemd"]
 platforms = ["*-unknown-linux-gnu"]
 tier = "2"
 
+[features]
+default = ["systemd-boot"]
+systemd-boot = []
+
 [[bin]]
 name = "bootupd"
 path = "src/main.rs"
@@ -27,7 +31,14 @@ bootc-internal-utils = "0.0.0"
 cap-std-ext = "4.0.6"
 camino = "1.1.11"
 chrono = { version = "0.4.41", features = ["serde"] }
-clap = { version = "4.5", default-features = false, features = ["cargo", "derive", "std", "help", "usage", "suggestions"] }
+clap = { version = "4.5", default-features = false, features = [
+    "cargo",
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "suggestions",
+] }
 env_logger = "0.11"
 fail = { version = "0.5", features = ["failpoints"] }
 fn-error-context = "0.2.1"

@@ -1,4 +1,4 @@
-use crate::bootupd::{self, ConfigMode};
+use crate::bootupd::{self, Bootloader, ConfigMode};
 use anyhow::{Context, Result};
 use clap::Parser;
 use log::LevelFilter;
@@ -73,6 +73,12 @@ pub struct InstallOpts {
     /// then only enable installation to the ESP.
     #[clap(long)]
     auto: bool,
+
+    /// The bootloader to configure
+    ///
+    /// Defaults to Grub
+    #[clap(long, default_value = "grub")]
+    bootloader: String,
 }
 
 #[derive(Debug, Parser)]
@@ -103,13 +109,23 @@ impl DCommand {
 
     /// Runner for `install` verb.
     pub(crate) fn run_install(opts: InstallOpts) -> Result<()> {
-        let configmode = if opts.write_uuid {
+        let bootloader = match opts.bootloader.as_str() {
+            "grub" => Bootloader::Grub,
+            "systemd-boot" => Bootloader::SystemdBoot,
+            _ => anyhow::bail!("Unknown bootloader: {}", opts.bootloader),
+        };
+
+        // If systemd-boot, always use ConfigMode::None
+        let configmode = if let Bootloader::SystemdBoot = bootloader {
+            ConfigMode::None
+        } else if opts.write_uuid {
             ConfigMode::WithUUID
         } else if opts.with_static_configs {
             ConfigMode::Static
         } else {
             ConfigMode::None
         };
+
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,
@@ -118,6 +134,7 @@ impl DCommand {
             opts.update_firmware,
             opts.components.as_deref(),
             opts.auto,
+            bootloader,
         )
         .context("boot data installation failed")?;
         Ok(())
