@@ -40,12 +40,12 @@ openat = "0.1.20"
 openat-ext = ">= 0.2.2, < 0.3.0"
 openssl = "^0.10"
 os-release = "0.1.0"
-regex = "1.11.1"
-rpm = { version = "0.16.1", default-features = false }
+regex = "1.11.2"
+rpm = { version = "0.17.1", default-features = false }
 rustix = { version = "1.0.8", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
-tempfile = "^3.20"
+tempfile = "^3.21"
 widestring = "1.2.0"
 walkdir = "2.3.2"
 signal-hook-registry = "1.4.6"
