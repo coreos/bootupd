@@ -155,7 +155,7 @@ type Components = BTreeMap<&'static str, Box<dyn Component>>;
 #[allow(clippy::box_default)]
 /// Return the set of known components; if `auto` is specified then the system
 /// filters to the target booted state.
-pub(crate) fn get_components_impl(auto: bool) -> Components {
+pub(crate) fn get_components_impl(_auto: bool) -> Components {
     let mut components = BTreeMap::new();
 
     fn insert_component(components: &mut Components, component: Box<dyn Component>) {
@@ -164,7 +164,7 @@ pub(crate) fn get_components_impl(auto: bool) -> Components {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if auto {
+        if _auto {
             let is_efi_booted = crate::efi::is_efi_booted().unwrap();
             log::info!(
                 "System boot method: {}",
