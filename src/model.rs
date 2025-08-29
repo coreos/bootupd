@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::packagesystem::*;
+
 /// The directory where updates are stored
 pub(crate) const BOOTUPD_UPDATES_DIR: &str = "usr/lib/bootupd/updates";
 
@@ -19,11 +21,17 @@ pub(crate) struct ContentMetadata {
     pub(crate) timestamp: DateTime<Utc>,
     /// Human readable version number, like ostree it is not ever parsed, just displayed
     pub(crate) version: String,
+    /// Transfer version into Module struct list
+    pub(crate) versions: Option<Vec<Module>>,
 }
 
 impl ContentMetadata {
     pub(crate) fn can_upgrade_to(&self, target: &Self) -> Ordering {
-        crate::packagesystem::compare_package_versions(&self.version, &target.version)
+        if let (Some(self_versions), Some(target_versions)) = (&self.versions, &target.versions) {
+            compare_package_slices(self_versions, target_versions)
+        } else {
+            compare_package_versions(&self.version, &target.version)
+        }
     }
 }
 
@@ -128,10 +136,44 @@ mod test {
         let a = ContentMetadata {
             timestamp: t,
             version: "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
+            versions: None,
         };
         let b = ContentMetadata {
             timestamp: t + Duration::try_seconds(1).unwrap(),
             version: "grub2-efi-ia32-1:2.12-28.fc41.x86_64,grub2-efi-x64-1:2.12-28.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
+            versions: None,
+        };
+        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
+        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
+
+        // Compare versions if it is not none
+        let a = ContentMetadata {
+            timestamp: t,
+            version: "test".into(),
+            versions: Some(vec![
+                Module {
+                    name: "grub2".into(),
+                    rpm_evr: "1:2.12-21.fc41".into(),
+                },
+                Module {
+                    name: "shim".into(),
+                    rpm_evr: "15.8-3".into(),
+                },
+            ]),
+        };
+        let b = ContentMetadata {
+            timestamp: t + Duration::try_seconds(1).unwrap(),
+            version: "test".into(),
+            versions: Some(vec![
+                Module {
+                    name: "grub2".into(),
+                    rpm_evr: "1:2.12-28.fc41".into(),
+                },
+                Module {
+                    name: "shim".into(),
+                    rpm_evr: "15.8-3".into(),
+                },
+            ]),
         };
         assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
         assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
@@ -147,6 +189,26 @@ mod test {
             efi.meta.version,
             "grub2-efi-x64-1:2.04-23.fc32.x86_64,shim-x64-15-8.x86_64"
         );
+        assert_eq!(efi.meta.versions, None);
+
+        // Test the new versions
+        let data = include_str!("../tests/fixtures/example-state-versions-v0.json");
+        let state: SavedState = serde_json::from_str(data)?;
+        let efi = state.installed.get("EFI").expect("EFI");
+        assert_eq!(efi.meta.version, "grub2-1:2.12-41.fc44,shim-15.8-4");
+        assert_eq!(
+            efi.meta.versions,
+            Some(vec![
+                Module {
+                    name: "grub2".into(),
+                    rpm_evr: "1:2.12-41.fc44".into(),
+                },
+                Module {
+                    name: "shim".into(),
+                    rpm_evr: "15.8-4".into(),
+                },
+            ])
+        );
         Ok(())
     }
 
@@ -160,6 +222,7 @@ mod test {
             efi.installed.version,
             "grub2-efi-x64-1:2.04-23.fc32.x86_64,shim-x64-15-8.x86_64"
         );
+        assert_eq!(efi.installed.versions, None);
         Ok(())
     }
 }
