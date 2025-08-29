@@ -190,7 +190,7 @@ impl Component for Bios {
                 .context("Failed to backup GRUB config")?;
         }
 
-        crate::grubconfigs::install(&destdir, None, true)?;
+        crate::grubconfigs::install(&destdir, None, None, true)?;
 
         // Remove the real config if it is symlink and will not
         // if /boot/grub2/grub.cfg is file

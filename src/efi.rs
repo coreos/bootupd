@@ -273,7 +273,7 @@ impl Component for Efi {
                 .context("Failed to backup GRUB config")?;
         }
 
-        grubconfigs::install(&sysroot, Some(&vendor), true)?;
+        grubconfigs::install(&sysroot, None, Some(&vendor), true)?;
         // Synchronize the filesystem containing /boot/efi/EFI/{vendor} to disk.
         fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
 
