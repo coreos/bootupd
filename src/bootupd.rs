@@ -116,7 +116,12 @@ pub(crate) fn install(
                 target_arch = "powerpc64",
                 target_arch = "riscv64"
             ))]
-            crate::grubconfigs::install(sysroot, installed_efi_vendor.as_deref(), uuid)?;
+            crate::grubconfigs::install(
+                sysroot,
+                Some(&source_root),
+                installed_efi_vendor.as_deref(),
+                uuid,
+            )?;
             // On other architectures, assume that there's nothing to do.
         }
         None => {}
