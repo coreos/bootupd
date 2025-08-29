@@ -257,7 +257,7 @@ impl Component for Efi {
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
         let sysroot =
             openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
-        let Some(vendor) = self.get_efi_vendor(&sysroot)? else {
+        let Some(vendor) = self.get_efi_vendor(sysroot_path)? else {
             anyhow::bail!("Failed to find efi vendor");
         };
 
@@ -543,11 +543,21 @@ impl Component for Efi {
         }
     }
 
-    fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>> {
-        let updated = sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
-        let shim_files = find_file_recursive(updated.recover_path()?, SHIM)?;
+    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>> {
+        let sysroot_path = Path::new(sysroot);
+        let efi_lib = sysroot_path.join(EFILIB);
+        let updates = sysroot_path.join(component_updatedirname(self).to_str().unwrap_or(""));
+
+        let target = if let Some(p) = [efi_lib.as_path(), updates.as_path(), sysroot_path]
+            .into_iter()
+            .find(|p| p.exists())
+        {
+            p
+        } else {
+            bail!("Failed to find valid target path");
+        };
+
+        let shim_files = find_file_recursive(target, SHIM)?;
 
         // Does not support multiple shim for efi
         if shim_files.len() > 1 {

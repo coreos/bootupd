@@ -78,7 +78,7 @@ pub(crate) trait Component {
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
-    fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>>;
+    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>>;
 }
 
 /// Given a component name, create an implementation.
@@ -201,7 +201,7 @@ mod tests {
         let td = tempfile::tempdir()?;
         let tdp = td.path();
         let tdp_updates = tdp.join("usr/lib/bootupd/updates");
-        let td = openat::Dir::open(tdp)?;
+        let td = tdp.to_string_lossy();
         std::fs::create_dir_all(tdp_updates.join("EFI/BOOT"))?;
         std::fs::create_dir_all(tdp_updates.join("EFI/fedora"))?;
         std::fs::create_dir_all(tdp_updates.join("EFI/centos"))?;
@@ -225,6 +225,34 @@ mod tests {
                 assert_eq!(x.is_err(), true);
                 std::fs::remove_dir_all(tdp_updates.join("EFI/centos"))?;
                 assert_eq!(component.get_efi_vendor(&td)?, Some("fedora".to_string()));
+                {
+                    let td_usr = tdp.join("usr/lib/efi");
+                    let td_vendor = td_usr.join("shim/15.8-3/EFI/centos");
+                    std::fs::create_dir_all(&td_vendor)?;
+                    std::fs::write(td_vendor.join(crate::efi::SHIM), "shim data")?;
+                    // usr/lib/efi wins and get 'centos'
+                    assert_eq!(
+                        component.get_efi_vendor(&tdp.to_string_lossy())?,
+                        Some("centos".to_string())
+                    );
+                    // find directly from usr/lib/efi and get 'centos'
+                    assert_eq!(
+                        component.get_efi_vendor(&td_usr.to_string_lossy())?,
+                        Some("centos".to_string())
+                    );
+                    // find directly from updates and get 'fedora'
+                    let td_efi = tdp.join(component_updatedirname(&**component));
+                    assert_eq!(
+                        component.get_efi_vendor(&td_efi.to_string_lossy())?,
+                        Some("fedora".to_string())
+                    );
+                    std::fs::remove_dir_all(&td_usr)?;
+                    std::fs::remove_dir_all(&tdp_updates)?;
+                    let err = component
+                        .get_efi_vendor(&td_usr.to_string_lossy())
+                        .unwrap_err();
+                    assert_eq!(err.to_string(), "Failed to find valid target path");
+                }
             }
         }
         Ok(())
