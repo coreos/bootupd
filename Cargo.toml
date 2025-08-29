@@ -7,6 +7,7 @@ authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2021"
 rust-version = "1.84.1"
 homepage = "https://github.com/coreos/bootupd"
+build = "build.rs"
 
 include = ["src", "LICENSE", "Makefile", "systemd"]
 
@@ -14,6 +15,10 @@ include = ["src", "LICENSE", "Makefile", "systemd"]
 [package.metadata.vendor-filter]
 platforms = ["*-unknown-linux-gnu"]
 tier = "2"
+
+[features]
+default = []
+systemd-boot = []
 
 [[bin]]
 name = "bootupd"
@@ -27,7 +32,14 @@ bootc-internal-utils = "0.0.0"
 cap-std-ext = "4.0.6"
 camino = "1.1.11"
 chrono = { version = "0.4.41", features = ["serde"] }
-clap = { version = "4.5", default-features = false, features = ["cargo", "derive", "std", "help", "usage", "suggestions"] }
+clap = { version = "4.5", default-features = false, features = [
+    "cargo",
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "suggestions",
+] }
 env_logger = "0.11"
 fail = { version = "0.5", features = ["failpoints"] }
 fn-error-context = "0.2.1"

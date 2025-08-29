@@ -22,7 +22,7 @@ use rustix::fd::BorrowedFd;
 use walkdir::WalkDir;
 use widestring::U16CString;
 
-use crate::bootupd::RootContext;
+use crate::bootupd::{Bootloader, RootContext};
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
@@ -50,6 +50,10 @@ pub(crate) const SHIM: &str = "shimriscv64.efi";
 /// Systemd boot loader info EFI variable names
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+#[cfg(all(feature = "systemd-boot", target_arch = "aarch64"))]
+pub(crate) const SYSTEMD_BOOT_EFI: &str = "usr/lib/systemd/boot/efi/systemd-bootaarch64.efi";
+#[cfg(all(feature = "systemd-boot", target_arch = "x86_64"))]
+pub(crate) const SYSTEMD_BOOT_EFI: &str = "usr/lib/systemd/boot/efi/systemd-bootx64.efi";
 
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
@@ -342,14 +346,8 @@ impl Component for Efi {
         dest_root: &str,
         device: &str,
         update_firmware: bool,
+        bootloader: &Bootloader,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
-            anyhow::bail!("No update metadata for component {} found", self.name());
-        };
-        log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
-
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
         let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
@@ -364,6 +362,31 @@ impl Component for Efi {
                 .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
             self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
         };
+
+        match bootloader {
+            #[cfg(feature = "systemd-boot")]
+            Bootloader::SystemdBoot => {
+                log::info!("Installing systemd-boot via bootctl");
+                let esp_dir = openat::Dir::open(&destpath)?;
+                crate::systemdbootconfigs::install(src_root, &esp_dir)?;
+                return Ok(InstalledContent {
+                    meta: ContentMetadata {
+                        timestamp: Utc::now(),
+                        version: "systemd-boot".to_string(),
+                    },
+                    filetree: None,
+                    adopted_from: None,
+                });
+            }
+            _ => {}
+        }
+
+        let Some(meta) = get_component_update(src_root, self)? else {
+            anyhow::bail!("No update metadata for component {} found", self.name());
+        };
+        log::debug!("Found metadata {}", meta.version);
+        let srcdir_name = component_updatedirname(self);
+        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
 
         let destd = &openat::Dir::open(&destpath)
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;

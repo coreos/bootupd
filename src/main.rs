@@ -48,6 +48,9 @@ mod packagesystem;
 mod sha512string;
 mod util;
 
+#[cfg(feature = "systemd-boot")]
+mod systemdbootconfigs;
+
 use clap::crate_name;
 
 /// Binary entrypoint, for both daemon and client logic.

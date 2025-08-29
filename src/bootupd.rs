@@ -25,6 +25,13 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bootloader {
+    Grub2,
+    #[cfg(feature = "systemd-boot")]
+    SystemdBoot,
+}
+
 pub(crate) enum ConfigMode {
     None,
     Static,
@@ -81,6 +88,8 @@ pub(crate) fn install(
         anyhow::bail!("No components specified");
     }
 
+    let bootloader = select_bootloader(&source_root);
+
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
     for &component in target_components.iter() {
@@ -93,20 +102,51 @@ pub(crate) fn install(
             continue;
         }
 
+        #[cfg(feature = "systemd-boot")]
+        if bootloader == Bootloader::SystemdBoot && component.name() == "BIOS" {
+            log::warn!("Skip installing BIOS component when using systemd-boot");
+            continue;
+        }
+
+        let update_firmware = match bootloader {
+            Bootloader::Grub2 => update_firmware,
+            #[cfg(feature = "systemd-boot")]
+            Bootloader::SystemdBoot => false,
+        };
+
         let meta = component
-            .install(&source_root, dest_root, device, update_firmware)
+            .install(
+                &source_root,
+                dest_root,
+                device,
+                update_firmware,
+                &bootloader,
+            )
             .with_context(|| format!("installing component {}", component.name()))?;
         log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&source_root)? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+
+        match bootloader {
+            Bootloader::Grub2 => {
+                // Yes this is a hack...the Component thing just turns out to be too generic.
+                if let Some(vendor) = component.get_efi_vendor(&source_root)? {
+                    assert!(installed_efi_vendor.is_none());
+                    installed_efi_vendor = Some(vendor);
+                }
+            }
+            #[cfg(feature = "systemd-boot")]
+            _ => {}
         }
     }
     let sysroot = &openat::Dir::open(dest_root)?;
 
-    match configs.enabled_with_uuid() {
+    // If systemd-boot is enabled, do not run grubconfigs::install
+    let configs_with_uuid = match bootloader {
+        Bootloader::Grub2 => configs.enabled_with_uuid(),
+        #[cfg(feature = "systemd-boot")]
+        _ => None,
+    };
+    match configs_with_uuid {
         Some(uuid) => {
             let meta = get_static_config_meta()?;
             state.static_configs = Some(meta);
@@ -713,6 +753,41 @@ fn strip_grub_config_file(
         .context("Failed to sync stripped GRUB config")?;
 
     Ok(())
+}
+
+/// Determine whether the necessary bootloader files are present for GRUB.
+fn has_grub(source_root: &openat::Dir) -> bool {
+    source_root.open_file("usr/sbin/grub2-install").is_ok()
+}
+
+/// Determine whether the necessary bootloader files are present for systemd-boot.
+#[cfg(feature = "systemd-boot")]
+fn has_systemd_boot(source_root: &openat::Dir) -> bool {
+    source_root.open_file(efi::SYSTEMD_BOOT_EFI).is_ok()
+}
+
+/// Select the bootloader based on available binaries and feature flags.
+fn select_bootloader(source_root: &openat::Dir) -> Bootloader {
+    #[cfg(not(feature = "systemd-boot"))]
+    {
+        if has_grub(source_root) {
+            Bootloader::Grub2
+        } else {
+            log::warn!("No bootloader binaries found, defaulting to Grub2");
+            Bootloader::Grub2
+        }
+    }
+    #[cfg(feature = "systemd-boot")]
+    {
+        if has_grub(source_root) {
+            Bootloader::Grub2
+        } else if has_systemd_boot(source_root) {
+            Bootloader::SystemdBoot
+        } else {
+            log::warn!("No bootloader binaries found, defaulting to Grub2");
+            Bootloader::Grub2
+        }
+    }
 }
 
 #[cfg(test)]
