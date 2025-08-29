@@ -23,6 +23,11 @@ FROM $base
 # Clean out the default to ensure we're using our updated content
 RUN rpm -e bootupd
 COPY --from=build /out/ /
+# Remove /var/roothome as workaround
+RUN <<EORUN
+set -xeuo pipefail
+[ -d /var/roothome ] && rm -rf /var/roothome
+EORUN
 # Sanity check this too
 RUN bootc container lint --fatal-warnings
 

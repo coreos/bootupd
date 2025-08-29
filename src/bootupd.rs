@@ -53,7 +53,7 @@ pub(crate) fn install(
     // TODO: Change this to an Option<&str>; though this probably balloons into having
     // DeviceComponent and FileBasedComponent
     let device = device.unwrap_or("");
-    let source_root = openat::Dir::open(source_root).context("Opening source root")?;
+    let source_root_dir = openat::Dir::open(source_root).context("Opening source root")?;
     SavedState::ensure_not_present(dest_root)
         .context("failed to install, invalid re-install attempted")?;
 
@@ -118,7 +118,7 @@ pub(crate) fn install(
             ))]
             crate::grubconfigs::install(
                 sysroot,
-                Some(&source_root),
+                Some(&source_root_dir),
                 installed_efi_vendor.as_deref(),
                 uuid,
             )?;
