@@ -108,12 +108,14 @@ impl Component for Bios {
 
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         _update_firmware: bool,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
+        let src_dir = openat::Dir::open(src_root)
+            .with_context(|| format!("opening source directory {src_root}"))?;
+        let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
