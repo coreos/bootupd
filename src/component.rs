@@ -51,7 +51,7 @@ pub(crate) trait Component {
     /// This will be run during a disk image build process.
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         update_firmware: bool,

@@ -338,17 +338,19 @@ impl Component for Efi {
 
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         update_firmware: bool,
     ) -> Result<InstalledContent> {
-        let Some(meta) = get_component_update(src_root, self)? else {
+        let src_dir = openat::Dir::open(src_root)
+            .with_context(|| format!("opening source directory {src_root}"))?;
+        let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
         let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_root.sub_dir(&srcdir_name)?)?;
+        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(&srcdir_name)?)?;
 
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
@@ -375,7 +377,7 @@ impl Component for Efi {
             .args(["-rp", "--reflink=auto"])
             .arg(&srcdir_name)
             .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_root.as_raw_fd()))
+            .current_dir(format!("/proc/self/fd/{}", src_dir.as_raw_fd()))
             .run()?;
         if update_firmware {
             if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
@@ -546,7 +548,7 @@ impl Component for Efi {
     fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>> {
         let sysroot_path = Path::new(sysroot);
         let efi_lib = sysroot_path.join(EFILIB);
-        let updates = sysroot_path.join(component_updatedirname(self).to_str().unwrap_or(""));
+        let updates = sysroot_path.join(component_updatedirname(self));
 
         let target = if let Some(p) = [efi_lib.as_path(), updates.as_path(), sysroot_path]
             .into_iter()

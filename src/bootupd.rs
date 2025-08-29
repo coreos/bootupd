@@ -94,7 +94,7 @@ pub(crate) fn install(
         }
 
         let meta = component
-            .install(&source_root_dir, dest_root, device, update_firmware)
+            .install(&source_root, dest_root, device, update_firmware)
             .with_context(|| format!("installing component {}", component.name()))?;
         log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
@@ -118,7 +118,7 @@ pub(crate) fn install(
             ))]
             crate::grubconfigs::install(
                 sysroot,
-                Some(&source_root),
+                Some(&source_root_dir),
                 installed_efi_vendor.as_deref(),
                 uuid,
             )?;
