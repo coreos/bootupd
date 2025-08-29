@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
-use rpm::Evr;
+use uapi_version::Version;
 
 use crate::model::*;
 use crate::ostreeutil;
@@ -69,57 +69,126 @@ where
     rpm_parse_metadata(&rpmout.stdout)
 }
 
-fn parse_evr_map(input: &str) -> BTreeMap<String, Evr> {
-    input
-        .split(',')
-        .map(|pkg| {
-            // assume it is like "grub2-1:2.12-28.fc42,shim-15.8-3"
-            if !pkg.ends_with(std::env::consts::ARCH) {
-                let (name, version_release) = pkg.split_once('-').unwrap_or((pkg, ""));
-                let evr = Evr::parse(version_release);
-                return (name.to_string(), evr);
-            }
-
-            // assume it is like "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64"
-            let nevra = rpm::Nevra::parse(pkg);
-            let _name = nevra.name();
-            // get name as "grub2" to match the usr/lib/efi path
-            let (name, _) = _name.split_once('-').unwrap_or((_name, ""));
-            (
-                name.to_string(),
-                Evr::new(
-                    nevra.epoch().to_string(),
-                    nevra.version().to_string(),
-                    nevra.release().to_string(),
-                ),
-            )
-        })
-        .collect()
+#[derive(Debug, Eq, PartialEq)]
+struct Package {
+    name: String,
+    rpm_evr: String,
 }
 
-// Implement Compare package versions function:
-// Return `Greater` if evr_a > evr_b,
-// Return `Less` if evr_a < evr_b,
-// Return `Equal` if evr_a == evr_b.
-fn compare_package_versions_impl(a: &str, b: &str) -> Vec<(String, Ordering)> {
-    let map_a = parse_evr_map(a);
-    let map_b = parse_evr_map(b);
+impl Package {
+    pub(crate) fn rpm_evr(&self) -> Version {
+        Version::from(&self.rpm_evr)
+    }
+}
 
-    // Compare package versions between `map_a` (current) and `map_b` (target).
-    // For each package in `map_b`:
-    // - If it exists in `map_a`, compare their versions and record the result.
-    // - If not found in `map_a`, assume it's a new package that should be upgraded.
-    let mut result = Vec::new();
-    for (name, evr_b) in map_b {
-        if let Some(evr_a) = map_a.get(&name) {
-            let cmp = evr_a.cmp(&evr_b);
-            result.push((name, cmp));
-        } else {
-            log::trace!("Found new package {name} in the target");
-            result.push((name, Ordering::Less));
+impl Ord for Package {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name
+            .cmp(&other.name) // Compare names first
+            .then_with(|| self.rpm_evr().cmp(&other.rpm_evr())) // If names equal, compare versions
+    }
+}
+
+impl PartialOrd for Package {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Copy from https://github.com/rpm-rs/rpm/pull/277
+#[allow(dead_code)]
+pub fn parse_values(nevra: &str) -> (&str, &str, &str, &str, &str) {
+    // 1. Split Architecture from the right.
+    // Example: "foo-1:2.3-4.x86_64" -> ("foo-1:2.3-4", "x86_64")
+    let (nevr, arch) = nevra.rsplit_once('.').unwrap_or((nevra, ""));
+
+    // 2. Split Release from the right of the remainder.
+    // Example: "foo-1:2.3-4" -> ("foo-1:2.3", "4")
+    let (nev, release) = nevr.rsplit_once('-').unwrap_or((nevr, ""));
+
+    // 3. Split Version (with potential Epoch) from the right of the remainder.
+    // Example: "foo-1:2.3" -> ("foo", "1:2.3")
+    let (name, version_epoch) = nev.rsplit_once('-').unwrap_or((nev, ""));
+
+    // 4. Check the version part for an Epoch.
+    // The epoch is separated by a colon. If no colon exists, the epoch is empty.
+    let (epoch, version) = match version_epoch.split_once(':') {
+        // Example: "1:2.3" -> ("1", "2.3")
+        Some((e, v)) => (e, v),
+        // Example: "2.3" -> ("", "2.3")
+        None => ("", version_epoch),
+    };
+    (name, epoch, version, release, arch)
+}
+
+fn parse_evr(pkg: &str) -> Package {
+    // assume it is "grub2-1:2.12-28.fc42" (from usr/lib/efi)
+    if !pkg.ends_with(std::env::consts::ARCH) {
+        let (name, evr) = pkg.split_once('-').unwrap_or((pkg, ""));
+        return Package {
+            name: name.to_string(),
+            rpm_evr: evr.to_string(),
+        };
+    }
+
+    let (name_str, rpm_evr) = {
+        #[cfg(not(feature = "rpm"))]
+        {
+            let (name, epoch, version, release, _arch) = parse_values(pkg);
+            (name.to_string(), format!("{epoch}:{version}-{release}"))
+        }
+        #[cfg(feature = "rpm")]
+        {
+            let nevra = rpm_rs::Nevra::parse(pkg);
+            (nevra.name().to_string(), nevra.evr().to_string())
+        }
+    };
+
+    let (name, _) = name_str.split_once('-').unwrap_or((&name_str, ""));
+    Package {
+        name: name.to_string(),
+        rpm_evr,
+    }
+}
+
+fn parse_evr_vec(input: &str) -> Vec<Package> {
+    let mut pkgs: Vec<Package> = input
+        .split(',')
+        .map(|pkg| parse_evr(pkg)) // parse_evr returns owned Package
+        .collect();
+    // Sort packages to ensure a consistent order for comparison, which is
+    // required by `compare_package_slices`.
+    pkgs.sort_unstable();
+    // Now that it's sorted, we can efficiently remove duplicates.
+    pkgs.dedup();
+    pkgs
+}
+
+fn compare_package_slices(a: &[Package], b: &[Package]) -> Ordering {
+    let mut has_greater = false;
+
+    // Assume it is in order
+    for (pkg_a, pkg_b) in a.iter().zip(b.iter()) {
+        match pkg_a.cmp(pkg_b) {
+            Ordering::Less => return Ordering::Less, // upgradable
+            Ordering::Greater => has_greater = true, // downgrade
+            Ordering::Equal => {}
         }
     }
-    result
+
+    // If all compared equal, longer slice wins
+    if a.len() < b.len() {
+        return Ordering::Less; // extra packages in b → upgrade
+    }
+    if a.len() > b.len() {
+        return Ordering::Greater; // extra packages in a → downgrade
+    }
+
+    if has_greater {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    }
 }
 
 // Compare package versions:
@@ -131,30 +200,9 @@ pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
     if a == b {
         return Ordering::Equal;
     }
-    let diffs = compare_package_versions_impl(a, b);
-
-    let mut has_less = false;
-    let mut has_greater = false;
-
-    for (_, ord) in &diffs {
-        match ord {
-            Ordering::Less => {
-                has_less = true;
-            }
-            Ordering::Greater => {
-                has_greater = true;
-            }
-            Ordering::Equal => {}
-        }
-    }
-
-    if has_less {
-        Ordering::Less
-    } else if has_greater {
-        Ordering::Greater
-    } else {
-        Ordering::Equal
-    }
+    let pkg_a = parse_evr_vec(a);
+    let pkg_b = parse_evr_vec(b);
+    compare_package_slices(&pkg_a, &pkg_b)
 }
 
 #[cfg(test)]
@@ -203,8 +251,9 @@ mod tests {
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
+        // The target missed some package
         let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Equal);
+        assert_eq!(ord, Ordering::Greater);
 
         // Not sure if this would happen
         // current_grub2 > target_grub2
@@ -241,6 +290,14 @@ mod tests {
         // Test only grub2
         let current = "grub2-1:2.12-28.fc42";
         let target = "grub2-1:2.12-29.fc42";
+        let ord = compare_package_versions(current, target);
+        assert_eq!(ord, Ordering::Less);
+
+        let ord = compare_package_versions(target, current);
+        assert_eq!(ord, Ordering::Greater);
+
+        let current = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64";
+        let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
