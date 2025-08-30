@@ -34,6 +34,10 @@ that's for tools like `grubby` and `ostree`.
 bootupd supports updating GRUB and shim for UEFI firmware on x86_64, aarch64,
 and riscv64, and GRUB for BIOS firmware on x86_64 and ppc64le.
 
+bootupd only supports installing the systemd-boot shim currently, though may be
+updated to also handle updates in future.  systemd-boot support just proxies
+to the relevant `bootctl` commands.
+
 The project is used in Bootable Containers and ostree/rpm-ostree based systems:
   - [`bootc install`](https://github.com/containers/bootc/#using-bootc-install)
   - [Fedora CoreOS](https://docs.fedoraproject.org/en-US/fedora-coreos/bootloader-updates/)
@@ -78,7 +82,7 @@ care of GRUB and shim.  See discussion in [this issue](https://github.com/coreos
 ### systemd bootctl
 
 [systemd bootctl](https://man7.org/linux/man-pages/man1/bootctl.1.html) can update itself;
-this project would probably just proxy that if we detect systemd-boot is in use.
+this project just proxies that if we detect systemd-boot is present.
 
 ## Other goals
 
@@ -151,4 +155,3 @@ bootupd now uses `systemd-run` instead to guarantee the following:
 - If we want a non-CLI API (whether that's DBus or Cap'n Proto or varlink or
   something else), we will create an independent daemon with a stable API for
   this specific need.
-

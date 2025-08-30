@@ -112,6 +112,7 @@ impl Component for Bios {
         dest_root: &str,
         device: &str,
         _update_firmware: bool,
+        _bootloader: &crate::bootupd::Bootloader,
     ) -> Result<InstalledContent> {
         let Some(meta) = get_component_update(src_root, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
