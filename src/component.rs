@@ -51,7 +51,7 @@ pub(crate) trait Component {
     /// This will be run during a disk image build process.
     fn install(
         &self,
-        src_root: &openat::Dir,
+        src_root: &str,
         dest_root: &str,
         device: &str,
         update_firmware: bool,
@@ -78,7 +78,7 @@ pub(crate) trait Component {
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
-    fn get_efi_vendor(&self, sysroot: &openat::Dir) -> Result<Option<String>>;
+    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>>;
 }
 
 /// Given a component name, create an implementation.
@@ -200,18 +200,25 @@ mod tests {
     fn test_get_efi_vendor() -> Result<()> {
         let td = tempfile::tempdir()?;
         let tdp = td.path();
-        let tdp_updates = tdp.join("usr/lib/bootupd/updates");
-        let td = openat::Dir::open(tdp)?;
-        std::fs::create_dir_all(tdp_updates.join("EFI/BOOT"))?;
-        std::fs::create_dir_all(tdp_updates.join("EFI/fedora"))?;
-        std::fs::create_dir_all(tdp_updates.join("EFI/centos"))?;
-        std::fs::write(
-            tdp_updates.join("EFI/fedora").join(crate::efi::SHIM),
-            "shim data",
+        let tdupdates = "usr/lib/bootupd/updates/EFI";
+        let tdir = openat::Dir::open(tdp)?;
+        let td = tdp.to_str().unwrap();
+
+        tdir.ensure_dir_all(tdupdates, 0o755)?;
+        let efi = tdir.sub_dir(tdupdates)?;
+        efi.create_dir("BOOT", 0o755)?;
+        efi.create_dir("fedora", 0o755)?;
+        efi.create_dir("centos", 0o755)?;
+
+        efi.write_file_contents(
+            format!("fedora/{}", crate::efi::SHIM),
+            0o644,
+            "shim data".as_bytes(),
         )?;
-        std::fs::write(
-            tdp_updates.join("EFI/centos").join(crate::efi::SHIM),
-            "shim data",
+        efi.write_file_contents(
+            format!("centos/{}", crate::efi::SHIM),
+            0o644,
+            "shim data".as_bytes(),
         )?;
 
         let all_components = crate::bootupd::get_components();
@@ -223,8 +230,38 @@ mod tests {
             if component.name() == "EFI" {
                 let x = component.get_efi_vendor(&td);
                 assert_eq!(x.is_err(), true);
-                std::fs::remove_dir_all(tdp_updates.join("EFI/centos"))?;
+                efi.remove_all("centos")?;
                 assert_eq!(component.get_efi_vendor(&td)?, Some("fedora".to_string()));
+                {
+                    let td_vendor = "usr/lib/efi/shim/15.8-3/EFI/centos";
+                    tdir.ensure_dir_all(td_vendor, 0o755)?;
+                    let shim_dir = tdir.sub_dir(td_vendor)?;
+                    shim_dir.write_file_contents(
+                        crate::efi::SHIM,
+                        0o644,
+                        "shim data".as_bytes(),
+                    )?;
+
+                    // usr/lib/efi wins and get 'centos'
+                    assert_eq!(component.get_efi_vendor(&td)?, Some("centos".to_string()));
+                    // find directly from usr/lib/efi and get 'centos'
+                    let td_usr = format!("{td}/usr/lib/efi");
+                    assert_eq!(
+                        component.get_efi_vendor(&td_usr)?,
+                        Some("centos".to_string())
+                    );
+                    // find directly from updates and get 'fedora'
+                    let td_efi =
+                        format!("{td}/{}", component_updatedirname(&**component).display());
+                    assert_eq!(
+                        component.get_efi_vendor(&td_efi)?,
+                        Some("fedora".to_string())
+                    );
+                    tdir.remove_all("usr/lib/efi")?;
+                    tdir.remove_all(tdupdates)?;
+                    let err = component.get_efi_vendor(&td_usr).unwrap_err();
+                    assert_eq!(err.to_string(), "Failed to find valid target path");
+                }
             }
         }
         Ok(())
