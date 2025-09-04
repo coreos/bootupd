@@ -257,7 +257,7 @@ impl Component for Efi {
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
         let sysroot =
             openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
-        let Some(vendor) = self.get_efi_vendor(sysroot_path)? else {
+        let Some(vendor) = self.get_efi_vendor(&Path::new(sysroot_path))? else {
             anyhow::bail!("Failed to find efi vendor");
         };
 
@@ -380,7 +380,7 @@ impl Component for Efi {
             .current_dir(format!("/proc/self/fd/{}", src_dir.as_raw_fd()))
             .run()?;
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&src_root)? {
+            if let Some(vendordir) = self.get_efi_vendor(&Path::new(src_root))? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
@@ -545,20 +545,15 @@ impl Component for Efi {
         }
     }
 
-    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>> {
-        let sysroot_path = Path::new(sysroot);
-        let efi_lib = sysroot_path.join(EFILIB);
-        let updates = sysroot_path.join(component_updatedirname(self));
+    fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>> {
+        let efi_lib = sysroot.join(EFILIB);
+        let updates = sysroot.join(component_updatedirname(self));
 
-        let target = if let Some(p) = [efi_lib.as_path(), updates.as_path(), sysroot_path]
+        let paths: [&Path; 3] = [&efi_lib, &updates, sysroot];
+        let target = paths
             .into_iter()
             .find(|p| p.exists())
-        {
-            p
-        } else {
-            bail!("Failed to find valid target path");
-        };
-
+            .ok_or_else(|| anyhow::anyhow!("Failed to find valid target path"))?;
         let shim_files = find_file_recursive(target, SHIM)?;
 
         // Does not support multiple shim for efi

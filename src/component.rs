@@ -78,7 +78,7 @@ pub(crate) trait Component {
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
-    fn get_efi_vendor(&self, sysroot: &str) -> Result<Option<String>>;
+    fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
 }
 
 /// Given a component name, create an implementation.
@@ -202,7 +202,6 @@ mod tests {
         let tdp = td.path();
         let tdupdates = "usr/lib/bootupd/updates/EFI";
         let tdir = openat::Dir::open(tdp)?;
-        let td = tdp.to_str().unwrap();
 
         tdir.ensure_dir_all(tdupdates, 0o755)?;
         let efi = tdir.sub_dir(tdupdates)?;
@@ -225,13 +224,13 @@ mod tests {
         let target_components: Vec<_> = all_components.values().collect();
         for &component in target_components.iter() {
             if component.name() == "BIOS" {
-                assert_eq!(component.get_efi_vendor(&td)?, None);
+                assert_eq!(component.get_efi_vendor(tdp)?, None);
             }
             if component.name() == "EFI" {
-                let x = component.get_efi_vendor(&td);
+                let x = component.get_efi_vendor(tdp);
                 assert_eq!(x.is_err(), true);
                 efi.remove_all("centos")?;
-                assert_eq!(component.get_efi_vendor(&td)?, Some("fedora".to_string()));
+                assert_eq!(component.get_efi_vendor(tdp)?, Some("fedora".to_string()));
                 {
                     let td_vendor = "usr/lib/efi/shim/15.8-3/EFI/centos";
                     tdir.ensure_dir_all(td_vendor, 0o755)?;
@@ -243,16 +242,15 @@ mod tests {
                     )?;
 
                     // usr/lib/efi wins and get 'centos'
-                    assert_eq!(component.get_efi_vendor(&td)?, Some("centos".to_string()));
+                    assert_eq!(component.get_efi_vendor(tdp)?, Some("centos".to_string()));
                     // find directly from usr/lib/efi and get 'centos'
-                    let td_usr = format!("{td}/usr/lib/efi");
+                    let td_usr = tdp.join("usr/lib/efi");
                     assert_eq!(
                         component.get_efi_vendor(&td_usr)?,
                         Some("centos".to_string())
                     );
                     // find directly from updates and get 'fedora'
-                    let td_efi =
-                        format!("{td}/{}", component_updatedirname(&**component).display());
+                    let td_efi = tdp.join(component_updatedirname(&**component));
                     assert_eq!(
                         component.get_efi_vendor(&td_efi)?,
                         Some("fedora".to_string())
