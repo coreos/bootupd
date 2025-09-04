@@ -463,16 +463,18 @@ impl Component for Efi {
     fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>> {
         let sysroot_path = Utf8Path::new(sysroot);
 
-        // copy EFI files to updates dir from usr/lib/efi
         let efilib_path = sysroot_path.join(EFILIB);
-        let meta = if efilib_path.exists() {
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&sysroot_path, EFILIB)?
+        } else {
+            None
+        };
+
+        // copy EFI files to updates dir from usr/lib/efi
+        let meta = if let Some(efi_components) = efi_comps {
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
             let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
-            let efi_components = get_efi_component_from_usr(&sysroot_path, EFILIB)?;
-            if efi_components.len() == 0 {
-                bail!("Failed to find EFI components from {efilib_path}");
-            }
             for efi in efi_components {
                 Command::new("cp")
                     .args(["-rp", "--reflink=auto"])
@@ -730,7 +732,7 @@ pub struct EFIComponent {
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
-) -> Result<Vec<EFIComponent>> {
+) -> Result<Option<Vec<EFIComponent>>> {
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
@@ -761,9 +763,12 @@ fn get_efi_component_from_usr<'a>(
         })
         .collect();
 
+    if components.len() == 0 {
+        return Ok(None);
+    }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(components)
+    Ok(Some(components))
 }
 
 #[cfg(test)]
@@ -900,7 +905,7 @@ Boot0003* test";
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(
             efi_comps,
-            vec![
+            Some(vec![
                 EFIComponent {
                     name: "BAR".to_string(),
                     version: "1.1".to_string(),
@@ -911,12 +916,12 @@ Boot0003* test";
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
                 },
-            ]
+            ])
         );
         std::fs::remove_dir_all(efi_path.join("BAR/1.1/EFI"))?;
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
-        assert_eq!(efi_comps, []);
+        assert_eq!(efi_comps, None);
         Ok(())
     }
 }
