@@ -49,6 +49,7 @@ impl ContentMetadata01 {
         NewContentMetadata {
             timestamp,
             version: self.version,
+            versions: None,
         }
     }
 }

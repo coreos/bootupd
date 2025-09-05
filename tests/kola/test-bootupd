@@ -67,8 +67,11 @@ rm -v ${ostefi}/shim.efi
 echo bootupd-test-changes >> ${ostefi}/grubx64.efi
 /usr/libexec/bootupd generate-update-metadata /
 ver=$(jq -r .version < ${bootupdir}/EFI.json)
+vers=$(jq -r .versions < ${bootupdir}/EFI.json)
+test='[{"name": "test", "rpm_evr": ""}]'
+new=$(echo "$vers" "$test" | jq -s add)
 cat >ver.json << EOF
-{ "version": "${ver},test", "timestamp": "$(date -u --iso-8601=seconds)" }
+{ "version": "${ver},test", "versions": ${new}, "timestamp": "$(date -u --iso-8601=seconds)" }
 EOF
 jq -s add ${bootupdir}/EFI.json ver.json > new.json
 mv new.json ${bootupdir}/EFI.json

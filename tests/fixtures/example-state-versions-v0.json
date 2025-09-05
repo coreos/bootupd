@@ -1,0 +1,73 @@
+{
+  "installed": {
+    "BIOS": {
+      "meta": {
+        "timestamp": "2025-08-16T07:47:29Z",
+        "version": "grub2-tools-1:2.12-41.fc44.x86_64",
+        "versions": [
+          {
+            "name": "grub2",
+            "rpm_evr": "1:2.12-41.fc44"
+          }
+        ]
+      },
+      "filetree": null,
+      "adopted-from": null
+    },
+    "EFI": {
+      "meta": {
+        "timestamp": "2025-08-20T08:48:03.555492819Z",
+        "version": "grub2-1:2.12-41.fc44,shim-15.8-4",
+        "versions": [
+          {
+            "name": "grub2",
+            "rpm_evr": "1:2.12-41.fc44"
+          },
+          {
+            "name": "shim",
+            "rpm_evr": "15.8-4"
+          }
+        ]
+      },
+      "filetree": {
+        "children": {
+          "BOOT/BOOTX64.EFI": {
+            "size": 949424,
+            "sha512": "sha512:cc23d8c3cb2dcf749075268b77eb796fb430182cbbc04171ded14d43e32b4a5cdeeb1a08666ee0e288bd37d63f657a9af5e7f2012dd70694d11212d705c60b42"
+          },
+          "BOOT/fbx64.efi": {
+            "size": 87712,
+            "sha512": "sha512:44ea56e91bc6de46f276ca547f27266548a06766eb62d7fb1151a8033e67e36002dfa8a88dc7e968a002983447472256bd67a9cd85c640803e43bde359f01733"
+          },
+          "fedora/BOOTX64.CSV": {
+            "size": 110,
+            "sha512": "sha512:0c29b8ae73171ef683ba690069c1bae711e130a084a81169af33a83dfbae4e07d909c2482dbe89a96ab26e171f17c53f1de8cb13d558bc1535412ff8accf253f"
+          },
+          "fedora/grubx64.efi": {
+            "size": 4046320,
+            "sha512": "sha512:27444e76e95c85e2c7c042d89477867e7ecaec5a0066cae058366722fb76d41c923e85746a7fe31454f53de1bab3259ee881e2d5db38dc4d86d5f40c0137e03e"
+          },
+          "fedora/mmx64.efi": {
+            "size": 847976,
+            "sha512": "sha512:2223703a8f40620655928a5237dfb8f7273aef06fdfa9d5517d963869936f4a1b09ec805d8437bdf9c72e0cdf213e96eebd2d607981951057801c54fb455d013"
+          },
+          "fedora/shim.efi": {
+            "size": 949424,
+            "sha512": "sha512:cc23d8c3cb2dcf749075268b77eb796fb430182cbbc04171ded14d43e32b4a5cdeeb1a08666ee0e288bd37d63f657a9af5e7f2012dd70694d11212d705c60b42"
+          },
+          "fedora/shimx64.efi": {
+            "size": 949424,
+            "sha512": "sha512:cc23d8c3cb2dcf749075268b77eb796fb430182cbbc04171ded14d43e32b4a5cdeeb1a08666ee0e288bd37d63f657a9af5e7f2012dd70694d11212d705c60b42"
+          }
+        }
+      },
+      "adopted-from": null
+    }
+  },
+  "pending": null,
+  "static-configs": {
+    "timestamp": "1970-01-01T00:00:00Z",
+    "version": "0.2.29",
+    "versions": null
+  }
+}

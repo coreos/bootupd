@@ -69,6 +69,7 @@ pub fn find_colocated_esps(devices: &Vec<String>) -> Result<Option<Vec<String>>>
 }
 
 /// Find bios_boot partition on the same device
+#[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
     const BIOS_BOOT_TYPE_GUID: &str = "21686148-6449-6E6F-744E-656564454649";
     let device_info = bootc_internal_blockdev::partitions_of(Utf8Path::new(device))?;
@@ -83,6 +84,7 @@ pub fn get_bios_boot_partition(device: &str) -> Result<Option<String>> {
 }
 
 /// Find all bios_boot partitions on the devices
+#[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 pub fn find_colocated_bios_boot(devices: &Vec<String>) -> Result<Option<Vec<String>>> {
     // look for all bios_boot parts on those devices
     let mut bios_boots = Vec::new();

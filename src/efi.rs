@@ -28,7 +28,7 @@ use crate::model::*;
 use crate::ostreeutil;
 use crate::util;
 use crate::{blockdev, filetree, grubconfigs};
-use crate::{component::*, packagesystem};
+use crate::{component::*, packagesystem::*};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
@@ -441,6 +441,7 @@ impl Component for Efi {
         let efilib_path = sysroot_path.join(EFILIB);
         let meta = if efilib_path.exists() {
             let mut packages = Vec::new();
+            let mut modules_vec: Vec<Module> = vec![];
             let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
             let efi_components = get_efi_component_from_usr(&sysroot_path, EFILIB)?;
             if efi_components.len() == 0 {
@@ -454,13 +455,19 @@ impl Component for Efi {
                     .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
                     .run()?;
                 packages.push(format!("{}-{}", efi.name, efi.version));
+                modules_vec.push(Module {
+                    name: efi.name,
+                    rpm_evr: efi.version,
+                });
             }
+            modules_vec.sort_unstable();
 
             // change to now to workaround https://github.com/coreos/bootupd/issues/933
             let timestamp = std::time::SystemTime::now();
             ContentMetadata {
                 timestamp: chrono::DateTime::<Utc>::from(timestamp),
                 version: packages.join(","),
+                versions: Some(modules_vec),
             }
         } else {
             let ostreebootdir = sysroot_path.join(ostreeutil::BOOT_PREFIX);
@@ -493,7 +500,7 @@ impl Component for Efi {
                     f.insert_str(0, "/boot/efi/EFI/");
                     f
                 });
-                packagesystem::query_files(sysroot, files)?
+                query_files(sysroot, files)?
             } else {
                 anyhow::bail!("Failed to find {ostreebootdir}");
             }
@@ -707,8 +714,8 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct EFIComponent {
-    name: String,
-    version: String,
+    pub name: String,
+    pub version: String,
     path: Utf8PathBuf,
 }
 
