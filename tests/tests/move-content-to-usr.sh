@@ -14,13 +14,13 @@ if [ ! -d "/usr/lib/efi" ]; then
     suffix="aa64"
   fi
 
-  grub_ver=$(rpm -qa grub2-efi-${suffix} --queryformat '%{VERSION}-%{RELEASE}')
-  mkdir -p /usr/lib/efi/grub2/${grub_ver}/EFI/centos
-  mv ${updates}/EFI/centos/grub${suffix}.efi /usr/lib/efi/grub2/${grub_ver}/EFI/centos/
+  grub_evr=$(rpm -qa grub2-efi-${suffix} --queryformat '%{EPOCH}:%{VERSION}-%{RELEASE}')
+  mkdir -p /usr/lib/efi/grub2/${grub_evr}/EFI/centos
+  mv ${updates}/EFI/centos/grub${suffix}.efi /usr/lib/efi/grub2/${grub_evr}/EFI/centos/
 
-  shim_ver=$(rpm -qa shim-${suffix} --queryformat '%{VERSION}-%{RELEASE}')
-  mkdir -p /usr/lib/efi/shim/${shim_ver}/EFI/
-  mv ${updates}/EFI /usr/lib/efi/shim/${shim_ver}/
+  shim_vr=$(rpm -qa shim-${suffix} --queryformat '%{VERSION}-%{RELEASE}')
+  mkdir -p /usr/lib/efi/shim/${shim_vr}/EFI/
+  mv ${updates}/EFI /usr/lib/efi/shim/${shim_vr}/
 else
   rm -rf ${updates}/EFI
 fi
