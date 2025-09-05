@@ -99,7 +99,7 @@ pub(crate) fn install(
         log::info!("Installed {} {}", component.name(), meta.meta.version);
         state.installed.insert(component.name().into(), meta);
         // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&source_root)? {
+        if let Some(vendor) = component.get_efi_vendor(&Path::new(source_root))? {
             assert!(installed_efi_vendor.is_none());
             installed_efi_vendor = Some(vendor);
         }

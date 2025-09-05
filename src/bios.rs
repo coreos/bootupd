@@ -267,7 +267,7 @@ impl Component for Bios {
         Ok(ValidationResult::Skip)
     }
 
-    fn get_efi_vendor(&self, _: &str) -> Result<Option<String>> {
+    fn get_efi_vendor(&self, _: &Path) -> Result<Option<String>> {
         Ok(None)
     }
 }
