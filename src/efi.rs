@@ -18,7 +18,7 @@ use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
-use rustix::fd::BorrowedFd;
+use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
 use widestring::U16CString;
 
@@ -46,6 +46,9 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
+
+/// The mount path for uefi
+const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 
 /// Systemd boot loader info EFI variable names
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
@@ -146,6 +149,19 @@ impl Efi {
             return Ok(());
         }
         let sysroot = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+        let efi = sysroot
+            .open_dir(EFIVARFS.strip_prefix("/").unwrap())
+            .context("Opening efivars dir")?;
+        let st = rustix::fs::fstatvfs(efi.as_fd())?;
+        // Do nothing if efivars is readonly or empty
+        // See https://github.com/coreos/bootupd/issues/972
+        if st.f_flag.contains(StatVfsMountFlags::RDONLY)
+            || std::fs::read_dir(EFIVARFS)?.next().is_none()
+        {
+            log::info!("Skipped EFI variables update: efivars not writable or empty");
+            return Ok(());
+        }
+
         let product_name = get_product_name(&sysroot)?;
         log::debug!("Get product name: '{product_name}'");
         assert!(product_name.len() > 0);
@@ -182,7 +198,7 @@ fn string_from_utf16_bytes(slice: &[u8]) -> String {
 
 /// Read a nul-terminated UTF-16 string from an EFI variable.
 fn read_efi_var_utf16_string(name: &str) -> Option<String> {
-    let efivars = Path::new("/sys/firmware/efi/efivars");
+    let efivars = Path::new(EFIVARFS);
     if !efivars.exists() {
         log::trace!("No efivars mount at {:?}", efivars);
         return None;

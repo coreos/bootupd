@@ -88,7 +88,8 @@ jobs:
           set -xeuo pipefail
           sudo podman run --rm -ti --privileged -v /:/target --pid=host --security-opt label=disable \
             -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
-            localhost/bootupd:latest bootc install to-filesystem --skip-fetch-check \
+            localhost/bootupd:latest env BOOTC_BOOTLOADER_DEBUG=1 \
+            bootc install to-filesystem --skip-fetch-check \
             --acknowledge-destructive \
             --disable-selinux --replace=alongside /target
           # Verify we injected static configs
