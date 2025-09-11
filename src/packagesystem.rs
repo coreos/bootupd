@@ -116,7 +116,12 @@ fn parse_evr(pkg: &str) -> Module {
         (nevra.name().to_string(), nevra.evr().to_string())
     };
 
-    let (name, _) = name_str.split_once('-').unwrap_or((&name_str, ""));
+    // Only cut the packages name that we know
+    let (name, _) = if ["grub2", "shim"].iter().any(|p| name_str.starts_with(p)) {
+        name_str.split_once('-').unwrap_or((&name_str, ""))
+    } else {
+        (name_str.as_str(), "")
+    };
     Module {
         name: name.to_string(),
         rpm_evr,
@@ -180,6 +185,37 @@ pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_evr() {
+        let cases = [
+            // Case from this PR
+            (
+                "test-bootupd-payload-1.0-1.x86_64",
+                "test-bootupd-payload",
+                "1.0-1",
+            ),
+            // grub2/shim cases
+            (
+                "grub2-efi-x64-1:2.06-95.fc38.x86_64",
+                "grub2",
+                "1:2.06-95.fc38",
+            ),
+            ("shim-x64-15.6-2.x86_64", "shim", "15.6-2"),
+            // Case without arch suffix
+            ("grub2-1:2.12-28.fc42", "grub2", "1:2.12-28.fc42"),
+        ];
+
+        for &(input, expected_name, expected_evr) in &cases {
+            assert_eq!(
+                Module {
+                    name: expected_name.to_string(),
+                    rpm_evr: expected_evr.to_string(),
+                },
+                parse_evr(input)
+            );
+        }
+    }
 
     #[test]
     fn test_parse_rpmout() {
