@@ -1,0 +1,4 @@
+/test-post-install:
+  summary: Execute installation on package mode 
+  duration: 10m
+  test: bash package/post-install.sh

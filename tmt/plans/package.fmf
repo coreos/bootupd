@@ -1,0 +1,22 @@
+# Common settings for all plans
+provision:
+  how: virtual
+  image: $@{test_disk_image}
+prepare:
+  # Run on package mode VM running on Packit and Gating
+  - how: shell
+    order: 98
+    script:
+      - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
+      - cd bootc && rpm2cpio *.src.rpm | cpio -idmv && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
+    when: running_env != image_mode
+execute:
+  how: tmt
+
+/plan-post-install:
+  summary: Execute post install tests
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-post-install
