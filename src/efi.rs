@@ -771,6 +771,55 @@ fn get_efi_component_from_usr<'a>(
     Ok(Some(components))
 }
 
+/// Copy files from usr/lib/ostree-boot/efi/EFI to /usr/lib/efi/<component>/<evr>/
+fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
+    let ostreeboot_efi = Path::new(ostreeutil::BOOT_PREFIX).join("efi");
+    let ostreeboot_efi_path = sysroot.join(&ostreeboot_efi);
+
+    for entry in WalkDir::new(ostreeboot_efi_path.join("EFI")) {
+        let entry = entry?;
+
+        if entry.file_type().is_file() {
+            let entry_path = entry.path();
+
+            // get path EFI/{BOOT,<vendor>}/<file>
+            let filepath = entry_path.strip_prefix(&ostreeboot_efi_path)?;
+            // get path /boot/efi/EFI/{BOOT,<vendor>}/<file>
+            let boot_filepath = Path::new("/boot/efi").join(filepath);
+
+            // Run `rpm -qf <filepath>`
+            let pkg = crate::packagesystem::query_file(
+                sysroot.to_str().unwrap(),
+                boot_filepath.to_str().unwrap(),
+            )?;
+
+            let (name, evr) = pkg.split_once(' ').unwrap();
+            let component = name.split('-').next().unwrap_or("");
+            // get path usr/lib/efi/<component>/<evr>
+            let efilib_path = Path::new(EFILIB).join(component).join(evr);
+
+            let sysroot_dir = openat::Dir::open(sysroot)?;
+            // Ensure dest parent directory exists
+            if let Some(parent) = efilib_path.join(filepath).parent() {
+                sysroot_dir.ensure_dir_all(parent, 0o755)?;
+            }
+
+            // Source dir is usr/lib/ostree-boot/efi
+            let src = sysroot_dir
+                .sub_dir(&ostreeboot_efi)
+                .context("Opening ostree-boot dir")?;
+            // Dest dir is usr/lib/efi/<component>/<evr>
+            let dest = sysroot_dir
+                .sub_dir(&efilib_path)
+                .context("Opening usr/lib/efi dir")?;
+            // Copy file from ostree-boot to usr/lib/efi
+            src.copy_file_at(filepath, &dest, filepath)
+                .context("Copying file to usr/lib/efi")?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use cap_std_ext::dirext::CapStdExtDirExt;
