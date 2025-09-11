@@ -115,6 +115,21 @@ fn split_name_version(input: &str) -> Option<(String, String)> {
     Some((name.to_string(), format!("{version}-{release}")))
 }
 
+/// Query the rpm database and get package "<name> <evr>"
+pub(crate) fn query_file(sysroot_path: &str, path: &str) -> Result<String> {
+    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
+    c.args(["-q", "--queryformat", "%{NAME} %{EVR}", "-f", path]);
+
+    let rpmout = c.output()?;
+    if !rpmout.status.success() {
+        std::io::stderr().write_all(&rpmout.stderr)?;
+        bail!("Failed to invoke rpm -qf");
+    }
+
+    let output = String::from_utf8(rpmout.stdout)?;
+    Ok(output.trim().to_string())
+}
+
 fn parse_evr(pkg: &str) -> Module {
     // assume it is "grub2-1:2.12-28.fc42" (from usr/lib/efi)
     if !pkg.ends_with(std::env::consts::ARCH) {
