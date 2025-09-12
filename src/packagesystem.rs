@@ -101,6 +101,20 @@ where
     rpm_parse_metadata(&rpmout.stdout)
 }
 
+fn split_name_version(input: &str) -> Option<(String, String)> {
+    // assume it is "grub2-tools-1:2.06-110.el9.x86_64"
+    // strip .arch
+    let main = input.rsplit_once('.')?.0;
+
+    // find last two '-'
+    let mut parts = main.rsplitn(3, '-');
+    let release = parts.next()?; // after last '-'
+    let version = parts.next()?; // between last two '-'
+    let name = parts.next()?; // the rest (may contain '-')
+
+    Some((name.to_string(), format!("{version}-{release}")))
+}
+
 fn parse_evr(pkg: &str) -> Module {
     // assume it is "grub2-1:2.12-28.fc42" (from usr/lib/efi)
     if !pkg.ends_with(std::env::consts::ARCH) {
@@ -112,8 +126,15 @@ fn parse_evr(pkg: &str) -> Module {
     }
 
     let (name_str, rpm_evr) = {
-        let nevra = rpm::Nevra::parse(pkg);
-        (nevra.name().to_string(), nevra.evr().to_string())
+        #[cfg(not(feature = "rpm"))]
+        {
+            split_name_version(pkg).unwrap()
+        }
+        #[cfg(feature = "rpm")]
+        {
+            let nevra = rpm_rs::Nevra::parse(pkg);
+            (nevra.name().to_string(), nevra.evr().to_string())
+        }
     };
 
     let (name, _) = name_str.split_once('-').unwrap_or((&name_str, ""));
@@ -267,6 +288,7 @@ mod tests {
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
+        // The target missed some package
         let ord = compare_package_versions(target, current);
         assert_eq!(ord, Ordering::Greater);
 
@@ -303,8 +325,16 @@ mod tests {
         }
 
         // Test only grub2
-        let current = "grub2-1:2.12-28.fc42";
-        let target = "grub2-1:2.12-29.fc42";
+        let current = "grub2-tools-1:2.06-86.el9_4.3.x86_64";
+        let target = "grub2-tools-1:2.06-110.el9.x86_64";
+        let ord = compare_package_versions(current, target);
+        assert_eq!(ord, Ordering::Less);
+
+        let ord = compare_package_versions(target, current);
+        assert_eq!(ord, Ordering::Greater);
+
+        let current = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64";
+        let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
