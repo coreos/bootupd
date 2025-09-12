@@ -365,8 +365,6 @@ impl Component for Efi {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(&srcdir_name)?)?;
 
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
@@ -387,16 +385,30 @@ impl Component for Efi {
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
-        // TODO - add some sort of API that allows directly setting the working
-        // directory to a file descriptor.
-        std::process::Command::new("cp")
-            .args(["-rp", "--reflink=auto"])
-            .arg(&srcdir_name)
-            .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_dir.as_raw_fd()))
-            .run()?;
+        let src_path = Path::new(src_root);
+        let efilib_path = src_path.join(EFILIB);
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&Utf8Path::new(src_root), EFILIB)?
+        } else {
+            None
+        };
+
+        let efi_path = if let Some(efi_components) = efi_comps {
+            for efi in efi_components {
+                log::trace!("Copy {} to {}", efi.path, destpath.display());
+                util::copy_in_fd(&src_dir, &efi.path, &destpath)?;
+            }
+            PathBuf::from(EFILIB)
+        } else {
+            let updates = component_updatedirname(self);
+            util::copy_in_fd(&src_dir, &updates, &destpath)?;
+            updates
+        };
+
+        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(&efi_path)?)?;
+
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&Path::new(src_root))? {
+            if let Some(vendordir) = self.get_efi_vendor(&src_path.join(efi_path))? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
@@ -453,23 +465,20 @@ impl Component for Efi {
     fn generate_update_metadata(&self, sysroot: &str) -> Result<ContentMetadata> {
         let sysroot_path = Utf8Path::new(sysroot);
 
-        // copy EFI files to updates dir from usr/lib/efi
         let efilib_path = sysroot_path.join(EFILIB);
-        let meta = if efilib_path.exists() {
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&sysroot_path, EFILIB)?
+        } else {
+            None
+        };
+
+        // copy EFI files to updates dir from usr/lib/efi
+        let meta = if let Some(efi_components) = efi_comps {
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
             let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
-            let efi_components = get_efi_component_from_usr(&sysroot_path, EFILIB)?;
-            if efi_components.len() == 0 {
-                bail!("Failed to find EFI components from {efilib_path}");
-            }
             for efi in efi_components {
-                Command::new("cp")
-                    .args(["-rp", "--reflink=auto"])
-                    .arg(&efi.path)
-                    .arg(crate::model::BOOTUPD_UPDATES_DIR)
-                    .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
-                    .run()?;
+                util::copy_in_fd(&sysroot_dir, &efi.path, crate::model::BOOTUPD_UPDATES_DIR)?;
                 packages.push(format!("{}-{}", efi.name, efi.version));
                 modules_vec.push(Module {
                     name: efi.name,
@@ -734,7 +743,7 @@ pub struct EFIComponent {
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
-) -> Result<Vec<EFIComponent>> {
+) -> Result<Option<Vec<EFIComponent>>> {
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
@@ -765,9 +774,12 @@ fn get_efi_component_from_usr<'a>(
         })
         .collect();
 
+    if components.len() == 0 {
+        return Ok(None);
+    }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(components)
+    Ok(Some(components))
 }
 
 #[cfg(test)]
@@ -904,7 +916,7 @@ Boot0003* test";
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(
             efi_comps,
-            vec![
+            Some(vec![
                 EFIComponent {
                     name: "BAR".to_string(),
                     version: "1.1".to_string(),
@@ -915,12 +927,12 @@ Boot0003* test";
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
                 },
-            ]
+            ])
         );
         std::fs::remove_dir_all(efi_path.join("BAR/1.1/EFI"))?;
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
-        assert_eq!(efi_comps, []);
+        assert_eq!(efi_comps, None);
         Ok(())
     }
 }
