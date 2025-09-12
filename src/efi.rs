@@ -308,9 +308,22 @@ impl Component for Efi {
             return Ok(None);
         };
 
+        let efilib_path = rootcxt.path.join(EFILIB);
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&rootcxt.path, EFILIB)?
+        } else {
+            None
+        };
+
+        let updated_path = if efi_comps.is_some() {
+            PathBuf::from(EFILIB)
+        } else {
+            component_updatedirname(self)
+        };
+
         let updated = rootcxt
             .sysroot
-            .sub_dir(&component_updatedirname(self))
+            .sub_dir(&updated_path)
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
@@ -430,11 +443,28 @@ impl Component for Efi {
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
+
+        let efilib_path = rootcxt.path.join(EFILIB);
+        let efi_comps = if efilib_path.exists() {
+            get_efi_component_from_usr(&rootcxt.path, EFILIB)?
+        } else {
+            None
+        };
+
+        let updated_path = if efi_comps.is_some() {
+            PathBuf::from(EFILIB)
+        } else {
+            component_updatedirname(self)
+        };
+
         let updated = sysroot_dir
-            .sub_dir(&component_updatedirname(self))
+            .sub_dir(&updated_path)
             .context("opening update dir")?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
+        dbg!(&currentf);
+        dbg!(&updatef);
+        dbg!(&diff);
 
         let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
             anyhow::bail!("Failed to find all esp devices");
