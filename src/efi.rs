@@ -162,12 +162,18 @@ impl Efi {
             return Ok(());
         }
 
+        // Check shim exists and return earlier if not
+        if espdir.exists(format!("{vendordir}/{SHIM}"))? {
+            anyhow::bail!("Failed to find {SHIM}");
+        }
+        let loader = format!("\\EFI\\{vendordir}\\{SHIM}");
+
         let product_name = get_product_name(&sysroot)?;
         log::debug!("Get product name: '{product_name}'");
         assert!(product_name.len() > 0);
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
-        create_efi_boot_entry(device, espdir, vendordir, &product_name)
+        create_efi_boot_entry(device, espdir, &loader, &product_name)
     }
 }
 
@@ -670,7 +676,7 @@ pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
 pub(crate) fn create_efi_boot_entry(
     device: &str,
     espdir: &openat::Dir,
-    vendordir: &str,
+    loader: &str,
     target: &str,
 ) -> Result<()> {
     let fsinfo = crate::filesystem::inspect_filesystem(espdir, ".")?;
@@ -682,11 +688,7 @@ pub(crate) fn create_efi_boot_entry(
     let partition_path = format!("/sys/class/block/{devname}/partition");
     let partition_number = std::fs::read_to_string(&partition_path)
         .with_context(|| format!("Failed to read {partition_path}"))?;
-    let shim = format!("{vendordir}/{SHIM}");
-    if espdir.exists(&shim)? {
-        anyhow::bail!("Failed to find {SHIM}");
-    }
-    let loader = format!("\\EFI\\{}\\{SHIM}", vendordir);
+
     log::debug!("Creating new EFI boot entry using '{target}'");
     let mut cmd = Command::new(EFIBOOTMGR);
     cmd.args([
@@ -696,7 +698,7 @@ pub(crate) fn create_efi_boot_entry(
         "--part",
         partition_number.trim(),
         "--loader",
-        loader.as_str(),
+        loader,
         "--label",
         target,
     ]);
