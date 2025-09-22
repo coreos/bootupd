@@ -163,8 +163,9 @@ impl Efi {
         }
 
         // Check shim exists and return earlier if not
-        if espdir.exists(format!("{vendordir}/{SHIM}"))? {
-            anyhow::bail!("Failed to find {SHIM}");
+        let shim_path = format!("EFI/{vendordir}/{SHIM}");
+        if !espdir.exists(&shim_path)? {
+            anyhow::bail!("Failed to find {shim_path}");
         }
         let loader = format!("\\EFI\\{vendordir}\\{SHIM}");
 
@@ -176,7 +177,7 @@ impl Efi {
 
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
-        create_efi_boot_entry(device, &esp_part_num, &loader, &product_name)
+        create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
 }
 
