@@ -1,4 +1,4 @@
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -98,4 +98,47 @@ pub fn find_colocated_bios_boot(devices: &Vec<String>) -> Result<Option<Vec<Stri
     }
     log::debug!("Found bios_boot partitions: {bios_boots:?}");
     Ok(Some(bios_boots))
+}
+
+// Check if the device is mpath
+fn is_mpath(device: &str) -> Result<bool> {
+    let dm_path = Utf8PathBuf::from_path_buf(std::fs::canonicalize(device)?)
+        .map_err(|_| anyhow::anyhow!("Non-UTF8 path"))?;
+    let dm_name = dm_path.file_name().unwrap_or("");
+    let uuid_path = Utf8PathBuf::from(format!("/sys/class/block/{dm_name}/dm/uuid"));
+
+    if uuid_path.exists() {
+        let uuid = std::fs::read_to_string(&uuid_path)
+            .with_context(|| format!("Failed to read {uuid_path}"))?;
+        if uuid.trim_start().starts_with("mpath-") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Get esp partition number from device
+pub fn get_esp_partition_number(device: &str) -> Result<String> {
+    let esp_device =
+        get_esp_partition(device)?.ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
+
+    let devname = esp_device
+        .rsplit_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse {esp_device}"))?
+        .1;
+
+    let partition_path = Utf8PathBuf::from(format!("/sys/class/block/{devname}/partition"));
+    if partition_path.exists() {
+        return std::fs::read_to_string(&partition_path)
+            .with_context(|| format!("Failed to read {partition_path}"));
+    }
+
+    // On multipath the partition attribute is not existing
+    if is_mpath(device)? {
+        if let Some(esp) = esp_device.strip_prefix(device) {
+            let esp_num = esp.trim_start_matches(|c: char| !c.is_ascii_digit());
+            return Ok(esp_num.to_string());
+        }
+    }
+    anyhow::bail!("Not supported for {device}")
 }
