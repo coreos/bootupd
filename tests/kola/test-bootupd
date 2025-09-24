@@ -30,19 +30,24 @@ efisubdir=fedora
 efidir=${efiupdir}/${efisubdir}
 ostefi=${ostbaseefi}/${efisubdir}
 shim=shimx64.efi
+efilib=/usr/lib/efi
 
 test -f "${efidir}/${shim}"
 
 prepare_efi_update() {
   test -w /usr
-  mkdir -p ${ostbaseefi}
-  cp -a ${efiupdir}.orig/* ${ostbaseefi}/
+  # Do not need to create ostree-boot dir after transfered
+  if [ ! -d ${efilib} ]; then
+    mkdir -p ${ostbaseefi}
+    cp -a ${efiupdir}.orig/* ${ostbaseefi}/
+  fi
   rm -rf ${efiupdir} ${bootupdir}/EFI.json
 }
 
 bootupctl status > out.txt
+evr=$(rpm -q grub2-common --qf '%{EVR}')
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
+assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
 assert_file_has_content_literal out.txt 'Update: At latest version'
 assert_file_has_content out.txt '^CoreOS aleph version:'
 ok status
@@ -61,10 +66,20 @@ test -w /usr || rpm-ostree usroverlay
 cp -a ${efiupdir} ${efiupdir}.orig
 
 prepare_efi_update
-# FIXME need to synthesize an RPM for this
-# echo somenewfile > ${ostefi}/somenew.efi
-rm -v ${ostefi}/shim.efi
-echo bootupd-test-changes >> ${ostefi}/grubx64.efi
+shim=
+grubx64=
+# Change the files under usr/lib/efi after transferred
+if [ -d ${efilib} ]; then
+  shim=$(find ${efilib} -name shim.efi)
+  grubx64=$(find ${efilib} -name grubx64.efi)
+else  
+  # FIXME need to synthesize an RPM for this
+  # echo somenewfile > ${ostefi}/somenew.efi
+  shim=${ostefi}/shim.efi
+  grubx64=${ostefi}/grubx64.efi
+fi
+rm -v ${shim}
+echo bootupd-test-changes >> ${grubx64}
 /usr/libexec/bootupd generate-update-metadata /
 ver=$(jq -r .version < ${bootupdir}/EFI.json)
 vers=$(jq -r .versions < ${bootupdir}/EFI.json)
@@ -78,21 +93,21 @@ mv new.json ${bootupdir}/EFI.json
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
-assert_not_file_has_content out.txt '  Installed: grub2-efi-x64.*,test'
+assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+assert_not_file_has_content out.txt '  Installed: grub2-.*,test'
 assert_file_has_content_literal out.txt 'Update: Available:'
 ok update avail
 
 bootupctl status --json > status.json
 jq -r '.components.EFI.installed.version' < status.json > installed.txt
-assert_file_has_content installed.txt '^grub2-efi-x64'
+assert_file_has_content installed.txt '^grub2-'"${evr}"
 
 bootupctl update | tee out.txt
-assert_file_has_content out.txt 'Updated EFI: grub2-efi-x64.*,test'
+assert_file_has_content out.txt 'Updated EFI: grub2-.*,test'
 
 bootupctl status > out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content out.txt '  Installed: grub2-efi-x64.*,test'
+assert_file_has_content out.txt '  Installed: grub2-.*,test'
 assert_file_has_content_literal out.txt 'Update: At latest version'
 ok status after update
 

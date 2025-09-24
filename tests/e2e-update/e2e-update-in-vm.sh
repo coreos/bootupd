@@ -18,9 +18,9 @@ if ! test -f ${stampfile}; then
         fatal "already at ${TARGET_COMMIT}"
     fi
 
-    current_grub=$(rpm -q --queryformat='%{nevra}\n' ${TARGET_GRUB_NAME})
-    if test "${current_grub}" == "${TARGET_GRUB_PKG}"; then
-        fatal "Current grub ${current_grub} is same as target ${TARGET_GRUB_PKG}"
+    current_grub=$(rpm -q --queryformat='%{evr}\n' ${TARGET_GRUB_NAME})
+    if test "${current_grub}" == "${TARGET_GRUB_EVR}"; then
+        fatal "Current grub ${current_grub} is same as target ${TARGET_GRUB_EVR}"
     fi
 
     # FIXME
@@ -44,8 +44,8 @@ if test "$semode" != Enforcing; then
     fatal "SELinux mode is ${semode}"
 fi
 
-if ! test -n "${TARGET_GRUB_PKG}"; then
-    fatal "Missing TARGET_GRUB_PKG"
+if ! test -n "${TARGET_GRUB_EVR}"; then
+    fatal "Missing TARGET_GRUB_EVR"
 fi
 
 bootupctl validate
@@ -53,11 +53,11 @@ ok validate
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
-assert_not_file_has_content out.txt '  Installed:.*test-bootupd-payload'
-assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_PKG}"
-assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_PKG}"
-assert_file_has_content out.txt 'Update: Available:.*test-bootupd-payload-1.0'
+assert_file_has_content_literal out.txt '  Installed: grub2-1:'
+assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
+assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_EVR}"
+assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_EVR}"
+assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload-1.0'
 bootupctl status --print-if-available > out.txt
 assert_file_has_content_literal 'out.txt' 'Updates available: BIOS EFI'
 ok update avail
@@ -74,7 +74,7 @@ assert_file_has_content err.txt "error: .*synthetic failpoint"
 
 bootupctl update -vvv | tee out.txt
 assert_file_has_content out.txt "Previous EFI: .*"
-assert_file_has_content out.txt "Updated EFI: ${TARGET_GRUB_PKG}.*,test-bootupd-payload-1.0"
+assert_file_has_content out.txt "Updated EFI: .*${TARGET_GRUB_EVR}.*,test_bootupd_payload-1.0"
 
 assert_file_has_content ${tmpefimount}/EFI/fedora/test-bootupd.efi test-payload
 

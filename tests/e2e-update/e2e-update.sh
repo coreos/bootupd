@@ -25,7 +25,7 @@ export test_tmpdir=${testtmp}
 # This is new content for our update
 test_bootupd_payload_file=/boot/efi/EFI/fedora/test-bootupd.efi
 test_bootupd_payload_file1=/boot/efi/EFI/BOOT/test-bootupd1.efi
-build_rpm test-bootupd-payload \
+build_rpm test_bootupd_payload \
   files "${test_bootupd_payload_file}
          ${test_bootupd_payload_file1}" \
   install "mkdir -p %{buildroot}/$(dirname ${test_bootupd_payload_file})
@@ -56,9 +56,9 @@ if test -z "${e2e_skip_build:-}"; then
     runv cosa build
     runv cosa osbuild qemu
     prev_image=$(runv cosa meta --image-path qemu)
-    # Modify manifest to include `test-bootupd-payload` RPM
+    # Modify manifest to include `test_bootupd_ayload` RPM
     runv git -C src/config checkout manifest.yaml # first make sure it's clean
-    echo "packages: [test-bootupd-payload]" >> src/config/manifest.yaml
+    echo "packages: [test_bootupd_payload]" >> src/config/manifest.yaml
     rm -f ${overrides}/rpm/*.rpm
     echo "Building update ostree"
     # Latest (current) version in F42
@@ -77,7 +77,7 @@ case $(arch) in
     *) fatal "Unhandled arch $(arch)";;
 esac
 target_grub_name=grub2-efi-${grubarch}
-target_grub_pkg=$(rpm -qp --queryformat='%{nevra}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
+target_grub_evr=$(rpm -qp --queryformat='%{evr}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
 target_commit=$(cosa meta --get-value ostree-commit)
 echo "Target commit: ${target_commit}"
 # For some reason 9p can't write to tmpfs
@@ -97,7 +97,7 @@ systemd:
         RemainAfterExit=yes
         Environment=TARGET_COMMIT=${target_commit}
         Environment=TARGET_GRUB_NAME=${target_grub_name}
-        Environment=TARGET_GRUB_PKG=${target_grub_pkg}
+        Environment=TARGET_GRUB_EVR=${target_grub_evr}
         Environment=SRCDIR=/run/bootupd-source
         # Run via shell because selinux denies systemd writing to 9p apparently
         ExecStart=/bin/sh -c '/run/bootupd-source/${testprefix}/e2e-update-in-vm.sh &>>/run/testtmp/out.txt; test -f /run/rebooting || poweroff -ff'
