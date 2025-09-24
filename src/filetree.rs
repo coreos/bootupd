@@ -366,7 +366,7 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
+fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     let first = path
         .iter()
         .next()
@@ -374,6 +374,15 @@ fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
     let mut tmp = first.to_owned();
     tmp.insert_str(0, TMP_PREFIX);
     Ok((first.into(), tmp))
+}
+
+/// Get dest efi path "fedora/shim.efi" from "shim/<ver>/EFI/fedora/shim.efi"
+fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
+    let parts: Vec<_> = path.iter().collect();
+    if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
+        return parts.iter().skip(3).collect();
+    }
+    path.to_path_buf()
 }
 
 /// Given two directories, apply a diff generated from srcdir to destdir
@@ -398,8 +407,9 @@ pub(crate) fn apply_diff(
     // Handle removals in temp dir, or remove directly if file not in dir
     if !opts.skip_removals {
         for pathstr in diff.removals.iter() {
-            let path = Utf8Path::new(pathstr);
-            let (first_dir, first_dir_tmp) = get_first_dir(path)?;
+            let src_path = Utf8Path::new(pathstr);
+            let path = get_dest_efi_path(src_path);
+            let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
             let path_tmp;
             if first_dir != path {
                 path_tmp = Utf8Path::new(&first_dir_tmp).join(path.strip_prefix(&first_dir)?);
@@ -421,8 +431,9 @@ pub(crate) fn apply_diff(
     }
     // Write changed or new files to temp dir or temp file
     for pathstr in diff.changes.iter().chain(diff.additions.iter()) {
-        let path = Utf8Path::new(pathstr);
-        let (first_dir, first_dir_tmp) = get_first_dir(path)?;
+        let src_path = Utf8Path::new(pathstr);
+        let path = get_dest_efi_path(src_path);
+        let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
         let mut path_tmp = Utf8PathBuf::from(&first_dir_tmp);
         if first_dir != path {
             if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
@@ -443,7 +454,7 @@ pub(crate) fn apply_diff(
         }
         updates.insert(first_dir, first_dir_tmp);
         srcdir
-            .copy_file_at(path.as_std_path(), destdir, path_tmp.as_std_path())
+            .copy_file_at(src_path.as_std_path(), destdir, path_tmp.as_std_path())
             .with_context(|| format!("copying {:?} to {:?}", path, path_tmp))?;
     }
 
