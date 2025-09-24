@@ -112,6 +112,7 @@ pub(crate) fn component_updatedirname(component: &dyn Component) -> PathBuf {
 
 /// Returns the path to the payload directory for an available update for
 /// a component.
+#[allow(dead_code)]
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
