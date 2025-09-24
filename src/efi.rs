@@ -757,7 +757,11 @@ fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
     let ostreeboot_efi = Path::new(ostreeutil::BOOT_PREFIX).join("efi");
     let ostreeboot_efi_path = sysroot.join(&ostreeboot_efi);
 
-    for entry in WalkDir::new(ostreeboot_efi_path.join("EFI")) {
+    let efi = ostreeboot_efi_path.join("EFI");
+    if !efi.exists() {
+        return Ok(());
+    }
+    for entry in WalkDir::new(&efi) {
         let entry = entry?;
 
         if entry.file_type().is_file() {
