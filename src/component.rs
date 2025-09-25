@@ -62,7 +62,7 @@ pub(crate) trait Component {
     /// this is an `rpm-ostree compose tree` for example.  For a dual-partition
     /// style updater, this would be run as part of a postprocessing step
     /// while the filesystem for the partition is mounted.
-    fn generate_update_metadata(&self, sysroot: &str) -> Result<ContentMetadata>;
+    fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>>;
 
     /// Used on the client to query for an update cached in the current booted OS.
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>>;
