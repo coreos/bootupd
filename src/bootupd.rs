@@ -93,6 +93,15 @@ pub(crate) fn install(
             continue;
         }
 
+        // skip components that don't have an update metadata
+        if component.query_update(&source_root_dir)?.is_none() {
+            println!(
+                "Skip installing component {} without update metadata",
+                component.name()
+            );
+            continue;
+        }
+
         let meta = component
             .install(&source_root, dest_root, device, update_firmware)
             .with_context(|| format!("installing component {}", component.name()))?;
