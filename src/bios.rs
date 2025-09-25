@@ -130,7 +130,8 @@ impl Component for Bios {
     fn generate_update_metadata(&self, sysroot_path: &str) -> Result<Option<ContentMetadata>> {
         let grub_install = Path::new(sysroot_path).join(GRUB_BIN);
         if !grub_install.exists() {
-            bail!("Failed to find {:?}", grub_install);
+            println!("Failed to find {:?}", grub_install);
+            return Ok(None);
         }
 
         // Query the rpm database and list the package and build times for /usr/sbin/grub2-install
