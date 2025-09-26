@@ -155,9 +155,10 @@ fn impl_package(sh: &Shell) -> Result<Package> {
         )
         .run()?;
     }
-    // Compress with zstd
-    let srcpath: Utf8PathBuf = format!("{p}.zstd").into();
-    cmd!(sh, "zstd --rm -f {p} -o {srcpath}").run()?;
+    // Compress with gzip
+    let srcpath: Utf8PathBuf = format!("target/{namev}.crate").into();
+    cmd!(sh, "gzip --force --best {p}").run()?;
+    std::fs::rename(format!("{p}.gz"), &srcpath)?;
 
     Ok(Package {
         version: v,
@@ -176,8 +177,7 @@ fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
     let pkg = impl_package(sh)?;
     vendor(sh)?;
     let td = tempfile::tempdir_in("target").context("Allocating tmpdir")?;
-    let td = td.into_path();
-    let td: &Utf8Path = td.as_path().try_into().unwrap();
+    let td: &Utf8Path = td.path().try_into().unwrap();
     let srcpath = td.join(pkg.srcpath.file_name().unwrap());
     std::fs::rename(pkg.srcpath, srcpath)?;
     let v = pkg.version;
