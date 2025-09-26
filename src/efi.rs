@@ -460,7 +460,7 @@ impl Component for Efi {
         })
     }
 
-    fn generate_update_metadata(&self, sysroot: &str) -> Result<ContentMetadata> {
+    fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>> {
         let sysroot_path = Utf8Path::new(sysroot);
 
         // copy EFI files to updates dir from usr/lib/efi
@@ -533,7 +533,7 @@ impl Component for Efi {
         };
 
         write_update_metadata(sysroot, self, &meta)?;
-        Ok(meta)
+        Ok(Some(meta))
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {

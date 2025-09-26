@@ -93,6 +93,15 @@ pub(crate) fn install(
             continue;
         }
 
+        // skip components that don't have an update metadata
+        if component.query_update(&source_root_dir)?.is_none() {
+            println!(
+                "Skip installing component {} without update metadata",
+                component.name()
+            );
+            continue;
+        }
+
         let meta = component
             .install(&source_root, dest_root, device, update_firmware)
             .with_context(|| format!("installing component {}", component.name()))?;
@@ -199,12 +208,18 @@ pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
     std::fs::create_dir_all(&updates_dir)
         .with_context(|| format!("Failed to create updates dir {:?}", &updates_dir))?;
     for component in get_components().values() {
-        let v = component.generate_update_metadata(sysroot_path)?;
-        println!(
-            "Generated update layout for {}: {}",
-            component.name(),
-            v.version,
-        );
+        if let Some(v) = component.generate_update_metadata(sysroot_path)? {
+            println!(
+                "Generated update layout for {}: {}",
+                component.name(),
+                v.version,
+            );
+        } else {
+            println!(
+                "Generating update layout for {} was not possible, skipping.",
+                component.name(),
+            );
+        }
     }
 
     Ok(())
