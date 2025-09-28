@@ -99,4 +99,4 @@ jobs:
       - name: bootupctl generate-update-metadata
         run: |
           set -xeuo pipefail
-          sudo podman run --rm -v $PWD:/run/src -w /run/src --privileged localhost/bootupd:latest tests/tests/move-content-to-usr.sh
+          sudo podman run --rm -v $PWD:/run/src -w /run/src --privileged localhost/bootupd:latest tests/tests/generate-update-metadata.sh

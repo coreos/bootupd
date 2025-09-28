@@ -14,6 +14,7 @@ use bootc_internal_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
+use cap_std_ext::dirext::CapStdExtDirExt;
 use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
@@ -461,18 +462,34 @@ impl Component for Efi {
     }
 
     fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>> {
-        let sysroot_path = Utf8Path::new(sysroot);
+        let sysroot_path = Path::new(sysroot);
+        let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
 
-        // copy EFI files to updates dir from usr/lib/efi
-        let efilib_path = sysroot_path.join(EFILIB);
-        let meta = if efilib_path.exists() {
+        if let Some(ostreeboot) = sysroot_dir
+            .open_dir_optional(ostreeutil::BOOT_PREFIX)
+            .context("Opening usr/lib/ostree-boot")?
+        {
+            let cruft = ["loader", "grub2"];
+            for p in cruft.iter() {
+                ostreeboot.remove_all_optional(p)?;
+            }
+            // Transfer ostree-boot EFI files to usr/lib/efi
+            transfer_ostree_boot_to_usr(sysroot_path)?;
+
+            // Remove usr/lib/ostree-boot/efi/EFI dir (after transfer) or if it is empty
+            ostreeboot.remove_all_optional("efi/EFI")?;
+        }
+
+        // copy EFI files from usr/lib/efi to updates dir
+        if let Some(efi_components) =
+            get_efi_component_from_usr(Utf8Path::from_path(sysroot_path).unwrap(), EFILIB)?
+        {
+            // Confirm EFI has at least two components grub2 & shim
+            // See https://github.com/coreos/bootupd/issues/994
+            assert!(efi_components.len() > 1);
+
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
-            let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
-            let efi_components = get_efi_component_from_usr(&sysroot_path, EFILIB)?;
-            if efi_components.len() == 0 {
-                bail!("Failed to find EFI components from {efilib_path}");
-            }
             for efi in efi_components {
                 Command::new("cp")
                     .args(["-rp", "--reflink=auto"])
@@ -490,50 +507,16 @@ impl Component for Efi {
 
             // change to now to workaround https://github.com/coreos/bootupd/issues/933
             let timestamp = std::time::SystemTime::now();
-            ContentMetadata {
+            let meta = ContentMetadata {
                 timestamp: chrono::DateTime::<Utc>::from(timestamp),
                 version: packages.join(","),
                 versions: Some(modules_vec),
-            }
+            };
+            write_update_metadata(sysroot, self, &meta)?;
+            Ok(Some(meta))
         } else {
-            let ostreebootdir = sysroot_path.join(ostreeutil::BOOT_PREFIX);
-
-            // move EFI files to updates dir from /usr/lib/ostree-boot
-            if ostreebootdir.exists() {
-                let cruft = ["loader", "grub2"];
-                for p in cruft.iter() {
-                    let p = ostreebootdir.join(p);
-                    if p.exists() {
-                        std::fs::remove_dir_all(&p)?;
-                    }
-                }
-
-                let efisrc = ostreebootdir.join("efi/EFI");
-                if !efisrc.exists() {
-                    bail!("Failed to find {:?}", &efisrc);
-                }
-
-                let dest_efidir = component_updatedir(sysroot, self);
-                let dest_efidir =
-                    Utf8PathBuf::from_path_buf(dest_efidir).expect("Path is invalid UTF-8");
-                // Fork off mv() because on overlayfs one can't rename() a lower level
-                // directory today, and this will handle the copy fallback.
-                Command::new("mv").args([&efisrc, &dest_efidir]).run()?;
-
-                let efidir = openat::Dir::open(dest_efidir.as_std_path())
-                    .with_context(|| format!("Opening {}", dest_efidir))?;
-                let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {
-                    f.insert_str(0, "/boot/efi/EFI/");
-                    f
-                });
-                query_files(sysroot, files)?
-            } else {
-                anyhow::bail!("Failed to find {ostreebootdir}");
-            }
-        };
-
-        write_update_metadata(sysroot, self, &meta)?;
-        Ok(Some(meta))
+            anyhow::bail!("Failed to find EFI components");
+        }
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
@@ -730,7 +713,7 @@ pub struct EFIComponent {
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
-) -> Result<Vec<EFIComponent>> {
+) -> Result<Option<Vec<EFIComponent>>> {
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
@@ -761,9 +744,65 @@ fn get_efi_component_from_usr<'a>(
         })
         .collect();
 
+    if components.len() == 0 {
+        return Ok(None);
+    }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(components)
+    Ok(Some(components))
+}
+
+/// Copy files from usr/lib/ostree-boot/efi/EFI to /usr/lib/efi/<component>/<evr>/
+fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
+    let ostreeboot_efi = Path::new(ostreeutil::BOOT_PREFIX).join("efi");
+    let ostreeboot_efi_path = sysroot.join(&ostreeboot_efi);
+
+    let efi = ostreeboot_efi_path.join("EFI");
+    if !efi.exists() {
+        return Ok(());
+    }
+    for entry in WalkDir::new(&efi) {
+        let entry = entry?;
+
+        if entry.file_type().is_file() {
+            let entry_path = entry.path();
+
+            // get path EFI/{BOOT,<vendor>}/<file>
+            let filepath = entry_path.strip_prefix(&ostreeboot_efi_path)?;
+            // get path /boot/efi/EFI/{BOOT,<vendor>}/<file>
+            let boot_filepath = Path::new("/boot/efi").join(filepath);
+
+            // Run `rpm -qf <filepath>`
+            let pkg = crate::packagesystem::query_file(
+                sysroot.to_str().unwrap(),
+                boot_filepath.to_str().unwrap(),
+            )?;
+
+            let (name, evr) = pkg.split_once(' ').unwrap();
+            let component = name.split('-').next().unwrap_or("");
+            // get path usr/lib/efi/<component>/<evr>
+            let efilib_path = Path::new(EFILIB).join(component).join(evr);
+
+            let sysroot_dir = openat::Dir::open(sysroot)?;
+            // Ensure dest parent directory exists
+            if let Some(parent) = efilib_path.join(filepath).parent() {
+                sysroot_dir.ensure_dir_all(parent, 0o755)?;
+            }
+
+            // Source dir is usr/lib/ostree-boot/efi
+            let src = sysroot_dir
+                .sub_dir(&ostreeboot_efi)
+                .context("Opening ostree-boot dir")?;
+            // Dest dir is usr/lib/efi/<component>/<evr>
+            let dest = sysroot_dir
+                .sub_dir(&efilib_path)
+                .context("Opening usr/lib/efi dir")?;
+            // Copy file from ostree-boot to usr/lib/efi
+            src.copy_file_at(filepath, &dest, filepath)
+                .context("Copying file to usr/lib/efi")?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -900,7 +939,7 @@ Boot0003* test";
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(
             efi_comps,
-            vec![
+            Some(vec![
                 EFIComponent {
                     name: "BAR".to_string(),
                     version: "1.1".to_string(),
@@ -911,12 +950,12 @@ Boot0003* test";
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
                 },
-            ]
+            ])
         );
         std::fs::remove_dir_all(efi_path.join("BAR/1.1/EFI"))?;
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
-        assert_eq!(efi_comps, []);
+        assert_eq!(efi_comps, None);
         Ok(())
     }
 }
