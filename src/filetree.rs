@@ -366,7 +366,7 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn get_first_dir(path: &Utf8Path) -> Result<(&Utf8Path, String)> {
+fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     let first = path
         .iter()
         .next()
