@@ -322,10 +322,19 @@ impl Component for Efi {
             return Ok(None);
         };
 
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
         let updated = rootcxt
             .sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
         let esp_devices = esp_devices.unwrap_or_default();
@@ -451,9 +460,20 @@ impl Component for Efi {
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
-        let updated = sysroot_dir
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
+
+        let updated = rootcxt
+            .sysroot
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 

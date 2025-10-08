@@ -68,14 +68,23 @@ const DEFAULT_FILE_MODE: u32 = 0o700;
 use crate::sha512string::SHA512String;
 
 /// Metadata for a single file
-#[derive(Clone, Serialize, Deserialize, Debug, Hash, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct FileMetadata {
+    /// File source path
+    pub(crate) source: Option<String>,
     /// File size in bytes
     pub(crate) size: u64,
     /// Content checksum; chose SHA-512 because there are not a lot of files here
     /// and it's ok if the checksum is large.
     pub(crate) sha512: SHA512String,
+}
+
+impl PartialEq for FileMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        // Skip the source
+        self.size == other.size && self.sha512 == other.sha512
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -127,6 +136,7 @@ impl FileMetadata {
         let _ = std::io::copy(&mut r, &mut hasher)?;
         let digest = SHA512String::from_hasher(&mut hasher);
         Ok(FileMetadata {
+            source: None,
             size: meta.len(),
             sha512: digest,
         })
@@ -183,8 +193,10 @@ impl FileTree {
     ))]
     pub(crate) fn new_from_dir(dir: &openat::Dir) -> Result<Self> {
         let mut children = BTreeMap::new();
-        for (k, v) in Self::unsorted_from_dir(dir)?.drain() {
-            children.insert(k, v);
+        for (k, mut v) in Self::unsorted_from_dir(dir)?.drain() {
+            let k_path = get_dest_efi_path(Utf8Path::new(&k)).to_string();
+            v.source = Some(k);
+            children.insert(k_path, v);
         }
 
         Ok(Self { children })
@@ -228,18 +240,20 @@ impl FileTree {
         for (k, v1) in self.children.iter() {
             if let Some(v2) = updated.children.get(k) {
                 if v1 != v2 {
-                    changes.insert(k.clone());
+                    // Save the source path for changes
+                    changes.insert(v2.source.as_ref().unwrap_or(k).clone());
                 }
             } else {
                 removals.insert(k.clone());
             }
         }
         if check_additions {
-            for k in updated.children.keys() {
+            for (k, v) in updated.children.iter() {
                 if self.children.contains_key(k) {
                     continue;
                 }
-                additions.insert(k.clone());
+                // Save the source path for additions
+                additions.insert(v.source.as_ref().unwrap_or(k).clone());
             }
         }
         Ok(FileTreeDiff {
@@ -268,12 +282,13 @@ impl FileTree {
                     openat::SimpleType::File => {
                         let target_info = FileMetadata::new_from_path(dir, path)?;
                         if info != &target_info {
-                            changes.insert(path.clone());
+                            // Save the source path for changes
+                            changes.insert(info.source.as_ref().unwrap_or(path).clone());
                         }
                     }
                     _ => {
                         // If a file became a directory
-                        changes.insert(path.clone());
+                        changes.insert(info.source.as_ref().unwrap_or(path).clone());
                     }
                 }
             } else {
@@ -395,6 +410,20 @@ fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     Ok((first.into(), tmp))
 }
 
+/// Get dest efi path "shim/<ver>/EFI/fedora/shim.efi" -> "fedora/shim.efi"
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
+fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
+    let parts: Vec<_> = path.iter().collect();
+    if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
+        return parts.iter().skip(3).collect();
+    }
+    path.to_path_buf()
+}
+
 /// Given two directories, apply a diff generated from srcdir to destdir
 #[cfg(any(
     target_arch = "x86_64",
@@ -440,8 +469,9 @@ pub(crate) fn apply_diff(
     }
     // Write changed or new files to temp dir or temp file
     for pathstr in diff.changes.iter().chain(diff.additions.iter()) {
-        let path = Utf8Path::new(pathstr);
-        let (first_dir, first_dir_tmp) = get_first_dir(path)?;
+        let src_path = Utf8Path::new(pathstr);
+        let path = get_dest_efi_path(src_path);
+        let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
         let mut path_tmp = Utf8PathBuf::from(&first_dir_tmp);
         if first_dir != path {
             if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
@@ -462,8 +492,8 @@ pub(crate) fn apply_diff(
         }
         updates.insert(first_dir, first_dir_tmp);
         srcdir
-            .copy_file_at(path.as_std_path(), destdir, path_tmp.as_std_path())
-            .with_context(|| format!("copying {:?} to {:?}", path, path_tmp))?;
+            .copy_file_at(src_path.as_std_path(), destdir, path_tmp.as_std_path())
+            .with_context(|| format!("copying {:?} to {:?}", src_path, path_tmp))?;
     }
 
     // do local exchange or rename
@@ -666,6 +696,37 @@ mod tests {
             "newgrub data"
         );
         assert!(!a.join(relp).join("shim.x64").exists());
+        // test apply from foo/1.0 and bar/2.0
+        {
+            let c = tmpdp.join("c");
+            let foo = "foo/1.0/EFI/fedora";
+            let bar = "bar/2.0/EFI/new";
+            for p in [foo, bar] {
+                fs::create_dir_all(c.join(p))?;
+            }
+            // change: "foo/1.0/EFI/fedora/grub.x64"
+            fs::write(c.join(foo).join("grub.x64"), "grub data 3")?;
+            // addition: "bar/2.0/EFI/new/newfile"
+            fs::write(c.join(bar).join("newfile"), "filedata")?;
+            let a = openat::Dir::open(&a.join("EFI"))?;
+            let c = openat::Dir::open(&c)?;
+            let ta = FileTree::new_from_dir(&a)?;
+            let tc = FileTree::new_from_dir(&c)?;
+            let diff = ta.diff(&tc)?;
+            assert_eq!(diff.changes.len(), 1);
+            assert_eq!(diff.additions.len(), 1);
+            assert_eq!(diff.count(), 3);
+            super::apply_diff(&c, &a, &diff, None)?;
+        }
+        assert_eq!(
+            String::from_utf8(std::fs::read(a.join(relp).join("grub.x64"))?)?,
+            "grub data 3"
+        );
+        assert_eq!(
+            String::from_utf8(std::fs::read(a.join("EFI/new").join("newfile"))?)?,
+            "filedata"
+        );
+        assert!(!a.join(newsubp).join("newgrub.x64").exists());
         Ok(())
     }
     #[test]
@@ -680,6 +741,24 @@ mod tests {
         let (tp, tp_tmp) = get_first_dir(path)?;
         assert_eq!(tp, Utf8Path::new("testfile"));
         assert_eq!(tp_tmp, ".btmp.testfile");
+        Ok(())
+    }
+    #[test]
+    fn test_get_dest_efi_path() -> Result<()> {
+        let test_cases = [
+            ("foo/1.0/EFI/vendor/test.efi", "vendor/test.efi"),
+            ("vendor/test.efi", "vendor/test.efi"),
+            ("EFI/vendor/test.efi", "EFI/vendor/test.efi"),
+            (
+                "bar/foo/1.0/EFI/vendor/test.efi",
+                "bar/foo/1.0/EFI/vendor/test.efi",
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let path = Utf8Path::new(input);
+            assert_eq!(get_dest_efi_path(path), Utf8Path::new(expected));
+        }
         Ok(())
     }
     #[test]
@@ -782,9 +861,13 @@ mod tests {
             b.remove_file(testfile)?;
             let ta = FileTree::new_from_dir(&a)?;
             let diff = ta.relative_diff_to(&b)?;
+            assert_eq!(diff.count(), 1);
             assert_eq!(diff.removals.len(), 1);
             apply_diff(&a, &b, &diff, None).context("test removed files with relative_diff")?;
             assert_eq!(b.exists(testfile)?, false);
+            // creation time is not changed for unchanged file
+            let b_btime_foo_new = fs::metadata(pb.join(foo))?.created()?;
+            assert_eq!(b_btime_foo_new, b_btime_foo);
         }
         {
             a.remove_file(bar)?;
