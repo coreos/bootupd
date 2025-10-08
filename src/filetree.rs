@@ -334,13 +334,32 @@ pub(crate) struct ApplyUpdateOptions {
     pub(crate) skip_sync: bool,
 }
 
-/// Copy from src to dst at root dir
+/// Copy from src to dst at root dir with default option '-a'
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+pub(crate) fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+    copy_dir_with_args(root, src, dst, ["-a"])
+}
+
+/// Copy from src to dst at root dir with args
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
+pub(crate) fn copy_dir_with_args<I, S>(
+    root: &openat::Dir,
+    src: &str,
+    dst: &str,
+    args: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     use bootc_internal_utils::CommandRunExt;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
@@ -348,7 +367,7 @@ fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
     unsafe {
         Command::new("cp")
-            .args(["-a"])
+            .args(args)
             .arg(src)
             .arg(dst)
             .pre_exec(move || rustix::process::fchdir(rootfd).map_err(Into::into))
