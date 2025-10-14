@@ -24,25 +24,24 @@ tmpefimount=$(mount_tmp_efi)
 bootmount=/boot
 tmpefidir=${tmpefimount}/EFI
 bootupdir=/usr/lib/bootupd/updates
-efiupdir=${bootupdir}/EFI
-ostbaseefi=/usr/lib/ostree-boot/efi/EFI
 efisubdir=fedora
-efidir=${efiupdir}/${efisubdir}
-ostefi=${ostbaseefi}/${efisubdir}
-shim=shimx64.efi
+shimx64=shimx64.efi
+grubx64=grubx64.efi
 efilib=/usr/lib/efi
-
-test -f "${efidir}/${shim}"
+tmpefisubdir=${tmpefidir}/${efisubdir}
 
 prepare_efi_update() {
   test -w /usr
-  # Do not need to create ostree-boot dir after transfered
-  if [ ! -d ${efilib} ]; then
-    mkdir -p ${ostbaseefi}
-    cp -a ${efiupdir}.orig/* ${ostbaseefi}/
-  fi
-  rm -rf ${efiupdir} ${bootupdir}/EFI.json
+  rm -rf ${bootupdir}/EFI.json
 }
+
+# Find the files under usr/lib/efi after transferred
+shim_path=$(find ${efilib} -name shim.efi)
+shimx64_path=$(find ${efilib} -name ${shimx64})
+grubx64_path=$(find ${efilib} -name ${grubx64})
+
+test -n "${shimx64_path}" && test -n "${grubx64_path}"
+! test -d "/usr/lib/bootupd/updates/EFI"
 
 bootupctl status > out.txt
 evr=$(rpm -q grub2-common --qf '%{EVR}')
@@ -62,24 +61,11 @@ assert_file_has_content err.txt 'error: This command requires root privileges'
 
 # From here we'll fake updates
 test -w /usr || rpm-ostree usroverlay
-# Save a backup copy of the update dir
-cp -a ${efiupdir} ${efiupdir}.orig
 
 prepare_efi_update
-shim=
-grubx64=
-# Change the files under usr/lib/efi after transferred
-if [ -d ${efilib} ]; then
-  shim=$(find ${efilib} -name shim.efi)
-  grubx64=$(find ${efilib} -name grubx64.efi)
-else  
-  # FIXME need to synthesize an RPM for this
-  # echo somenewfile > ${ostefi}/somenew.efi
-  shim=${ostefi}/shim.efi
-  grubx64=${ostefi}/grubx64.efi
-fi
-rm -v ${shim}
-echo bootupd-test-changes >> ${grubx64}
+
+rm -v ${shim_path}
+echo bootupd-test-changes >> ${grubx64_path}
 /usr/libexec/bootupd generate-update-metadata /
 ver=$(jq -r .version < ${bootupdir}/EFI.json)
 vers=$(jq -r .versions < ${bootupdir}/EFI.json)
@@ -116,24 +102,24 @@ ok validate after update
 
 # FIXME see above
 # assert_file_has_content ${tmpefidir}/${efisubdir}/somenew.efi 'somenewfile'
-if test -f ${tmpefidir}/${efisubdir}/shim.efi; then 
+if test -f ${tmpefisubdir}/shim.efi; then 
   fatal "failed to remove file"
 fi
-if ! grep -q 'bootupd-test-changes' ${tmpefidir}/${efisubdir}/grubx64.efi; then
+if ! grep -q 'bootupd-test-changes' ${tmpefisubdir}/${grubx64}; then
   fatal "failed to update modified file"
 fi
-cmp ${tmpefidir}/${efisubdir}/shimx64.efi ${efiupdir}/${efisubdir}/shimx64.efi
+cmp ${tmpefisubdir}/${shimx64} ${shimx64_path}
 ok filesystem changes
 
 bootupctl update | tee out.txt
 assert_file_has_content_literal out.txt 'No update available for any component'
 assert_not_file_has_content_literal out.txt 'Updated EFI'
 
-echo "some additions" >> ${tmpefidir}/${efisubdir}/shimx64.efi
+echo "some additions" >> ${tmpefisubdir}/${shimx64}
 if bootupctl validate 2>err.txt; then
   fatal "unexpectedly passed validation"
 fi
-assert_file_has_content err.txt "Changed: ${efisubdir}/shimx64.efi"
+assert_file_has_content err.txt "Changed: .*${efisubdir}/${shimx64}"
 test "$(grep -cEe '^Changed:' err.txt)" = "1"
 ok validate detected changes
 

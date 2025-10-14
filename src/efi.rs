@@ -522,7 +522,6 @@ impl Component for Efi {
             ostreeboot.remove_all_optional("efi/EFI")?;
         }
 
-        // copy EFI files from usr/lib/efi to updates dir
         if let Some(efi_components) =
             get_efi_component_from_usr(Utf8Path::from_path(sysroot_path).unwrap(), EFILIB)?
         {
@@ -533,12 +532,6 @@ impl Component for Efi {
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
             for efi in efi_components {
-                Command::new("cp")
-                    .args(["-rp", "--reflink=auto"])
-                    .arg(&efi.path)
-                    .arg(crate::model::BOOTUPD_UPDATES_DIR)
-                    .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
-                    .run()?;
                 packages.push(format!("{}-{}", efi.name, efi.version));
                 modules_vec.push(Module {
                     name: efi.name,
