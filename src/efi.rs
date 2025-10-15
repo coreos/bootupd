@@ -55,6 +55,9 @@ const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 const LOADER_INFO_VAR_STR: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
+/// The options of cp command for installation
+const OPTIONS: &[&str] = &["-rp", "--reflink=auto"];
+
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
     Path::new("/sys/firmware/efi")
@@ -319,10 +322,19 @@ impl Component for Efi {
             return Ok(None);
         };
 
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
         let updated = rootcxt
             .sysroot
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
         let esp_devices = esp_devices.unwrap_or_default();
@@ -376,8 +388,6 @@ impl Component for Efi {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
-        let srcdir_name = component_updatedirname(self);
-        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(&srcdir_name)?)?;
 
         // Let's attempt to use an already mounted ESP at the target
         // dest_root if one is already mounted there in a known ESP location.
@@ -398,16 +408,37 @@ impl Component for Efi {
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
-        // TODO - add some sort of API that allows directly setting the working
-        // directory to a file descriptor.
-        std::process::Command::new("cp")
-            .args(["-rp", "--reflink=auto"])
-            .arg(&srcdir_name)
-            .arg(destpath)
-            .current_dir(format!("/proc/self/fd/{}", src_dir.as_raw_fd()))
-            .run()?;
+        let src_path = Utf8Path::new(src_root);
+        let efi_comps = if src_path.join(EFILIB).exists() {
+            get_efi_component_from_usr(&src_path, EFILIB)?
+        } else {
+            None
+        };
+        let dest = destpath.to_str().with_context(|| {
+            format!(
+                "Include invalid UTF-8 characters in dest {}",
+                destpath.display()
+            )
+        })?;
+
+        let efi_path = if let Some(efi_components) = efi_comps {
+            for efi in efi_components {
+                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
+            }
+            EFILIB
+        } else {
+            let updates = component_updatedirname(self);
+            let src = updates
+                .to_str()
+                .context("Include invalid UTF-8 characters in path")?;
+            filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
+            &src.to_owned()
+        };
+
+        // Get filetree from efi path
+        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(efi_path)?)?;
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(&Path::new(src_root))? {
+            if let Some(vendordir) = self.get_efi_vendor(src_path.join(efi_path).as_std_path())? {
                 self.update_firmware(device, destd, &vendordir)?
             }
         }
@@ -429,9 +460,20 @@ impl Component for Efi {
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
-        let updated = sysroot_dir
-            .sub_dir(&component_updatedirname(self))
-            .context("opening update dir")?;
+        let updated_path = {
+            let efilib_path = rootcxt.path.join(EFILIB);
+            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
+            {
+                PathBuf::from(EFILIB)
+            } else {
+                component_updatedirname(self)
+            }
+        };
+
+        let updated = rootcxt
+            .sysroot
+            .sub_dir(&updated_path)
+            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 
@@ -480,7 +522,6 @@ impl Component for Efi {
             ostreeboot.remove_all_optional("efi/EFI")?;
         }
 
-        // copy EFI files from usr/lib/efi to updates dir
         if let Some(efi_components) =
             get_efi_component_from_usr(Utf8Path::from_path(sysroot_path).unwrap(), EFILIB)?
         {
@@ -491,12 +532,6 @@ impl Component for Efi {
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
             for efi in efi_components {
-                Command::new("cp")
-                    .args(["-rp", "--reflink=auto"])
-                    .arg(&efi.path)
-                    .arg(crate::model::BOOTUPD_UPDATES_DIR)
-                    .current_dir(format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd()))
-                    .run()?;
                 packages.push(format!("{}-{}", efi.name, efi.version));
                 modules_vec.push(Module {
                     name: efi.name,
