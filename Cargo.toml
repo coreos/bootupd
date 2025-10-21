@@ -40,7 +40,7 @@ openat = "0.1.20"
 openat-ext = ">= 0.2.2, < 0.3.0"
 openssl = "^0.10"
 os-release = "0.1.0"
-regex = "1.12.1"
+regex = "1.12.2"
 rpm-rs = { package = "rpm", version = "0.16.1", default-features = false, optional = true }
 rustix = { version = "1.1.2", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
