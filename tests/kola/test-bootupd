@@ -115,6 +115,13 @@ bootupctl update | tee out.txt
 assert_file_has_content_literal out.txt 'No update available for any component'
 assert_not_file_has_content_literal out.txt 'Updated EFI'
 
+# Verify that we skipped update if update metadata not found
+mount -o remount,rw /boot
+rm -f /boot/bootupd-state.json ${bootupdir}/BIOS.json
+bootupctl update | tee out.txt
+assert_file_has_content out.txt 'Adopted and updated: EFI: grub2-.*'
+assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
+
 echo "some additions" >> ${tmpefisubdir}/${shimx64}
 if bootupctl validate 2>err.txt; then
   fatal "unexpectedly passed validation"
