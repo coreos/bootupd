@@ -1068,4 +1068,51 @@ Boot0003* test";
         assert_eq!(efi_comps, None);
         Ok(())
     }
+
+    #[test]
+    fn test_package_mode_copy_to_boot_discovery() -> Result<()> {
+        // Test that we can discover components from /usr/lib/efi
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+
+        // Create mock EFI components
+        std::fs::create_dir_all(efi_path.join("shim/15.8-3/EFI/fedora"))?;
+        std::fs::create_dir_all(efi_path.join("grub2/2.12-28/EFI/fedora"))?;
+
+        // Write some test files
+        std::fs::write(
+            efi_path.join("shim/15.8-3/EFI/fedora/shimx64.efi"),
+            b"shim content",
+        )?;
+        std::fs::write(
+            efi_path.join("grub2/2.12-28/EFI/fedora/grubx64.efi"),
+            b"grub content",
+        )?;
+
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+
+        // Test component discovery
+        let efi_comps = match get_efi_component_from_usr(utf8_tpath, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => {
+                anyhow::bail!("Should have found components");
+            }
+        };
+
+        // Verify we found the expected components
+        assert_eq!(efi_comps.len(), 2);
+        let names: Vec<_> = efi_comps.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"shim"));
+        assert!(names.contains(&"grub2"));
+
+        // Verify paths are correct
+        for comp in &efi_comps {
+            assert!(comp.path.starts_with("usr/lib/efi"));
+            assert!(comp.path.ends_with("EFI"));
+        }
+
+        Ok(())
+    }
 }
