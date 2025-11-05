@@ -183,6 +183,76 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
+
+    /// Copy from /usr/lib/efi to boot/ESP.
+    fn package_mode_copy_to_boot_impl(&self) -> Result<()> {
+        let sysroot = Path::new("/");
+        let sysroot_path =
+            Utf8Path::from_path(sysroot).context("Sysroot path is not valid UTF-8")?;
+
+        // Find components in /usr/lib/efi
+        let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => {
+                log::debug!("No EFI components found in /usr/lib/efi");
+                return Ok(());
+            }
+        };
+
+        // Find all ESP devices
+        let devices = blockdev::get_devices(sysroot)?;
+        let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
+            anyhow::bail!("No ESP found");
+        };
+
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
+
+        // Copy to all ESPs
+        for esp in esp_devices {
+            let esp_path = self.ensure_mounted_esp(sysroot, Path::new(&esp))?;
+
+            let esp_dir = openat::Dir::open(&esp_path)
+                .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
+            validate_esp_fstype(&esp_dir)?;
+
+            // Copy each component
+            for efi_comp in &efi_comps {
+                log::info!(
+                    "Copying EFI component {} version {} to ESP at {}",
+                    efi_comp.name,
+                    efi_comp.version,
+                    esp_path.display()
+                );
+
+                let dest_str = esp_path
+                    .to_str()
+                    .context("ESP path contains invalid UTF-8")?;
+                filetree::copy_dir_with_args(
+                    &sysroot_dir,
+                    efi_comp.path.as_str(),
+                    dest_str,
+                    OPTIONS,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to copy {} from {} to {}",
+                        efi_comp.name, efi_comp.path, dest_str
+                    )
+                })?;
+            }
+
+            // Sync filesystem
+            let efidir = openat::Dir::open(&esp_path.join("EFI"))
+                .context("Opening EFI directory for sync")?;
+            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+        }
+
+        log::info!(
+            "Successfully copied {} EFI component(s) to all ESPs",
+            efi_comps.len()
+        );
+        Ok(())
+    }
 }
 
 #[context("Get product name")]
@@ -622,6 +692,11 @@ impl Component for Efi {
         } else {
             anyhow::bail!("Failed to find {SHIM} in the image")
         }
+    }
+
+    /// Package mode copy: Simple copy from /usr/lib/efi to boot/ESP.
+    fn package_mode_copy_to_boot(&self) -> Result<()> {
+        self.package_mode_copy_to_boot_impl()
     }
 }
 
