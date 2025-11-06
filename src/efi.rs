@@ -184,13 +184,51 @@ impl Efi {
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
 
+    /// Shared helper to copy EFI components to a single ESP
+    fn copy_efi_components_to_esp(
+        &self,
+        sysroot_dir: &openat::Dir,
+        esp_path: &Path,
+        efi_components: &[EFIComponent],
+    ) -> Result<()> {
+        let dest_str = esp_path
+            .to_str()
+            .context("ESP path contains invalid UTF-8")?;
+
+        // Copy each component
+        for efi_comp in efi_components {
+            log::info!(
+                "Copying EFI component {} version {} to ESP at {}",
+                efi_comp.name,
+                efi_comp.version,
+                esp_path.display()
+            );
+
+            filetree::copy_dir_with_args(sysroot_dir, efi_comp.path.as_str(), dest_str, OPTIONS)
+                .with_context(|| {
+                    format!(
+                        "Failed to copy {} from {} to {}",
+                        efi_comp.name, efi_comp.path, dest_str
+                    )
+                })?;
+        }
+
+        // Sync filesystem
+        let efidir =
+            openat::Dir::open(&esp_path.join("EFI")).context("Opening EFI directory for sync")?;
+        fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+
+        Ok(())
+    }
+
+
+
     /// Copy from /usr/lib/efi to boot/ESP.
     fn package_mode_copy_to_boot_impl(&self) -> Result<()> {
         let sysroot = Path::new("/");
         let sysroot_path =
             Utf8Path::from_path(sysroot).context("Sysroot path is not valid UTF-8")?;
 
-        // Find components in /usr/lib/efi
         let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
             Some(comps) if !comps.is_empty() => comps,
             _ => {
@@ -199,57 +237,34 @@ impl Efi {
             }
         };
 
-        // Find all ESP devices
-        let devices = blockdev::get_devices(sysroot)?;
-        let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
-            anyhow::bail!("No ESP found");
-        };
-
         let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
 
-        // Copy to all ESPs
-        for esp in esp_devices {
-            let esp_path = self.ensure_mounted_esp(sysroot, Path::new(&esp))?;
+        // First try to use an already mounted ESP
+        let esp_path = if let Some(mounted_esp) = self.get_mounted_esp(sysroot)? {
+            mounted_esp
+        } else {
+            // If not mounted, find ESP from devices
+            let devices = blockdev::get_devices(sysroot)?;
+            let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
+                anyhow::bail!("No ESP found");
+            };
 
-            let esp_dir = openat::Dir::open(&esp_path)
-                .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
-            validate_esp_fstype(&esp_dir)?;
+            let esp_device = esp_devices
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No ESP device found"))?;
+            self.ensure_mounted_esp(sysroot, Path::new(esp_device))?
+        };
 
-            // Copy each component
-            for efi_comp in &efi_comps {
-                log::info!(
-                    "Copying EFI component {} version {} to ESP at {}",
-                    efi_comp.name,
-                    efi_comp.version,
-                    esp_path.display()
-                );
+        let esp_dir = openat::Dir::open(&esp_path)
+            .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
+        validate_esp_fstype(&esp_dir)?;
 
-                let dest_str = esp_path
-                    .to_str()
-                    .context("ESP path contains invalid UTF-8")?;
-                filetree::copy_dir_with_args(
-                    &sysroot_dir,
-                    efi_comp.path.as_str(),
-                    dest_str,
-                    OPTIONS,
-                )
-                .with_context(|| {
-                    format!(
-                        "Failed to copy {} from {} to {}",
-                        efi_comp.name, efi_comp.path, dest_str
-                    )
-                })?;
-            }
-
-            // Sync filesystem
-            let efidir = openat::Dir::open(&esp_path.join("EFI"))
-                .context("Opening EFI directory for sync")?;
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
-        }
+        self.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
 
         log::info!(
-            "Successfully copied {} EFI component(s) to all ESPs",
-            efi_comps.len()
+            "Successfully copied {} EFI component(s) to ESP at {}",
+            efi_comps.len(),
+            esp_path.display()
         );
         Ok(())
     }
@@ -484,23 +499,22 @@ impl Component for Efi {
         } else {
             None
         };
-        let dest = destpath.to_str().with_context(|| {
-            format!(
-                "Include invalid UTF-8 characters in dest {}",
-                destpath.display()
-            )
-        })?;
 
         let efi_path = if let Some(efi_components) = efi_comps {
-            for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
-            }
+            // Use shared helper to copy components from /usr/lib/efi
+            self.copy_efi_components_to_esp(&src_dir, &destpath, &efi_components)?;
             EFILIB
         } else {
             let updates = component_updatedirname(self);
             let src = updates
                 .to_str()
                 .context("Include invalid UTF-8 characters in path")?;
+            let dest = destpath.to_str().with_context(|| {
+                format!(
+                    "Include invalid UTF-8 characters in dest {}",
+                    destpath.display()
+                )
+            })?;
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
