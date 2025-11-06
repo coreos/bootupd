@@ -5,7 +5,7 @@ license = "Apache-2.0"
 version = "0.2.31"
 authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2021"
-rust-version = "1.84.1"
+rust-version = "1.90.0"
 homepage = "https://github.com/coreos/bootupd"
 
 include = ["src", "LICENSE", "Makefile", "systemd"]
