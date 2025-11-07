@@ -1,0 +1,38 @@
+---
+# See the documentation for more information:
+# https://packit.dev/docs/configuration/
+
+# name in upstream package repository or registry
+upstream_package_name: bootupd
+upstream_tag_template: v{version}
+
+downstream_package_name: rust-bootupd
+
+specfile_path: contrib/packaging/bootupd.spec
+
+files_to_sync:
+  - .packit.yaml
+
+packages:
+  bootupd-fedora:
+    pkg_tool: fedpkg
+
+jobs:
+- job: propose_downstream
+  trigger: release
+  packages: [bootupd-fedora]
+  dist_git_branches:
+    fedora-rawhide:
+      fast_forward_merge_into: [fedora-latest-stable]
+
+- job: koji_build
+  trigger: commit
+  packages: [bootupd-fedora]
+  dist_git_branches:
+    - fedora-all
+
+- job: bodhi_update
+  trigger: commit
+  packages: [bootupd-fedora]
+  dist_git_branches:
+    - fedora-all
