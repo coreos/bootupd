@@ -183,6 +183,91 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
+
+    /// Shared helper to copy EFI components to a single ESP
+    fn copy_efi_components_to_esp(
+        &self,
+        sysroot_dir: &openat::Dir,
+        esp_path: &Path,
+        efi_components: &[EFIComponent],
+    ) -> Result<()> {
+        let dest_str = esp_path
+            .to_str()
+            .context("ESP path contains invalid UTF-8")?;
+
+        // Copy each component
+        for efi_comp in efi_components {
+            log::info!(
+                "Copying EFI component {} version {} to ESP at {}",
+                efi_comp.name,
+                efi_comp.version,
+                esp_path.display()
+            );
+
+            filetree::copy_dir_with_args(sysroot_dir, efi_comp.path.as_str(), dest_str, OPTIONS)
+                .with_context(|| {
+                    format!(
+                        "Failed to copy {} from {} to {}",
+                        efi_comp.name, efi_comp.path, dest_str
+                    )
+                })?;
+        }
+
+        // Sync filesystem
+        let efidir =
+            openat::Dir::open(&esp_path.join("EFI")).context("Opening EFI directory for sync")?;
+        fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+
+        Ok(())
+    }
+
+
+
+    /// Copy from /usr/lib/efi to boot/ESP.
+    fn package_mode_copy_to_boot_impl(&self) -> Result<()> {
+        let sysroot = Path::new("/");
+        let sysroot_path =
+            Utf8Path::from_path(sysroot).context("Sysroot path is not valid UTF-8")?;
+
+        let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => {
+                log::debug!("No EFI components found in /usr/lib/efi");
+                return Ok(());
+            }
+        };
+
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
+
+        // First try to use an already mounted ESP
+        let esp_path = if let Some(mounted_esp) = self.get_mounted_esp(sysroot)? {
+            mounted_esp
+        } else {
+            // If not mounted, find ESP from devices
+            let devices = blockdev::get_devices(sysroot)?;
+            let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
+                anyhow::bail!("No ESP found");
+            };
+
+            let esp_device = esp_devices
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No ESP device found"))?;
+            self.ensure_mounted_esp(sysroot, Path::new(esp_device))?
+        };
+
+        let esp_dir = openat::Dir::open(&esp_path)
+            .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
+        validate_esp_fstype(&esp_dir)?;
+
+        self.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
+
+        log::info!(
+            "Successfully copied {} EFI component(s) to ESP at {}",
+            efi_comps.len(),
+            esp_path.display()
+        );
+        Ok(())
+    }
 }
 
 #[context("Get product name")]
@@ -414,23 +499,22 @@ impl Component for Efi {
         } else {
             None
         };
-        let dest = destpath.to_str().with_context(|| {
-            format!(
-                "Include invalid UTF-8 characters in dest {}",
-                destpath.display()
-            )
-        })?;
 
         let efi_path = if let Some(efi_components) = efi_comps {
-            for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
-            }
+            // Use shared helper to copy components from /usr/lib/efi
+            self.copy_efi_components_to_esp(&src_dir, &destpath, &efi_components)?;
             EFILIB
         } else {
             let updates = component_updatedirname(self);
             let src = updates
                 .to_str()
                 .context("Include invalid UTF-8 characters in path")?;
+            let dest = destpath.to_str().with_context(|| {
+                format!(
+                    "Include invalid UTF-8 characters in dest {}",
+                    destpath.display()
+                )
+            })?;
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
@@ -621,6 +705,11 @@ impl Component for Efi {
         } else {
             anyhow::bail!("Failed to find {SHIM} in the image")
         }
+    }
+
+    /// Package mode copy: Simple copy from /usr/lib/efi to boot/ESP.
+    fn package_mode_copy_to_boot(&self) -> Result<()> {
+        self.package_mode_copy_to_boot_impl()
     }
 }
 
@@ -991,6 +1080,150 @@ Boot0003* test";
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(efi_comps, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_package_mode_copy_to_boot_discovery() -> Result<()> {
+        // Test that we can discover components from /usr/lib/efi
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+
+        // Create mock EFI components
+        std::fs::create_dir_all(efi_path.join("shim/15.8-3/EFI/fedora"))?;
+        std::fs::create_dir_all(efi_path.join("grub2/2.12-28/EFI/fedora"))?;
+
+        // Write some test files
+        std::fs::write(
+            efi_path.join("shim/15.8-3/EFI/fedora/shimx64.efi"),
+            b"shim content",
+        )?;
+        std::fs::write(
+            efi_path.join("grub2/2.12-28/EFI/fedora/grubx64.efi"),
+            b"grub content",
+        )?;
+
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+
+        // Test component discovery
+        let efi_comps = match get_efi_component_from_usr(utf8_tpath, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => {
+                anyhow::bail!("Should have found components");
+            }
+        };
+
+        // Verify we found the expected components
+        assert_eq!(efi_comps.len(), 2);
+        let names: Vec<_> = efi_comps.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"shim"));
+        assert!(names.contains(&"grub2"));
+
+        // Verify paths are correct
+        for comp in &efi_comps {
+            assert!(comp.path.starts_with("usr/lib/efi"));
+            assert!(comp.path.ends_with("EFI"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_package_mode_shim_installation() -> Result<()> {
+        // Test that shim can be installed from /usr/lib/efi to ESP
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        
+        // Create mock /usr/lib/efi structure with shim
+        let efi_path = tpath.join("usr/lib/efi");
+        let shim_path = efi_path.join("shim/15.8-3/EFI/fedora");
+        std::fs::create_dir_all(&shim_path)?;
+        
+        // Write shim binary
+        let shim_content = b"mock shim binary content";
+        std::fs::write(shim_path.join(SHIM), shim_content)?;
+        
+        // Create additional shim files that might be present
+        std::fs::write(shim_path.join("MokManager.efi"), b"mok manager content")?;
+        std::fs::write(shim_path.join("fbx64.efi"), b"fallback content")?;
+        
+        // Create mock ESP directory structure (simulating /boot/efi in container)
+        let esp_path = tpath.join("boot/efi");
+        std::fs::create_dir_all(&esp_path)?;
+        
+        // Create EFI directory in ESP
+        let esp_efi_path = esp_path.join("EFI");
+        std::fs::create_dir_all(&esp_efi_path)?;
+        
+        // Set up sysroot directory
+        let sysroot_dir = openat::Dir::open(tpath)?;
+        
+        // Get EFI components from usr/lib/efi
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+        assert!(efi_comps.is_some(), "Should find shim component");
+        let efi_comps = efi_comps.unwrap();
+        assert_eq!(efi_comps.len(), 1, "Should find exactly one component");
+        assert_eq!(efi_comps[0].name, "shim");
+        assert_eq!(efi_comps[0].version, "15.8-3");
+        
+        // Create Efi instance and copy components to ESP
+        let efi = Efi::default();
+        efi.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
+        
+        // Expected path: /boot/efi/EFI/fedora/shimx64.efi (or shimaa64.efi, etc.)
+        let copied_shim_path = esp_path.join("EFI/fedora").join(SHIM);
+        assert!(
+            copied_shim_path.exists(),
+            "Shim should be copied to ESP at {}",
+            copied_shim_path.display()
+        );
+        
+        // Verify the shim file is actually a file, not a directory
+        assert!(
+            copied_shim_path.is_file(),
+            "Shim should be a file at {}",
+            copied_shim_path.display()
+        );
+        
+        // Verify the content matches exactly
+        let copied_content = std::fs::read(&copied_shim_path)?;
+        assert_eq!(copied_content, shim_content, "Shim content should match exactly");
+        
+        // Verify the directory structure is correct
+        assert!(
+            esp_path.join("EFI").exists(),
+            "EFI directory should exist in ESP at {}",
+            esp_path.join("EFI").display()
+        );
+        assert!(
+            esp_path.join("EFI").is_dir(),
+            "EFI should be a directory"
+        );
+        
+        assert!(
+            esp_path.join("EFI/fedora").exists(),
+            "Vendor directory (fedora) should exist in ESP at {}",
+            esp_path.join("EFI/fedora").display()
+        );
+        assert!(
+            esp_path.join("EFI/fedora").is_dir(),
+            "EFI/fedora should be a directory"
+        );
+        
+        // Verify the path structure matches expected package mode layout
+        // Source: /usr/lib/efi/shim/15.8-3/EFI/fedora/shimx64.efi
+        // Dest:   /boot/efi/EFI/fedora/shimx64.efi
+        let expected_base = esp_path.join("EFI/fedora");
+        assert_eq!(
+            copied_shim_path.parent(),
+            Some(expected_base.as_path()),
+            "Shim should be directly under EFI/fedora/, not in a subdirectory"
+        );
+        
         Ok(())
     }
 }
