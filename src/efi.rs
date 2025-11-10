@@ -221,8 +221,6 @@ impl Efi {
         Ok(())
     }
 
-
-
     /// Copy from /usr/lib/efi to boot/ESP.
     fn package_mode_copy_to_boot_impl(&self) -> Result<()> {
         let sysroot = Path::new("/");
@@ -1006,7 +1004,6 @@ Boot0003* test";
         );
         Ok(())
     }
-    #[cfg(test)]
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir("etc")?;
@@ -1036,7 +1033,7 @@ Boot0003* test";
         {
             tmpd.atomic_write(
                 "etc/system-release",
-                "Red Hat Enterprise Linux CoreOS release 4
+                r"Red Hat Enterprise Linux CoreOS release 4
                 ",
             )?;
             let name = get_product_name(&tmpd)?;
@@ -1126,6 +1123,103 @@ Boot0003* test";
             assert!(comp.path.starts_with("usr/lib/efi"));
             assert!(comp.path.ends_with("EFI"));
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_package_mode_shim_installation() -> Result<()> {
+        // Test that shim can be installed from /usr/lib/efi to ESP
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+
+        // Create mock /usr/lib/efi structure with shim
+        let efi_path = tpath.join("usr/lib/efi");
+        let shim_path = efi_path.join("shim/15.8-3/EFI/fedora");
+        std::fs::create_dir_all(&shim_path)?;
+
+        // Write shim binary
+        let shim_content = b"mock shim binary content";
+        std::fs::write(shim_path.join(SHIM), shim_content)?;
+
+        // Create additional shim files that might be present
+        std::fs::write(shim_path.join("MokManager.efi"), b"mok manager content")?;
+        std::fs::write(shim_path.join("fbx64.efi"), b"fallback content")?;
+
+        // Create mock ESP directory structure (simulating /boot/efi in container)
+        let esp_path = tpath.join("boot/efi");
+        std::fs::create_dir_all(&esp_path)?;
+
+        // Create EFI directory in ESP
+        let esp_efi_path = esp_path.join("EFI");
+        std::fs::create_dir_all(&esp_efi_path)?;
+
+        // Set up sysroot directory
+        let sysroot_dir = openat::Dir::open(tpath)?;
+
+        // Get EFI components from usr/lib/efi
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+        assert!(efi_comps.is_some(), "Should find shim component");
+        let efi_comps = efi_comps.unwrap();
+        assert_eq!(efi_comps.len(), 1, "Should find exactly one component");
+        assert_eq!(efi_comps[0].name, "shim");
+        assert_eq!(efi_comps[0].version, "15.8-3");
+
+        // Create Efi instance and copy components to ESP
+        let efi = Efi::default();
+        efi.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
+
+        // Expected path: /boot/efi/EFI/fedora/shimx64.efi (or shimaa64.efi, etc.)
+        let copied_shim_path = esp_path.join("EFI/fedora").join(SHIM);
+        assert!(
+            copied_shim_path.exists(),
+            "Shim should be copied to ESP at {}",
+            copied_shim_path.display()
+        );
+
+        // Verify the shim file is actually a file, not a directory
+        assert!(
+            copied_shim_path.is_file(),
+            "Shim should be a file at {}",
+            copied_shim_path.display()
+        );
+
+        // Verify the content matches exactly
+        let copied_content = std::fs::read(&copied_shim_path)?;
+        assert_eq!(
+            copied_content, shim_content,
+            "Shim content should match exactly"
+        );
+
+        // Verify the directory structure is correct
+        assert!(
+            esp_path.join("EFI").exists(),
+            "EFI directory should exist in ESP at {}",
+            esp_path.join("EFI").display()
+        );
+        assert!(esp_path.join("EFI").is_dir(), "EFI should be a directory");
+
+        assert!(
+            esp_path.join("EFI/fedora").exists(),
+            "Vendor directory (fedora) should exist in ESP at {}",
+            esp_path.join("EFI/fedora").display()
+        );
+        assert!(
+            esp_path.join("EFI/fedora").is_dir(),
+            "EFI/fedora should be a directory"
+        );
+
+        // Verify the path structure matches expected package mode layout
+        // Source: /usr/lib/efi/shim/15.8-3/EFI/fedora/shimx64.efi
+        // Dest:   /boot/efi/EFI/fedora/shimx64.efi
+        let expected_base = esp_path.join("EFI/fedora");
+        assert_eq!(
+            copied_shim_path.parent(),
+            Some(expected_base.as_path()),
+            "Shim should be directly under EFI/fedora/, not in a subdirectory"
+        );
 
         Ok(())
     }
