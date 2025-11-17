@@ -391,7 +391,12 @@ pub(crate) fn status() -> Result<Status> {
         // adoptable list, and adoption proceeds automatically.
         //
         // Therefore, calling `query_adopt_state()` alone is sufficient.
-        if let Some(adopt_ver) = crate::component::query_adopt_state()? {
+        if let Some(adopt_ver) = component::query_adopt_state()? {
+            let component = component::new_from_name(&name)?;
+            // Skip if the update metadata could not be found
+            if component.query_update(&sysroot)?.is_none() {
+                continue;
+            };
             ret.adoptable.insert(name.to_string(), adopt_ver);
         } else {
             log::trace!("Not adoptable: {}", name);
