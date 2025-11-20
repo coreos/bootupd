@@ -30,9 +30,11 @@ pub(crate) fn install(
     installed_efi_vendor: Option<&str>,
     write_uuid: bool,
 ) -> Result<()> {
-    let bootdir = &target_root.sub_dir("boot").context("Opening /boot")?;
+    let bootdir = target_root.sub_dir("boot").context("Opening /boot")?;
+    // Should use /sysroot for the physical root
+    let rootdir = target_root.sub_dir("sysroot").context("Opening /sysroot")?;
     let boot_is_mount = {
-        let root_dev = target_root.self_metadata()?.stat().st_dev;
+        let root_dev = rootdir.self_metadata()?.stat().st_dev;
         let boot_dev = bootdir.self_metadata()?.stat().st_dev;
         log::debug!("root_dev={root_dev} boot_dev={boot_dev}");
         root_dev != boot_dev
@@ -92,8 +94,8 @@ pub(crate) fn install(
     write_grubenv(&bootdir).context("Create grubenv")?;
 
     let uuid_path = if write_uuid {
-        let target_fs = if boot_is_mount { bootdir } else { target_root };
-        let bootfs_meta = crate::filesystem::inspect_filesystem(target_fs, ".")?;
+        let target_fs = if boot_is_mount { bootdir } else { rootdir };
+        let bootfs_meta = crate::filesystem::inspect_filesystem(&target_fs, ".")?;
         let bootfs_uuid = bootfs_meta
             .uuid
             .ok_or_else(|| anyhow::anyhow!("Failed to find UUID for boot"))?;
