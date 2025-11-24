@@ -49,7 +49,7 @@ tempfile = "^3.23"
 uapi-version = "0.4.0"
 widestring = "1.2.1"
 walkdir = "2.3.2"
-signal-hook-registry = "1.4.6"
+signal-hook-registry = "1.4.7"
 
 [profile.release]
 # We assume we're being delivered via e.g. RPM which supports split debuginfo
