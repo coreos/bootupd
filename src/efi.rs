@@ -525,10 +525,6 @@ impl Component for Efi {
         if let Some(efi_components) =
             get_efi_component_from_usr(Utf8Path::from_path(sysroot_path).unwrap(), EFILIB)?
         {
-            // Confirm EFI has at least two components grub2 & shim
-            // See https://github.com/coreos/bootupd/issues/994
-            assert!(efi_components.len() > 1);
-
             let mut packages = Vec::new();
             let mut modules_vec: Vec<Module> = vec![];
             for efi in efi_components {
