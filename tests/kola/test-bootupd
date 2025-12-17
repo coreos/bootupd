@@ -115,12 +115,31 @@ bootupctl update | tee out.txt
 assert_file_has_content_literal out.txt 'No update available for any component'
 assert_not_file_has_content_literal out.txt 'Updated EFI'
 
-# Verify that we skipped update if update metadata not found
-mount -o remount,rw /boot
-rm -f /boot/bootupd-state.json ${bootupdir}/BIOS.json
-bootupctl update | tee out.txt
-assert_file_has_content out.txt 'Adopted and updated: EFI: grub2-.*'
-assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
+if [ -d /sys/firmware/efi ]; then
+  # EFI boot: should succeed if BIOS metadata is missing
+  rm -f /boot/bootupd-state.json ${bootupdir}/BIOS.json
+  bootupctl update | tee out.txt
+  assert_file_has_content out.txt 'Adopted and updated: EFI:'
+  assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
+
+  # Verify update failed if metadata is missing EFI.json
+  rm -f /boot/bootupd-state.json ${bootupdir}/EFI.json
+  if bootupctl update 2>err.txt; then
+    fatal "Should fail as missing EFI update metadata (booted with EFI)"
+  fi
+else
+  # BIOS boot: should succeed if EFI metadata is missing
+  rm -f /boot/bootupd-state.json ${bootupdir}/EFI.json
+  bootupctl update | tee out.txt
+  assert_file_has_content out.txt 'Adopted and updated: BIOS:'
+  assert_not_file_has_content out.txt 'Adopted and updated: EFI:'
+
+  # Verify update failed if metadata is missing BIOS.json
+  rm -f /boot/bootupd-state.json ${bootupdir}/BIOS.json
+  if bootupctl update 2>err.txt; then
+    fatal "Should fail as missing BIOS update metadata (booted with BIOS)"
+  fi
+fi
 
 echo "some additions" >> ${tmpefisubdir}/${shimx64}
 if bootupctl validate 2>err.txt; then
