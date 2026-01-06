@@ -54,7 +54,6 @@ cosaPod(runAsUser: 0, memory: "7168Mi", cpu: "4") {
       mkdir -p overrides/rootfs
       mv insttree/* overrides/rootfs/
       rmdir insttree
-      cosa fetch
       cosa build
       cosa osbuild qemu metal4k
     """)
