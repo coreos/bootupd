@@ -56,8 +56,7 @@ cosaPod(runAsUser: 0, memory: "7168Mi", cpu: "4") {
       rmdir insttree
       cosa fetch
       cosa build
-      cosa osbuild qemu
-      cosa osbuild metal4k
+      cosa osbuild qemu metal4k
     """)
   }
   // The e2e-adopt test will use the ostree commit we just generated above
