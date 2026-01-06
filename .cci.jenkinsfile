@@ -39,21 +39,16 @@ codestyle: {
 
 // Build FCOS and do a kola basic run
 // The FCOS build process is memory-intensive; 7GiB is needed to prevent OOM errors.
-cosaPod(runAsUser: 0, memory: "7168Mi", cpu: "4") {
+cosaPod(memory: "7168Mi", cpu: "4") {
   stage("Build FCOS") {
     checkout scm
     unstash 'build'
-    // Note that like {rpm-,}ostree we want to install to both / and overrides/rootfs
-    // because bootupd is used both during the `rpm-ostree compose tree` as well as
-    // inside the target operating system.
+    // Install the built bootupd into the overrides dir
     shwrap("""
-      mkdir insttree
-      tar -C insttree -xzvf insttree.tar.gz
-      rsync -rlv insttree/ /
       coreos-assembler init --force https://github.com/coreos/fedora-coreos-config
       mkdir -p overrides/rootfs
-      mv insttree/* overrides/rootfs/
-      rmdir insttree
+      tar -C overrides/rootfs -xzvf insttree.tar.gz
+      rm insttree.tar.gz
       cosa build
       cosa osbuild qemu metal4k
     """)
