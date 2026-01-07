@@ -21,7 +21,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bincode = "2.0.1"
 bootc-internal-blockdev = "0.0.0"
 bootc-internal-utils = "0.0.0"
 cap-std-ext = "4.0.7"
