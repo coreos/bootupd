@@ -51,8 +51,8 @@ add_override() {
 if test -z "${e2e_skip_build:-}"; then
     echo "Building starting image"
     rm -f ${overrides}/rpm/*.rpm
-    # Version from F42 prior to GA
-    add_override grub2-2.12-26.fc42
+    # Version from F43 prior to GA
+    add_override grub2-2.12-38.fc43
     runv cosa build
     runv cosa osbuild qemu
     prev_image=$(runv cosa meta --image-path qemu)
@@ -61,8 +61,8 @@ if test -z "${e2e_skip_build:-}"; then
     echo "packages: [test_bootupd_payload]" >> src/config/manifest.yaml
     rm -f ${overrides}/rpm/*.rpm
     echo "Building update ostree"
-    # Latest (current) version in F42
-    add_override grub2-2.12-28.fc42
+    # Latest (current) version in F43
+    add_override grub2-2.12-40.fc43
     mv ${test_tmpdir}/yumrepo/packages/$(arch)/*.rpm ${overrides}/rpm/
     # Only build ostree update
     runv cosa build ostree
