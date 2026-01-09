@@ -67,7 +67,7 @@ cosaPod(memory: "7168Mi", cpu: "4") {
       // The previous e2e leaves things only having built an ostree update
       shwrap("cosa build && cosa osbuild qemu")
       // bootupd really can't break upgrades for the OS
-      kola(cosaDir: "${env.WORKSPACE}", extraArgs: "ext.*bootupd*", skipUpgrade: true, skipBasicScenarios: true)
+      kola(cosaDir: "${env.WORKSPACE}", extraArgs: "ext.*bootupd* --qemu-firmware=uefi", skipUpgrade: true, skipBasicScenarios: true)
     }
   } finally {
     archiveArtifacts allowEmptyArchive: true, artifacts: 'tmp/console.txt'
