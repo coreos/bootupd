@@ -35,6 +35,19 @@ prepare_efi_update() {
   rm -rf ${bootupdir}/EFI.json
 }
 
+# backup: update_metadata_move EFI EFI-bak
+# restore: update_metadata_move EFI-bak EFI
+update_metadata_move() {
+  local src="${bootupdir}/$1.json"
+  local dst="${bootupdir}/$2.json"
+
+  [ -w "$bootupdir" ]
+  [ -f "$src" ]
+  [ ! -e "$dst" ]
+
+  mv -- "$src" "$dst"
+}
+
 # Find the files under usr/lib/efi after transferred
 shim_path=$(find ${efilib} -name shim.efi)
 shimx64_path=$(find ${efilib} -name ${shimx64})
@@ -115,12 +128,39 @@ bootupctl update | tee out.txt
 assert_file_has_content_literal out.txt 'No update available for any component'
 assert_not_file_has_content_literal out.txt 'Updated EFI'
 
-# Verify that we skipped update if update metadata not found
 mount -o remount,rw /boot
-rm -f /boot/bootupd-state.json ${bootupdir}/BIOS.json
-bootupctl update | tee out.txt
-assert_file_has_content out.txt 'Adopted and updated: EFI: grub2-.*'
-assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
+rm -f /boot/bootupd-state.json
+
+if [ -d /sys/firmware/efi ]; then
+  # EFI boot: verify update failed if metadata is missing EFI.json
+  # Backup EFI.json and restore it later, or validate will fail
+  update_metadata_move EFI EFI-bak
+  if bootupctl update 2>err.txt; then
+    fatal "Should fail as missing EFI update metadata (booted with EFI)"
+  fi
+  update_metadata_move EFI-bak EFI
+
+  # Should succeed if BIOS metadata is missing
+  rm -f ${bootupdir}/BIOS.json
+  bootupctl update | tee out.txt
+  assert_file_has_content out.txt 'Adopted and updated: EFI:'
+  assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
+
+else
+  # BIOS boot: verify update failed if metadata is missing BIOS.json
+  # Backup BIOS.json and restore it later, or validate will fail
+  update_metadata_move BIOS BIOS-bak
+  if bootupctl update 2>err.txt; then
+    fatal "Should fail as missing BIOS update metadata (booted with BIOS)"
+  fi
+  update_metadata_move BIOS-bak BIOS
+
+  # Should succeed if EFI metadata is missing
+  rm -f ${bootupdir}/EFI.json
+  bootupctl update | tee out.txt
+  assert_file_has_content out.txt 'Adopted and updated: BIOS:'
+  assert_not_file_has_content out.txt 'Adopted and updated: EFI:'
+fi
 
 echo "some additions" >> ${tmpefisubdir}/${shimx64}
 if bootupctl validate 2>err.txt; then

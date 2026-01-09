@@ -243,7 +243,12 @@ impl Component for Bios {
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
-        get_component_update(sysroot, self)
+        let content_metadata = get_component_update(sysroot, self)?;
+        // Failed as expected if booted with BIOS and no update metadata
+        if content_metadata.is_none() && !sysroot.exists("sys/firmware/efi")? {
+            anyhow::bail!("Failed to find BIOS update metadata");
+        }
+        Ok(content_metadata)
     }
 
     fn run_update(&self, rootcxt: &RootContext, _: &InstalledContent) -> Result<InstalledContent> {
