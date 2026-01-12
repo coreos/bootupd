@@ -18,12 +18,12 @@ jobs:
           - arch: ppc64le
             distro: ubuntu_latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           submodules: true
           set-safe-directory: true
 
-      - uses: uraimo/run-on-arch-action@v3.0.0
+      - uses: uraimo/run-on-arch-action@v3.0.1
         name: Build
         id: build
         with:
