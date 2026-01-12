@@ -43,7 +43,7 @@ jobs:
           sudo apt --fix-broken install
           sudo apt install -y crun/testing podman/testing skopeo/testing
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install podman
         if: ( matrix.runner == 'ubuntu-24.04-arm' )
