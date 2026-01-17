@@ -45,6 +45,16 @@ License:        Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND BSD-3-Clause
 
 %description -n %{crate} %{_description}
 
+%if 0%{?fedora} && 0%{?fedora} >= 44
+%posttrans -n %{crate}
+set -eu
+
+# On image mode, bootupd takes care of installing bootloader updates to the ESP	
+if [ ! -e /run/ostree-booted ]; then
+    bootupctl backend copy-to-boot || :
+fi
+%endif
+
 %files -n %{crate}
 %license LICENSE
 %license LICENSE.dependencies
