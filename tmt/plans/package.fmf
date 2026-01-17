@@ -1,18 +1,27 @@
-# Common settings for all plans
-provision:
-  how: virtual
-  image: $@{test_disk_image}
-prepare:
-  # Run on package mode VM running on Packit and Gating
-  - how: shell
-    order: 98
-    script:
-      - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
-      - cd bootc && rpm2cpio *.src.rpm | cpio -idmv && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
-      - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
-    when: running_env != image_mode
+discover:
+  how: fmf
 execute:
   how: tmt
+provision:
+  how: virtual
+  hardware:
+    boot:
+      method: uefi
+  image: $@{test_image}
+  user: root
+prepare:
+  # Run on package mode VM especially on Fedora
+  - how: shell
+    order: 10
+    adjust:
+      - when: distro == fedora
+        script:
+          - echo test > /boot/efi/EFI/fedora/grub*.efi
+  - how: install
+    order: 20
+    package:
+      - bootupd
+
 
 /plan-post-install:
   summary: Execute post install tests

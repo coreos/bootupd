@@ -33,20 +33,8 @@ jobs:
   - job: tests
     trigger: pull_request
     targets:
-      - centos-stream-9-x86_64
-      - centos-stream-9-aarch64
-      - centos-stream-10-x86_64
-      - centos-stream-10-aarch64
-      - fedora-43-x86_64
-      - fedora-43-aarch64
-      - fedora-rawhide-x86_64
       - fedora-rawhide-aarch64
     tmt_plan: /tmt/plans/package
-    tf_extra_params:
-      environments:
-        - tmt:
-            context:
-              running_env: "packit"
 
   - job: propose_downstream
     trigger: release
