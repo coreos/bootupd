@@ -1,0 +1,53 @@
+---
+# See the documentation for more information:
+# https://packit.dev/docs/configuration/
+
+# name in upstream package repository or registry
+upstream_package_name: bootupd
+upstream_tag_template: v{version}
+
+downstream_package_name: rust-bootupd
+
+specfile_path: contrib/packaging/bootupd.spec
+
+jobs:
+  - job: copr_build
+    trigger: pull_request
+    targets:
+      - centos-stream-9-x86_64
+      - centos-stream-9-aarch64
+      - centos-stream-9-s390x
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - centos-stream-10-s390x
+      - centos-stream-10-ppc64le
+      - fedora-43-x86_64
+      - fedora-43-aarch64
+      - fedora-43-s390x
+      - fedora-43-ppc64le
+      - fedora-rawhide-x86_64
+      - fedora-rawhide-aarch64
+      - fedora-rawhide-s390x
+      - fedora-rawhide-ppc64le
+
+  - job: tests
+    trigger: pull_request
+    targets:
+      - fedora-rawhide-aarch64
+    tmt_plan: /tmt/plans/package
+
+  - job: propose_downstream
+    trigger: release
+    dist_git_branches:
+      fedora-rawhide:
+        fast_forward_merge_into: [fedora-latest-stable]
+
+  - job: koji_build
+    trigger: commit
+    dist_git_branches:
+      - fedora-all
+
+  - job: bodhi_update
+    trigger: commit
+    dist_git_branches:
+      - fedora-all
