@@ -111,7 +111,7 @@ impl Efi {
             std::process::Command::new("mount")
                 .arg(&esp_device)
                 .arg(&mnt)
-                .run()
+                .run_inherited()
                 .with_context(|| format!("Failed to mount {:?}", esp_device))?;
             log::debug!("Mounted at {mnt:?}");
             mountpoint = Some(mnt);
@@ -139,7 +139,7 @@ impl Efi {
         if let Some(mount) = self.mountpoint.borrow_mut().take() {
             Command::new("umount")
                 .arg(&mount)
-                .run()
+                .run_inherited()
                 .with_context(|| format!("Failed to unmount {mount:?}"))?;
             log::trace!("Unmounted");
         }
@@ -688,7 +688,7 @@ pub(crate) fn clear_efi_target(target: &str) -> Result<()> {
             let mut cmd = Command::new(EFIBOOTMGR);
             cmd.args(["-b", entry.id.as_str(), "-B"]);
             println!("Executing: {cmd:?}");
-            cmd.run_with_cmd_context()?;
+            cmd.run_inherited_with_cmd_context()?;
         }
     }
 
@@ -716,7 +716,7 @@ pub(crate) fn create_efi_boot_entry(
         target,
     ]);
     println!("Executing: {cmd:?}");
-    cmd.run_with_cmd_context()
+    cmd.run_inherited_with_cmd_context()
 }
 
 #[context("Find target file recursively")]

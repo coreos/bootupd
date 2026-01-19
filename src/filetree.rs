@@ -386,7 +386,7 @@ where
             .arg(src)
             .arg(dst)
             .pre_exec(move || rustix::process::fchdir(rootfd).map_err(Into::into))
-            .run()?
+            .run_inherited()?
     };
     log::debug!("Copy {src} to {dst}");
     Ok(())
