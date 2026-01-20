@@ -39,17 +39,10 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 /// Find esp partition on the same device
 /// using sfdisk to get partitiontable
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
-    const ESP_TYPE_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
     let device_info: PartitionTable =
         bootc_internal_blockdev::partitions_of(Utf8Path::new(device))?;
-    let esp = device_info
-        .partitions
-        .into_iter()
-        .find(|p| p.parttype.as_str() == ESP_TYPE_GUID);
-    if let Some(esp) = esp {
-        return Ok(Some(esp.node));
-    }
-    Ok(None)
+    let esp = device_info.find_partition_of_esp()?;
+    Ok(esp.map(|v| v.node.clone()))
 }
 
 /// Find all ESP partitions on the devices

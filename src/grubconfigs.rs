@@ -153,7 +153,7 @@ fn write_grubenv(bootdir: &openat::Dir) -> Result<()> {
     std::process::Command::new(editenv)
         .args([GRUBENV, "create"])
         .current_dir(format!("/proc/self/fd/{}", grubdir.as_raw_fd()))
-        .run_with_cmd_context()
+        .run_inherited_with_cmd_context()
 }
 
 #[cfg(test)]
