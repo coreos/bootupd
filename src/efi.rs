@@ -68,6 +68,8 @@ pub(crate) fn is_efi_booted() -> Result<bool> {
 #[derive(Default)]
 pub(crate) struct Efi {
     mountpoint: RefCell<Option<PathBuf>>,
+    /// Track whether we mounted the ESP ourselves (true) or found it pre-mounted (false)
+    did_mount: RefCell<bool>,
 }
 
 impl Efi {
@@ -93,6 +95,7 @@ impl Efi {
         if let Some(mnt) = found_mount {
             log::debug!("Reusing existing mount point {mnt:?}");
             *self.mountpoint.borrow_mut() = Some(mnt.clone());
+            *self.did_mount.borrow_mut() = false; // We didn't mount it
             Ok(Some(mnt))
         } else {
             Ok(None)
@@ -119,6 +122,7 @@ impl Efi {
         }
         let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
         *self.mountpoint.borrow_mut() = Some(mnt.clone());
+        *self.did_mount.borrow_mut() = true; // We mounted it ourselves
         Ok(mnt)
     }
 
@@ -136,12 +140,16 @@ impl Efi {
     }
 
     fn unmount(&self) -> Result<()> {
-        if let Some(mount) = self.mountpoint.borrow_mut().take() {
-            Command::new("umount")
-                .arg(&mount)
-                .run_inherited()
-                .with_context(|| format!("Failed to unmount {mount:?}"))?;
-            log::trace!("Unmounted");
+        // Only unmount if we mounted it ourselves
+        if *self.did_mount.borrow() {
+            if let Some(mount) = self.mountpoint.borrow_mut().take() {
+                Command::new("umount")
+                    .arg(&mount)
+                    .run_inherited()
+                    .with_context(|| format!("Failed to unmount {mount:?}"))?;
+                log::trace!("Unmounted");
+                *self.did_mount.borrow_mut() = false;
+            }
         }
         Ok(())
     }
