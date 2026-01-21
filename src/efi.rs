@@ -124,7 +124,13 @@ struct Mount {
 
 #[derive(Default)]
 pub(crate) struct Efi {
+<<<<<<< HEAD
     mountpoint: RefCell<Option<Mount>>,
+=======
+    mountpoint: RefCell<Option<PathBuf>>,
+    /// Track whether we mounted the ESP ourselves (true) or found it pre-mounted (false)
+    did_mount: RefCell<bool>,
+>>>>>>> 11a3df4 (efi: unmount only if bootupd did the mount)
 }
 
 impl Efi {
@@ -157,10 +163,15 @@ impl Efi {
         }
         if let Some(mnt) = found_mount {
             log::debug!("Reusing existing mount point {mnt:?}");
+<<<<<<< HEAD
             *self.mountpoint.borrow_mut() = Some(Mount {
                 path: mnt.clone(),
                 owned: false,
             });
+=======
+            *self.mountpoint.borrow_mut() = Some(mnt.clone());
+            *self.did_mount.borrow_mut() = false; // We didn't mount it
+>>>>>>> 11a3df4 (efi: unmount only if bootupd did the mount)
             Ok(Some(mnt))
         } else {
             Ok(None)
@@ -203,11 +214,17 @@ impl Efi {
             mountpoint = Some((mnt, true));
             break;
         }
+<<<<<<< HEAD
         let (mnt, owned) = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
         *self.mountpoint.borrow_mut() = Some(Mount {
             path: mnt.clone(),
             owned,
         });
+=======
+        let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
+        *self.mountpoint.borrow_mut() = Some(mnt.clone());
+        *self.did_mount.borrow_mut() = true; // We mounted it ourselves
+>>>>>>> 11a3df4 (efi: unmount only if bootupd did the mount)
         Ok(mnt)
     }
 
@@ -226,6 +243,7 @@ impl Efi {
 
     fn unmount(&self) -> Result<()> {
         // Only unmount if we mounted it ourselves
+<<<<<<< HEAD
         let should_unmount = self
             .mountpoint
             .borrow()
@@ -243,6 +261,16 @@ impl Efi {
                         .with_context(|| format!("Failed to unmount {:?}", mount.path))?;
                     log::trace!("Unmounted");
                 }
+=======
+        if *self.did_mount.borrow() {
+            if let Some(mount) = self.mountpoint.borrow_mut().take() {
+                Command::new("umount")
+                    .arg(&mount)
+                    .run_inherited()
+                    .with_context(|| format!("Failed to unmount {mount:?}"))?;
+                log::trace!("Unmounted");
+                *self.did_mount.borrow_mut() = false;
+>>>>>>> 11a3df4 (efi: unmount only if bootupd did the mount)
             }
         }
         Ok(())
