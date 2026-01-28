@@ -9,7 +9,7 @@ Summary:        Bootloader updater
 
 License:        Apache-2.0
 URL:            https://github.com/coreos/bootupd
-Source0:        %{crates_source}
+Source0:        %{url}/releases/download/v%{version}/bootupd-%{version}.tar.zstd
 Source1:        %{url}/releases/download/v%{version}/bootupd-%{version}-vendor.tar.zstd
 %if 0%{?fedora} || 0%{?rhel} >= 10
 ExcludeArch:    %{ix86}
@@ -44,6 +44,16 @@ License:        Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND BSD-3-Clause
 %{?systemd_requires}
 
 %description -n %{crate} %{_description}
+
+%if 0%{?fedora} && 0%{?fedora} >= 44
+%posttrans -n %{crate}
+set -eu
+
+# Only copy files to ESP on package mode	
+if [ ! -e /run/ostree-booted ]; then
+    bootupctl backend copy-to-boot || :
+fi
+%endif
 
 %files -n %{crate}
 %license LICENSE
