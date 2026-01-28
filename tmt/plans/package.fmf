@@ -1,0 +1,38 @@
+discover:
+  how: fmf
+execute:
+  how: tmt
+provision:
+  how: virtual
+  hardware:
+    boot:
+      method: uefi
+  image: $@{test_image}
+  user: root
+prepare:
+  # Run on package mode VM especially on Fedora
+  - how: shell
+    order: 10
+    adjust:
+      - when: distro == fedora
+        script:
+          - |
+            set -eux
+            if [ -d /boot/efi/EFI/fedora ]; then
+              for f in /boot/efi/EFI/fedora/grub*.efi; do
+                echo "Corrupting $f"
+                echo "test" > "$f"
+              done
+            fi
+  - how: install
+    order: 20
+    package:
+      - bootupd
+
+
+/plan-post-install:
+  summary: Execute post install tests
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-post-install

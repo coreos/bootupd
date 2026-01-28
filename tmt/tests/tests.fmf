@@ -1,0 +1,7 @@
+/test-post-install:
+  summary: Execute installation on package mode
+  duration: 10m
+  adjust:
+    - when: distro != fedora
+      enabled: false
+  test: bash package/test-post-install.sh
