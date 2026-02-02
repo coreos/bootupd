@@ -156,10 +156,9 @@ fn impl_package(sh: &Shell) -> Result<Package> {
         )
         .run()?;
     }
-    // Compress with gzip and write to crate
-    let srcpath: Utf8PathBuf = Utf8Path::new("target").join(format!("{namev}.crate"));
-    cmd!(sh, "gzip --force --best {p}").run()?;
-    std::fs::rename(format!("{p}.gz"), &srcpath)?;
+    // Compress with zstd
+    let srcpath: Utf8PathBuf = format!("{p}.zstd").into();
+    cmd!(sh, "zstd --rm -f {p} -o {srcpath}").run()?;
 
     Ok(Package {
         version: v,
