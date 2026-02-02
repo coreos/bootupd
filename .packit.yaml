@@ -1,0 +1,55 @@
+---
+# See the documentation for more information:
+# https://packit.dev/docs/configuration/
+
+# name in upstream package repository or registry
+upstream_package_name: bootupd
+upstream_tag_template: v{version}
+
+downstream_package_name: rust-bootupd
+
+specfile_path: contrib/packaging/bootupd.spec
+
+srpm_build_deps:
+  - cargo
+  - git
+  - libzstd-devel
+  - openssl-devel
+  - zstd
+
+actions:
+  # The last setp here is required by Packit to return the archive name
+  # https://packit.dev/docs/configuration/actions#create-archive
+  create-archive:
+    - bash -c "cargo install cargo-vendor-filterer"
+    - bash -c "cargo xtask spec"
+    - bash -c "cat target/bootupd.spec"
+    - bash -c "cp target/bootupd* contrib/packaging/"
+    - bash -c "ls -1 target/bootupd*.tar.zstd | grep -v 'vendor'"
+  # Do nothing with spec file. Two steps here are for debugging
+  fix-spec-file:
+    - bash -c "cat contrib/packaging/bootupd.spec"
+    - bash -c "ls -al contrib/packaging/"
+
+jobs:
+  - job: copr_build
+    trigger: pull_request
+    targets:
+      - fedora-rawhide-aarch64
+      - fedora-rawhide-x86_64
+
+  - job: propose_downstream
+    trigger: release
+    dist_git_branches:
+      fedora-rawhide:
+        fast_forward_merge_into: [fedora-latest-stable]
+
+  - job: koji_build
+    trigger: commit
+    dist_git_branches:
+      - fedora-all
+
+  - job: bodhi_update
+    trigger: commit
+    dist_git_branches:
+      - fedora-all
