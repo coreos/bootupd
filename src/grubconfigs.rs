@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -90,6 +91,7 @@ pub(crate) fn install(
     println!("Installed: grub.cfg");
 
     write_grubenv(&bootdir).context("Create grubenv")?;
+    ensure_grubenv_permissions(&bootdir)?;
 
     let uuid_path = if write_uuid {
         let target_fs = if boot_is_mount { bootdir } else { target_root };
@@ -100,7 +102,7 @@ pub(crate) fn install(
         let grub2_uuid_contents = format!("set BOOT_UUID=\"{bootfs_uuid}\"\n");
         let uuid_path = "bootuuid.cfg";
         grub2dir
-            .write_file_contents(uuid_path, 0o644, grub2_uuid_contents)
+            .write_file_contents(uuid_path, GRUBCONFIG_FILE_MODE, grub2_uuid_contents)
             .context("Writing bootuuid.cfg")?;
         println!("Installed: bootuuid.cfg");
         Some(uuid_path)
@@ -156,6 +158,23 @@ fn write_grubenv(bootdir: &openat::Dir) -> Result<()> {
         .run_inherited_with_cmd_context()
 }
 
+#[context("Ensure file boot/grub2/grubenv permissions are 0600")]
+fn ensure_grubenv_permissions(bootdir: &openat::Dir) -> Result<()> {
+    let grubdir = &bootdir.sub_dir(GRUB2DIR).context("Opening boot/grub2")?;
+
+    let metadata = grubdir
+        .metadata(GRUBENV)
+        .context("Reading grubenv metadata")?;
+
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode != GRUBCONFIG_FILE_MODE {
+        grubdir
+            .set_mode(GRUBENV, GRUBCONFIG_FILE_MODE)
+            .context("Setting grubenv permissions to 0600")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +209,14 @@ mod tests {
         write_grubenv(&td)?;
 
         assert!(td.exists("grub2/grubenv")?);
+        ensure_grubenv_permissions(&td)?;
+        // Verify permissions are now 0600
+        {
+            let grubdir = td.sub_dir("grub2")?;
+            let metadata = grubdir.metadata("grubenv")?;
+            let mode = metadata.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         Ok(())
     }
 }
