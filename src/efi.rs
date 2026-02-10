@@ -19,13 +19,13 @@ use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
-use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
-use walkdir::WalkDir;
 #[cfg(target_os = "linux")]
 use rustix::mount::{
     fsconfig_create, fsconfig_set_path, fsmount, fsopen, move_mount, FsMountFlags, FsOpenFlags,
-    MoveMountFlags, MountAttrFlags, UnmountFlags,
+    MountAttrFlags, MoveMountFlags, UnmountFlags,
 };
+use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
+use walkdir::WalkDir;
 use widestring::U16CString;
 
 use crate::bootupd::RootContext;
@@ -75,10 +75,15 @@ fn mount_esp(esp_device: &Path, target: &Path) -> Result<()> {
     use rustix::fs::CWD;
 
     let fs_fd = fsopen("vfat", FsOpenFlags::empty()).context("fsopen vfat")?;
-    fsconfig_set_path(fs_fd.as_fd(), "source", esp_device, CWD).context("fsconfig_set_path source")?;
+    fsconfig_set_path(fs_fd.as_fd(), "source", esp_device, CWD)
+        .context("fsconfig_set_path source")?;
     fsconfig_create(fs_fd.as_fd()).context("fsconfig_create")?;
-    let mount_fd =
-        fsmount(fs_fd.as_fd(), FsMountFlags::empty(), MountAttrFlags::empty()).context("fsmount")?;
+    let mount_fd = fsmount(
+        fs_fd.as_fd(),
+        FsMountFlags::empty(),
+        MountAttrFlags::empty(),
+    )
+    .context("fsmount")?;
     let target_dir = std::fs::File::open(target).context("open target dir for move_mount")?;
     let target_fd = unsafe { BorrowedFd::borrow_raw(target_dir.as_raw_fd()) };
     move_mount(
@@ -248,35 +253,72 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
+    /// Copy EFI components to ESP using the same "write alongside + atomic rename" pattern
+    /// as bootable container updates, so the system stays bootable if any step fails.
     fn copy_efi_components_to_esp(
         &self,
         sysroot_dir: &openat::Dir,
         esp_dir: &openat::Dir,
-        esp_path: &Path,
+        _esp_path: &Path,
         efi_components: &[EFIComponent],
     ) -> Result<()> {
-        let dest_str = esp_path
+        // Build a merged source tree in a temp dir (same layout as desired ESP/EFI)
+        let temp_dir = tempfile::tempdir().context("Creating temp dir for EFI merge")?;
+        let temp_efi_path = temp_dir.path().join("EFI");
+        std::fs::create_dir_all(&temp_efi_path)
+            .with_context(|| format!("Creating {}", temp_efi_path.display()))?;
+        let temp_efi_str = temp_efi_path
             .to_str()
-            .with_context(|| format!("Invalid UTF-8: {}", esp_path.display()))?;
+            .context("Temp EFI path is not valid UTF-8")?;
 
         for efi_comp in efi_components {
             log::info!(
-                "Copying EFI component {} version {} to ESP at {}",
+                "Merging EFI component {} version {} into update tree",
                 efi_comp.name,
-                efi_comp.version,
-                esp_path.display()
+                efi_comp.version
             );
-
-            filetree::copy_dir_with_args(sysroot_dir, efi_comp.path.as_str(), dest_str, OPTIONS)
-                .with_context(|| {
-                    format!(
-                        "Failed to copy {} from {} to {}",
-                        efi_comp.name, efi_comp.path, dest_str
-                    )
-                })?;
+            // Copy contents of component's EFI dir (e.g. fedora/) into temp_efi_path so merged
+            // layout is EFI/fedora/..., not EFI/EFI/fedora/...
+            let src_efi_contents = format!("{}/.", efi_comp.path);
+            filetree::copy_dir_with_args(
+                sysroot_dir,
+                src_efi_contents.as_str(),
+                temp_efi_str,
+                OPTIONS,
+            )
+            .with_context(|| format!("Copying {} to merge dir", efi_comp.path))?;
         }
 
-        // Sync the whole ESP filesystem 
+        // Ensure ESP/EFI exists (e.g. first install)
+        esp_dir.ensure_dir_all(std::path::Path::new("EFI"), 0o755)?;
+        let esp_efi_dir = esp_dir.sub_dir("EFI").context("Opening ESP EFI dir")?;
+
+        let source_dir =
+            openat::Dir::open(&temp_efi_path).context("Opening merged EFI source dir")?;
+        let source_filetree =
+            filetree::FileTree::new_from_dir(&source_dir).context("Building source filetree")?;
+        let current_filetree =
+            filetree::FileTree::new_from_dir(&esp_efi_dir).context("Building current filetree")?;
+        let diff = current_filetree
+            .diff(&source_filetree)
+            .context("Computing EFI diff")?;
+
+        // Check available space before writing to prevent partial updates when the partition is full
+        let required_bytes = current_filetree.total_size() + source_filetree.total_size();
+        let available_bytes = util::available_space_bytes(&esp_efi_dir)?;
+        if available_bytes < required_bytes {
+            anyhow::bail!(
+                "ESP has insufficient free space for update: need {} MiB, have {} MiB",
+                required_bytes / (1024 * 1024),
+                available_bytes / (1024 * 1024)
+            );
+        }
+
+        // Same logic as bootable container: write to .btmp.* then atomic rename
+        filetree::apply_diff(&source_dir, &esp_efi_dir, &diff, None)
+            .context("Applying EFI update (write alongside + atomic rename)")?;
+
+        // Sync the whole ESP filesystem
         fsfreeze_thaw_cycle(esp_dir.open_file(".")?)?;
 
         Ok(())
@@ -286,6 +328,7 @@ impl Efi {
     fn package_mode_copy_to_boot_impl(&self, sysroot: &Path) -> Result<()> {
         let sysroot_path = Utf8Path::from_path(sysroot)
             .with_context(|| format!("Invalid UTF-8: {}", sysroot.display()))?;
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
 
         let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
             Some(comps) if !comps.is_empty() => comps,
@@ -309,7 +352,6 @@ impl Efi {
             .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
         validate_esp_fstype(&esp_dir)?;
 
-        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
         self.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
 
         log::info!(

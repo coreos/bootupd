@@ -202,6 +202,16 @@ impl FileTree {
         Ok(Self { children })
     }
 
+    /// Total size in bytes of all files in the tree (for space checks).
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
+    pub(crate) fn total_size(&self) -> u64 {
+        self.children.values().map(|m| m.size).sum()
+    }
+
     /// Determine the changes *from* self to the updated tree
     #[cfg(any(
         target_arch = "x86_64",
