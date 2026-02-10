@@ -21,6 +21,11 @@ use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
 use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
+#[cfg(target_os = "linux")]
+use rustix::mount::{
+    fsconfig_create, fsconfig_set_path, fsmount, fsopen, move_mount, FsMountFlags, FsOpenFlags,
+    MoveMountFlags, MountAttrFlags, UnmountFlags,
+};
 use widestring::U16CString;
 
 use crate::bootupd::RootContext;
@@ -65,11 +70,36 @@ pub(crate) fn is_efi_booted() -> Result<bool> {
         .map_err(Into::into)
 }
 
+#[cfg(target_os = "linux")]
+fn mount_esp(esp_device: &Path, target: &Path) -> Result<()> {
+    use rustix::fs::CWD;
+
+    let fs_fd = fsopen("vfat", FsOpenFlags::empty()).context("fsopen vfat")?;
+    fsconfig_set_path(fs_fd.as_fd(), "source", esp_device, CWD).context("fsconfig_set_path source")?;
+    fsconfig_create(fs_fd.as_fd()).context("fsconfig_create")?;
+    let mount_fd =
+        fsmount(fs_fd.as_fd(), FsMountFlags::empty(), MountAttrFlags::empty()).context("fsmount")?;
+    let target_dir = std::fs::File::open(target).context("open target dir for move_mount")?;
+    let target_fd = unsafe { BorrowedFd::borrow_raw(target_dir.as_raw_fd()) };
+    move_mount(
+        mount_fd.as_fd(),
+        "",
+        target_fd,
+        ".",
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )
+    .context("move_mount")?;
+    Ok(())
+}
+
+struct Mount {
+    path: PathBuf,
+    owned: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Efi {
-    mountpoint: RefCell<Option<PathBuf>>,
-    /// Track whether we mounted the ESP ourselves (true) or found it pre-mounted (false)
-    did_mount: RefCell<bool>,
+    mountpoint: RefCell<Option<Mount>>,
 }
 
 impl Efi {
@@ -90,19 +120,18 @@ impl Efi {
                 break;
             }
         }
-
-        // Only borrow mutably if we found a mount point
         if let Some(mnt) = found_mount {
             log::debug!("Reusing existing mount point {mnt:?}");
-            *self.mountpoint.borrow_mut() = Some(mnt.clone());
-            *self.did_mount.borrow_mut() = false; // We didn't mount it
+            *self.mountpoint.borrow_mut() = Some(Mount {
+                path: mnt.clone(),
+                owned: false,
+            });
             Ok(Some(mnt))
         } else {
             Ok(None)
         }
     }
 
-    // Mount the passed esp_device, return mount point
     pub(crate) fn mount_esp_device(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
         let mut mountpoint = None;
 
@@ -111,8 +140,16 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
+            #[cfg(target_os = "linux")]
+            if mount_esp(esp_device, &mnt).is_ok() {
+                log::debug!("Mounted at {mnt:?}");
+                mountpoint = Some(mnt);
+                break;
+            }
+            #[cfg(target_os = "linux")]
+            log::trace!("Mount failed, falling back to mount(8)");
             std::process::Command::new("mount")
-                .arg(&esp_device)
+                .arg(esp_device)
                 .arg(&mnt)
                 .run_inherited()
                 .with_context(|| format!("Failed to mount {:?}", esp_device))?;
@@ -121,17 +158,19 @@ impl Efi {
             break;
         }
         let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
-        *self.mountpoint.borrow_mut() = Some(mnt.clone());
-        *self.did_mount.borrow_mut() = true; // We mounted it ourselves
+        *self.mountpoint.borrow_mut() = Some(Mount {
+            path: mnt.clone(),
+            owned: true,
+        });
         Ok(mnt)
     }
 
     // Firstly check if esp is already mounted, then mount the passed esp device
     pub(crate) fn ensure_mounted_esp(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
-        if let Some(mountpoint) = self.mountpoint.borrow().as_deref() {
-            return Ok(mountpoint.to_owned());
+        if let Some(mount) = self.mountpoint.borrow().as_ref() {
+            return Ok(mount.path.clone());
         }
-        let destdir = if let Some(destdir) = self.get_mounted_esp(Path::new(root))? {
+        let destdir = if let Some(destdir) = self.get_mounted_esp(root)? {
             destdir
         } else {
             self.mount_esp_device(root, esp_device)?
@@ -141,14 +180,32 @@ impl Efi {
 
     fn unmount(&self) -> Result<()> {
         // Only unmount if we mounted it ourselves
-        if *self.did_mount.borrow() {
+        let should_unmount = self
+            .mountpoint
+            .borrow()
+            .as_ref()
+            .map(|m| m.owned)
+            .unwrap_or(false);
+        if should_unmount {
             if let Some(mount) = self.mountpoint.borrow_mut().take() {
-                Command::new("umount")
-                    .arg(&mount)
-                    .run_inherited()
-                    .with_context(|| format!("Failed to unmount {mount:?}"))?;
-                log::trace!("Unmounted");
-                *self.did_mount.borrow_mut() = false;
+                #[cfg(target_os = "linux")]
+                if rustix::mount::unmount(&mount.path, UnmountFlags::empty()).is_ok() {
+                    log::trace!("Unmounted (new mount API)");
+                } else {
+                    Command::new("umount")
+                        .arg(&mount.path)
+                        .run_inherited()
+                        .with_context(|| format!("Failed to unmount {:?}", mount.path))?;
+                    log::trace!("Unmounted");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Command::new("umount")
+                        .arg(&mount.path)
+                        .run_inherited()
+                        .with_context(|| format!("Failed to unmount {:?}", mount.path))?;
+                    log::trace!("Unmounted");
+                }
             }
         }
         Ok(())
@@ -191,19 +248,17 @@ impl Efi {
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
     }
-
-    /// Shared helper to copy EFI components to a single ESP
     fn copy_efi_components_to_esp(
         &self,
         sysroot_dir: &openat::Dir,
+        esp_dir: &openat::Dir,
         esp_path: &Path,
         efi_components: &[EFIComponent],
     ) -> Result<()> {
         let dest_str = esp_path
             .to_str()
-            .context("ESP path contains invalid UTF-8")?;
+            .with_context(|| format!("Invalid UTF-8: {}", esp_path.display()))?;
 
-        // Copy each component
         for efi_comp in efi_components {
             log::info!(
                 "Copying EFI component {} version {} to ESP at {}",
@@ -221,43 +276,32 @@ impl Efi {
                 })?;
         }
 
-        // Sync filesystem
-        let efidir =
-            openat::Dir::open(&esp_path.join("EFI")).context("Opening EFI directory for sync")?;
-        fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+        // Sync the whole ESP filesystem 
+        fsfreeze_thaw_cycle(esp_dir.open_file(".")?)?;
 
         Ok(())
     }
 
-    /// Copy from /usr/lib/efi to boot/ESP.
-    fn package_mode_copy_to_boot_impl(&self) -> Result<()> {
-        let sysroot = Path::new("/");
-        let sysroot_path =
-            Utf8Path::from_path(sysroot).context("Sysroot path is not valid UTF-8")?;
+    /// Copy from /usr/lib/efi to boot/ESP. Caller provides sysroot (e.g. for recovery or tests).
+    fn package_mode_copy_to_boot_impl(&self, sysroot: &Path) -> Result<()> {
+        let sysroot_path = Utf8Path::from_path(sysroot)
+            .with_context(|| format!("Invalid UTF-8: {}", sysroot.display()))?;
 
         let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
             Some(comps) if !comps.is_empty() => comps,
-            _ => {
-                log::debug!("No EFI components found in /usr/lib/efi");
-                return Ok(());
-            }
+            _ => anyhow::bail!("No EFI components found in /usr/lib/efi"),
         };
-
-        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
 
         // First try to use an already mounted ESP
         let esp_path = if let Some(mounted_esp) = self.get_mounted_esp(sysroot)? {
             mounted_esp
         } else {
-            // If not mounted, find ESP from devices
             let devices = blockdev::get_devices(sysroot)?;
             let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
                 anyhow::bail!("No ESP found");
             };
-
-            let esp_device = esp_devices
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("No ESP device found"))?;
+            // find_colocated_esps returns Some only with a non-empty vec
+            let esp_device = esp_devices.first().unwrap();
             self.ensure_mounted_esp(sysroot, Path::new(esp_device))?
         };
 
@@ -265,7 +309,8 @@ impl Efi {
             .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
         validate_esp_fstype(&esp_dir)?;
 
-        self.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
+        self.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
 
         log::info!(
             "Successfully copied {} EFI component(s) to ESP at {}",
@@ -508,19 +553,16 @@ impl Component for Efi {
 
         let efi_path = if let Some(efi_components) = efi_comps {
             // Use shared helper to copy components from /usr/lib/efi
-            self.copy_efi_components_to_esp(&src_dir, &destpath, &efi_components)?;
+            self.copy_efi_components_to_esp(&src_dir, destd, &destpath, &efi_components)?;
             EFILIB
         } else {
             let updates = component_updatedirname(self);
             let src = updates
                 .to_str()
-                .context("Include invalid UTF-8 characters in path")?;
-            let dest = destpath.to_str().with_context(|| {
-                format!(
-                    "Include invalid UTF-8 characters in dest {}",
-                    destpath.display()
-                )
-            })?;
+                .with_context(|| format!("Invalid UTF-8: {}", updates.display()))?;
+            let dest = destpath
+                .to_str()
+                .with_context(|| format!("Invalid UTF-8: {}", destpath.display()))?;
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
@@ -715,8 +757,8 @@ impl Component for Efi {
     }
 
     /// Package mode copy: Simple copy from /usr/lib/efi to boot/ESP.
-    fn package_mode_copy_to_boot(&self) -> Result<()> {
-        self.package_mode_copy_to_boot_impl()
+    fn package_mode_copy_to_boot(&self, root: &Path) -> Result<()> {
+        self.package_mode_copy_to_boot_impl(root)
     }
 }
 
@@ -1177,8 +1219,9 @@ Boot0003* test";
         assert_eq!(efi_comps[0].version, "15.8-3");
 
         // Create Efi instance and copy components to ESP
+        let esp_dir = openat::Dir::open(&esp_path).context("Opening ESP dir for test")?;
         let efi = Efi::default();
-        efi.copy_efi_components_to_esp(&sysroot_dir, &esp_path, &efi_comps)?;
+        efi.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
 
         // Expected path: /boot/efi/EFI/fedora/shimx64.efi (or shimaa64.efi, etc.)
         let copied_shim_path = esp_path.join("EFI/fedora").join(SHIM);
