@@ -689,16 +689,15 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
 }
 
 /// Copy bootloader files from /usr/lib/efi to boot/ESP for package mode installations.
-pub(crate) fn copy_to_boot() -> Result<()> {
+pub(crate) fn copy_to_boot(root: &Path) -> Result<()> {
     let all_components = get_components_impl(false);
     if all_components.is_empty() {
-        println!("No components available for this platform.");
-        return Ok(());
+        anyhow::bail!("No components available for this platform.");
     }
 
     for component in all_components.values() {
         component
-            .package_mode_copy_to_boot()
+            .package_mode_copy_to_boot(root)
             .with_context(|| format!("Failed to copy component {} to boot", component.name()))?;
     }
 

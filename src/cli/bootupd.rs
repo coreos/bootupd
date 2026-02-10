@@ -37,7 +37,7 @@ pub enum DVerb {
     Install(InstallOpts),
     #[clap(
         name = "copy-to-boot",
-        about = "Copy bootloader files from /usr/lib/efi to boot/ESP (package mode)"
+        about = "Copy bootloader files from /usr/lib/efi to ESP (package mode), EFI only"
     )]
     CopyToBoot,
 }
@@ -130,7 +130,7 @@ impl DCommand {
     }
 
     pub(crate) fn run_copy_to_boot() -> Result<()> {
-        bootupd::copy_to_boot().context("copying to boot failed")?;
+        bootupd::copy_to_boot(std::path::Path::new("/")).context("copying to boot failed")?;
         Ok(())
     }
 }
