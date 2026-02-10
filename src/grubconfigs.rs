@@ -100,7 +100,7 @@ pub(crate) fn install(
         let grub2_uuid_contents = format!("set BOOT_UUID=\"{bootfs_uuid}\"\n");
         let uuid_path = "bootuuid.cfg";
         grub2dir
-            .write_file_contents(uuid_path, 0o644, grub2_uuid_contents)
+            .write_file_contents(uuid_path, GRUBCONFIG_FILE_MODE, grub2_uuid_contents)
             .context("Writing bootuuid.cfg")?;
         println!("Installed: bootuuid.cfg");
         Some(uuid_path)
