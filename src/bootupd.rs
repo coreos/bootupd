@@ -10,6 +10,7 @@ use crate::coreos;
 ))]
 use crate::efi;
 use crate::freezethaw::fsfreeze_thaw_cycle;
+use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR, GRUBCONFIG_FILE_MODE};
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
@@ -17,7 +18,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
-use libc::{S_IRGRP, S_IROTH, S_IRUSR, S_IWUSR};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -261,6 +261,13 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     };
 
     ensure_writable_boot()?;
+    // Verify the permissions of grub files are 0600
+    {
+        let grub2dir = &sysroot
+            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .context("Opening /boot/grub2")?;
+        ensure_grub_permissions(grub2dir)?;
+    }
 
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
@@ -300,6 +307,13 @@ pub(crate) fn adopt_and_update(
     };
 
     ensure_writable_boot()?;
+    // Verify the permissions of grub files are 0600
+    {
+        let grub2dir = &sysroot
+            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .context("Opening /boot/grub2")?;
+        ensure_grub_permissions(grub2dir)?;
+    }
 
     let Some(update) = component.query_update(sysroot)? else {
         anyhow::bail!("Component {} has no available update", name);
@@ -695,13 +709,10 @@ fn strip_grub_config_file(
     dirfd: &openat::Dir,
     stripped_config_name: &str,
 ) -> Result<()> {
-    // mode = -rw-r--r-- (644)
+    // mode = -rw------- (600)
     let mut writer = BufWriter::new(
         dirfd
-            .write_file(
-                stripped_config_name,
-                (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
-            )
+            .write_file(stripped_config_name, GRUBCONFIG_FILE_MODE as mode_t)
             .context("Failed to open temporary GRUB config")?,
     );
 
