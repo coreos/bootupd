@@ -24,7 +24,7 @@ const GRUB_FILES: [&str; 3] = ["bootuuid.cfg", GRUBCONFIG, GRUBENV];
 
 // File mode for /boot/grub2/grub.config
 // https://github.com/coreos/bootupd/issues/952
-const GRUBCONFIG_FILE_MODE: u32 = 0o600;
+pub(crate) const GRUBCONFIG_FILE_MODE: u32 = 0o600;
 
 /// Install the static GRUB config files.
 #[context("Installing static GRUB configs")]
@@ -174,7 +174,7 @@ fn ensure_file_permissions(target_dir: &openat::Dir, target_file: &str) -> Resul
     if mode != GRUBCONFIG_FILE_MODE {
         target_dir
             .set_mode(target_file, GRUBCONFIG_FILE_MODE)
-            .context("Setting {target_file} permissions to 0600")?;
+            .with_context(|| format!("Setting {} permissions to 0600", target_file))?;
     }
     Ok(())
 }
