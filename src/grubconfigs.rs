@@ -90,7 +90,7 @@ pub(crate) fn install(
         .context("Copying grub-static.cfg")?;
     println!("Installed: grub.cfg");
 
-    write_grubenv(&bootdir).context("Create grubenv")?;
+    write_grubenv(&grub2dir).context("Create grubenv")?;
     ensure_grubenv_permissions(&bootdir)?;
 
     let uuid_path = if write_uuid {
@@ -141,9 +141,7 @@ pub(crate) fn install(
 }
 
 #[context("Create file boot/grub2/grubenv")]
-fn write_grubenv(bootdir: &openat::Dir) -> Result<()> {
-    let grubdir = &bootdir.sub_dir(GRUB2DIR).context("Opening boot/grub2")?;
-
+fn write_grubenv(grubdir: &openat::Dir) -> Result<()> {
     if grubdir.exists(GRUBENV)? {
         return Ok(());
     }
