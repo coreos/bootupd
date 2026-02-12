@@ -12,13 +12,16 @@ use openat_ext::OpenatDirExt;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 
 /// The subdirectory of /boot we use
-const GRUB2DIR: &str = "grub2";
+pub(crate) const GRUB2DIR: &str = "grub2";
 const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
 const DROPINDIR: &str = "configs.d";
 // The related grub files
 const GRUBENV: &str = "grubenv";
 pub(crate) const GRUBCONFIG: &str = "grub.cfg";
 pub(crate) const GRUBCONFIG_BACKUP: &str = "grub.cfg.backup";
+// The grub files that created by bootupd
+const GRUB_FILES: [&str; 3] = ["bootuuid.cfg", GRUBCONFIG, GRUBENV];
+
 // File mode for /boot/grub2/grub.config
 // https://github.com/coreos/bootupd/issues/952
 const GRUBCONFIG_FILE_MODE: u32 = 0o600;
@@ -91,7 +94,7 @@ pub(crate) fn install(
     println!("Installed: grub.cfg");
 
     write_grubenv(&grub2dir).context("Create grubenv")?;
-    ensure_grubenv_permissions(&bootdir)?;
+    ensure_file_permissions(&grub2dir, GRUBENV)?;
 
     let uuid_path = if write_uuid {
         let target_fs = if boot_is_mount { bootdir } else { target_root };
@@ -156,20 +159,33 @@ fn write_grubenv(grubdir: &openat::Dir) -> Result<()> {
         .run_inherited_with_cmd_context()
 }
 
-#[context("Ensure file boot/grub2/grubenv permissions are 0600")]
-fn ensure_grubenv_permissions(bootdir: &openat::Dir) -> Result<()> {
-    let grubdir = &bootdir.sub_dir(GRUB2DIR).context("Opening boot/grub2")?;
-
-    let metadata = grubdir
-        .metadata(GRUBENV)
-        .context("Reading grubenv metadata")?;
+#[context("Ensure file permissions are 0600")]
+fn ensure_file_permissions(target_dir: &openat::Dir, target_file: &str) -> Result<()> {
+    let metadata = match target_dir.metadata(target_file) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Silently return if file doesn't exist
+            return Ok(());
+        }
+        Err(e) => return Err(e).context(format!("Reading {} metadata", target_file)),
+    };
 
     let mode = metadata.permissions().mode() & 0o777;
     if mode != GRUBCONFIG_FILE_MODE {
-        grubdir
-            .set_mode(GRUBENV, GRUBCONFIG_FILE_MODE)
-            .context("Setting grubenv permissions to 0600")?;
+        target_dir
+            .set_mode(target_file, GRUBCONFIG_FILE_MODE)
+            .context("Setting {target_file} permissions to 0600")?;
     }
+    Ok(())
+}
+
+#[context("Ensure grub files permissions are 0600")]
+pub(crate) fn ensure_grub_permissions(grub_dir: &openat::Dir) -> Result<()> {
+    for file_name in GRUB_FILES.iter() {
+        ensure_file_permissions(&grub_dir, file_name)
+            .with_context(|| format!("Failed to ensure permissions for {}", file_name))?;
+    }
+
     Ok(())
 }
 
@@ -202,19 +218,48 @@ mod tests {
         }
         let td = tempfile::tempdir()?;
         let tdp = td.path();
-        std::fs::create_dir_all(tdp.join("boot/grub2"))?;
-        let td = openat::Dir::open(&tdp.join("boot"))?;
+        let grub = tdp.join("boot/grub2");
+        std::fs::create_dir_all(&grub)?;
+        let td = openat::Dir::open(&grub)?;
         write_grubenv(&td)?;
 
-        assert!(td.exists("grub2/grubenv")?);
-        ensure_grubenv_permissions(&td)?;
+        assert!(td.exists("grubenv")?);
+        ensure_file_permissions(&td, "grubenv")?;
         // Verify permissions are now 0600
         {
-            let grubdir = td.sub_dir("grub2")?;
-            let metadata = grubdir.metadata("grubenv")?;
+            let metadata = td.metadata("grubenv")?;
             let mode = metadata.permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+        Ok(())
+    }
+    #[test]
+    fn test_ensure_grub_permissions() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let tdp = td.path();
+        let grub = tdp.join("boot/grub2");
+        std::fs::create_dir_all(&grub)?;
+        let grub_dir = openat::Dir::open(&grub)?;
+
+        // Create grubenv, grub.cfg with permissions (0o644), no bootuuid.cfg
+        {
+            grub_dir.write_file_contents("grubenv", 0o644, "grubenv content".as_bytes())?;
+            grub_dir.write_file_contents("grub.cfg", 0o644, "grub.cfg content".as_bytes())?;
+
+            // bootuuid.cfg doesn't exist
+            assert!(grub_dir.metadata("bootuuid.cfg").is_err());
+        }
+
+        // Call the function to fix permissions
+        ensure_grub_permissions(&grub_dir)?;
+
+        // Verify grubenv was fixed to 0o600
+        let metadata = grub_dir.metadata("grubenv")?;
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+
+        // Verify grub.cfg was fixed 0o600
+        let metadata = grub_dir.metadata("grub.cfg")?;
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         Ok(())
     }
 }
