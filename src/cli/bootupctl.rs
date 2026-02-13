@@ -154,7 +154,18 @@ impl CtlCommand {
     /// Runner for `migrate-static-grub-config` verb.
     fn run_migrate_static_grub_config() -> Result<()> {
         ensure_running_in_systemd()?;
-        bootupd::client_run_migrate_static_grub_config()
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "powerpc64",
+            target_arch = "riscv64"
+        ))]
+        {
+            bootupd::client_run_migrate_static_grub_config()
+        }
+
+        #[cfg(target_arch = "s390x")]
+        Ok(())
     }
 }
 

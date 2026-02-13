@@ -10,6 +10,13 @@ use crate::coreos;
 ))]
 use crate::efi;
 use crate::freezethaw::fsfreeze_thaw_cycle;
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "powerpc64",
+    target_arch = "riscv64"
+))]
+use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR};
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
@@ -17,7 +24,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
-use libc::{S_IRGRP, S_IROTH, S_IRUSR, S_IWUSR};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -115,16 +121,16 @@ pub(crate) fn install(
     }
     let sysroot = &openat::Dir::open(dest_root)?;
 
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
     match configs.enabled_with_uuid() {
         Some(uuid) => {
             let meta = get_static_config_meta()?;
             state.static_configs = Some(meta);
-            #[cfg(any(
-                target_arch = "x86_64",
-                target_arch = "aarch64",
-                target_arch = "powerpc64",
-                target_arch = "riscv64"
-            ))]
             crate::grubconfigs::install(
                 sysroot,
                 Some(&source_root_dir),
@@ -165,7 +171,11 @@ type Components = BTreeMap<&'static str, Box<dyn Component>>;
 /// Return the set of known components; if `auto` is specified then the system
 /// filters to the target booted state.
 pub(crate) fn get_components_impl(_auto: bool) -> Components {
+    #[cfg(not(target_arch = "s390x"))]
     let mut components = BTreeMap::new();
+
+    #[cfg(target_arch = "s390x")]
+    let components = BTreeMap::new();
 
     fn insert_component(components: &mut Components, component: Box<dyn Component>) {
         components.insert(component.name(), component);
@@ -261,6 +271,19 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     };
 
     ensure_writable_boot()?;
+    // Verify the permissions of grub files are 0600
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
+    {
+        let grub2dir = &sysroot
+            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .context("Opening /boot/grub2")?;
+        ensure_grub_permissions(grub2dir)?;
+    }
 
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
@@ -300,6 +323,19 @@ pub(crate) fn adopt_and_update(
     };
 
     ensure_writable_boot()?;
+    // Verify the permissions of grub files are 0600
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
+    {
+        let grub2dir = &sysroot
+            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .context("Opening /boot/grub2")?;
+        ensure_grub_permissions(grub2dir)?;
+    }
 
     let Some(update) = component.query_update(sysroot)? else {
         anyhow::bail!("Component {} has no available update", name);
@@ -695,13 +731,10 @@ fn strip_grub_config_file(
     dirfd: &openat::Dir,
     stripped_config_name: &str,
 ) -> Result<()> {
-    // mode = -rw-r--r-- (644)
+    // mode = -rw------- (600)
     let mut writer = BufWriter::new(
         dirfd
-            .write_file(
-                stripped_config_name,
-                (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) as mode_t,
-            )
+            .write_file(stripped_config_name, 0o600 as mode_t)
             .context("Failed to open temporary GRUB config")?,
     );
 
