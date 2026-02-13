@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
 use crate::freezethaw::fsfreeze_thaw_cycle;
 #[cfg(any(
     target_arch = "x86_64",
