@@ -10,7 +10,13 @@ use crate::coreos;
 ))]
 use crate::efi;
 use crate::freezethaw::fsfreeze_thaw_cycle;
-use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR, GRUBCONFIG_FILE_MODE};
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "powerpc64",
+    target_arch = "riscv64"
+))]
+use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR};
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
@@ -115,16 +121,16 @@ pub(crate) fn install(
     }
     let sysroot = &openat::Dir::open(dest_root)?;
 
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
     match configs.enabled_with_uuid() {
         Some(uuid) => {
             let meta = get_static_config_meta()?;
             state.static_configs = Some(meta);
-            #[cfg(any(
-                target_arch = "x86_64",
-                target_arch = "aarch64",
-                target_arch = "powerpc64",
-                target_arch = "riscv64"
-            ))]
             crate::grubconfigs::install(
                 sysroot,
                 Some(&source_root_dir),
@@ -165,7 +171,11 @@ type Components = BTreeMap<&'static str, Box<dyn Component>>;
 /// Return the set of known components; if `auto` is specified then the system
 /// filters to the target booted state.
 pub(crate) fn get_components_impl(_auto: bool) -> Components {
+    #[cfg(not(target_arch = "s390x"))]
     let mut components = BTreeMap::new();
+
+    #[cfg(target_arch = "s390x")]
+    let components = BTreeMap::new();
 
     fn insert_component(components: &mut Components, component: Box<dyn Component>) {
         components.insert(component.name(), component);
@@ -262,6 +272,12 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
 
     ensure_writable_boot()?;
     // Verify the permissions of grub files are 0600
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
     {
         let grub2dir = &sysroot
             .sub_dir(format!("boot/{GRUB2DIR}"))
@@ -308,6 +324,12 @@ pub(crate) fn adopt_and_update(
 
     ensure_writable_boot()?;
     // Verify the permissions of grub files are 0600
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    ))]
     {
         let grub2dir = &sysroot
             .sub_dir(format!("boot/{GRUB2DIR}"))
@@ -712,7 +734,7 @@ fn strip_grub_config_file(
     // mode = -rw------- (600)
     let mut writer = BufWriter::new(
         dirfd
-            .write_file(stripped_config_name, GRUBCONFIG_FILE_MODE as mode_t)
+            .write_file(stripped_config_name, 0o600 as mode_t)
             .context("Failed to open temporary GRUB config")?,
     );
 

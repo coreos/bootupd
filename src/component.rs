@@ -83,7 +83,7 @@ pub(crate) trait Component {
 
 /// Given a component name, create an implementation.
 pub(crate) fn new_from_name(name: &str) -> Result<Box<dyn Component>> {
-    let r: Box<dyn Component> = match name {
+    Ok(match name {
         #[cfg(any(
             target_arch = "x86_64",
             target_arch = "aarch64",
@@ -95,8 +95,7 @@ pub(crate) fn new_from_name(name: &str) -> Result<Box<dyn Component>> {
         #[allow(clippy::box_default)]
         "BIOS" => Box::new(crate::bios::Bios::default()),
         _ => anyhow::bail!("No component {}", name),
-    };
-    Ok(r)
+    })
 }
 
 /// Returns the path to the payload directory for an available update for
