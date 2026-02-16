@@ -19,6 +19,11 @@ use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
+#[cfg(target_os = "linux")]
+use rustix::mount::{
+    fsconfig_create, fsconfig_set_path, fsmount, fsopen, move_mount, FsMountFlags, FsOpenFlags,
+    MountAttrFlags, MoveMountFlags, UnmountFlags,
+};
 use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
 use widestring::U16CString;
@@ -65,9 +70,41 @@ pub(crate) fn is_efi_booted() -> Result<bool> {
         .map_err(Into::into)
 }
 
+#[cfg(target_os = "linux")]
+fn mount_esp(esp_device: &Path, target: &Path) -> Result<()> {
+    use rustix::fs::CWD;
+
+    let fs_fd = fsopen("vfat", FsOpenFlags::empty()).context("fsopen vfat")?;
+    fsconfig_set_path(fs_fd.as_fd(), "source", esp_device, CWD)
+        .context("fsconfig_set_path source")?;
+    fsconfig_create(fs_fd.as_fd()).context("fsconfig_create")?;
+    let mount_fd = fsmount(
+        fs_fd.as_fd(),
+        FsMountFlags::empty(),
+        MountAttrFlags::empty(),
+    )
+    .context("fsmount")?;
+    let target_dir = std::fs::File::open(target).context("open target dir for move_mount")?;
+    let target_fd = unsafe { BorrowedFd::borrow_raw(target_dir.as_raw_fd()) };
+    move_mount(
+        mount_fd.as_fd(),
+        "",
+        target_fd,
+        ".",
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )
+    .context("move_mount")?;
+    Ok(())
+}
+
+struct Mount {
+    path: PathBuf,
+    owned: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Efi {
-    mountpoint: RefCell<Option<PathBuf>>,
+    mountpoint: RefCell<Option<Mount>>,
 }
 
 impl Efi {
@@ -88,18 +125,18 @@ impl Efi {
                 break;
             }
         }
-
-        // Only borrow mutably if we found a mount point
         if let Some(mnt) = found_mount {
             log::debug!("Reusing existing mount point {mnt:?}");
-            *self.mountpoint.borrow_mut() = Some(mnt.clone());
+            *self.mountpoint.borrow_mut() = Some(Mount {
+                path: mnt.clone(),
+                owned: false,
+            });
             Ok(Some(mnt))
         } else {
             Ok(None)
         }
     }
 
-    // Mount the passed esp_device, return mount point
     pub(crate) fn mount_esp_device(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
         let mut mountpoint = None;
 
@@ -108,8 +145,16 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
+            #[cfg(target_os = "linux")]
+            if mount_esp(esp_device, &mnt).is_ok() {
+                log::debug!("Mounted at {mnt:?}");
+                mountpoint = Some(mnt);
+                break;
+            }
+            #[cfg(target_os = "linux")]
+            log::trace!("Mount failed, falling back to mount(8)");
             std::process::Command::new("mount")
-                .arg(&esp_device)
+                .arg(esp_device)
                 .arg(&mnt)
                 .run_inherited()
                 .with_context(|| format!("Failed to mount {:?}", esp_device))?;
@@ -118,16 +163,19 @@ impl Efi {
             break;
         }
         let mnt = mountpoint.ok_or_else(|| anyhow::anyhow!("No mount point found"))?;
-        *self.mountpoint.borrow_mut() = Some(mnt.clone());
+        *self.mountpoint.borrow_mut() = Some(Mount {
+            path: mnt.clone(),
+            owned: true,
+        });
         Ok(mnt)
     }
 
     // Firstly check if esp is already mounted, then mount the passed esp device
     pub(crate) fn ensure_mounted_esp(&self, root: &Path, esp_device: &Path) -> Result<PathBuf> {
-        if let Some(mountpoint) = self.mountpoint.borrow().as_deref() {
-            return Ok(mountpoint.to_owned());
+        if let Some(mount) = self.mountpoint.borrow().as_ref() {
+            return Ok(mount.path.clone());
         }
-        let destdir = if let Some(destdir) = self.get_mounted_esp(Path::new(root))? {
+        let destdir = if let Some(destdir) = self.get_mounted_esp(root)? {
             destdir
         } else {
             self.mount_esp_device(root, esp_device)?
@@ -136,12 +184,34 @@ impl Efi {
     }
 
     fn unmount(&self) -> Result<()> {
-        if let Some(mount) = self.mountpoint.borrow_mut().take() {
-            Command::new("umount")
-                .arg(&mount)
-                .run_inherited()
-                .with_context(|| format!("Failed to unmount {mount:?}"))?;
-            log::trace!("Unmounted");
+        // Only unmount if we mounted it ourselves
+        let should_unmount = self
+            .mountpoint
+            .borrow()
+            .as_ref()
+            .map(|m| m.owned)
+            .unwrap_or(false);
+        if should_unmount {
+            if let Some(mount) = self.mountpoint.borrow_mut().take() {
+                #[cfg(target_os = "linux")]
+                if rustix::mount::unmount(&mount.path, UnmountFlags::empty()).is_ok() {
+                    log::trace!("Unmounted (new mount API)");
+                } else {
+                    Command::new("umount")
+                        .arg(&mount.path)
+                        .run_inherited()
+                        .with_context(|| format!("Failed to unmount {:?}", mount.path))?;
+                    log::trace!("Unmounted");
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Command::new("umount")
+                        .arg(&mount.path)
+                        .run_inherited()
+                        .with_context(|| format!("Failed to unmount {:?}", mount.path))?;
+                    log::trace!("Unmounted");
+                }
+            }
         }
         Ok(())
     }
@@ -182,6 +252,114 @@ impl Efi {
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
         create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
+    }
+    /// Copy EFI components to ESP using the same "write alongside + atomic rename" pattern
+    /// as bootable container updates, so the system stays bootable if any step fails.
+    fn copy_efi_components_to_esp(
+        &self,
+        sysroot_dir: &openat::Dir,
+        esp_dir: &openat::Dir,
+        _esp_path: &Path,
+        efi_components: &[EFIComponent],
+    ) -> Result<()> {
+        // Build a merged source tree in a temp dir (same layout as desired ESP/EFI)
+        let temp_dir = tempfile::tempdir().context("Creating temp dir for EFI merge")?;
+        let temp_efi_path = temp_dir.path().join("EFI");
+        std::fs::create_dir_all(&temp_efi_path)
+            .with_context(|| format!("Creating {}", temp_efi_path.display()))?;
+        let temp_efi_str = temp_efi_path
+            .to_str()
+            .context("Temp EFI path is not valid UTF-8")?;
+
+        for efi_comp in efi_components {
+            log::info!(
+                "Merging EFI component {} version {} into update tree",
+                efi_comp.name,
+                efi_comp.version
+            );
+            // Copy contents of component's EFI dir (e.g. fedora/) into temp_efi_path so merged
+            // layout is EFI/fedora/..., not EFI/EFI/fedora/...
+            let src_efi_contents = format!("{}/.", efi_comp.path);
+            filetree::copy_dir_with_args(
+                sysroot_dir,
+                src_efi_contents.as_str(),
+                temp_efi_str,
+                OPTIONS,
+            )
+            .with_context(|| format!("Copying {} to merge dir", efi_comp.path))?;
+        }
+
+        // Ensure ESP/EFI exists (e.g. first install)
+        esp_dir.ensure_dir_all(std::path::Path::new("EFI"), 0o755)?;
+        let esp_efi_dir = esp_dir.sub_dir("EFI").context("Opening ESP EFI dir")?;
+
+        let source_dir =
+            openat::Dir::open(&temp_efi_path).context("Opening merged EFI source dir")?;
+        let source_filetree =
+            filetree::FileTree::new_from_dir(&source_dir).context("Building source filetree")?;
+        let current_filetree =
+            filetree::FileTree::new_from_dir(&esp_efi_dir).context("Building current filetree")?;
+        let diff = current_filetree
+            .diff(&source_filetree)
+            .context("Computing EFI diff")?;
+
+        // Check available space before writing to prevent partial updates when the partition is full
+        let required_bytes = current_filetree.total_size() + source_filetree.total_size();
+        let available_bytes = util::available_space_bytes(&esp_efi_dir)?;
+        if available_bytes < required_bytes {
+            anyhow::bail!(
+                "ESP has insufficient free space for update: need {} MiB, have {} MiB",
+                required_bytes / (1024 * 1024),
+                available_bytes / (1024 * 1024)
+            );
+        }
+
+        // Same logic as bootable container: write to .btmp.* then atomic rename
+        filetree::apply_diff(&source_dir, &esp_efi_dir, &diff, None)
+            .context("Applying EFI update (write alongside + atomic rename)")?;
+
+        // Sync the whole ESP filesystem
+        fsfreeze_thaw_cycle(esp_dir.open_file(".")?)?;
+
+        Ok(())
+    }
+
+    /// Copy from /usr/lib/efi to boot/ESP. Caller provides sysroot (e.g. for recovery or tests).
+    fn package_mode_copy_to_boot_impl(&self, sysroot: &Path) -> Result<()> {
+        let sysroot_path = Utf8Path::from_path(sysroot)
+            .with_context(|| format!("Invalid UTF-8: {}", sysroot.display()))?;
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
+
+        let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => anyhow::bail!("No EFI components found in /usr/lib/efi"),
+        };
+
+        // First try to use an already mounted ESP
+        let esp_path = if let Some(mounted_esp) = self.get_mounted_esp(sysroot)? {
+            mounted_esp
+        } else {
+            let devices = blockdev::get_devices(sysroot)?;
+            let Some(esp_devices) = blockdev::find_colocated_esps(&devices)? else {
+                anyhow::bail!("No ESP found");
+            };
+            // find_colocated_esps returns Some only with a non-empty vec
+            let esp_device = esp_devices.first().unwrap();
+            self.ensure_mounted_esp(sysroot, Path::new(esp_device))?
+        };
+
+        let esp_dir = openat::Dir::open(&esp_path)
+            .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
+        validate_esp_fstype(&esp_dir)?;
+
+        self.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
+
+        log::info!(
+            "Successfully copied {} EFI component(s) to ESP at {}",
+            efi_comps.len(),
+            esp_path.display()
+        );
+        Ok(())
     }
 }
 
@@ -414,23 +592,19 @@ impl Component for Efi {
         } else {
             None
         };
-        let dest = destpath.to_str().with_context(|| {
-            format!(
-                "Include invalid UTF-8 characters in dest {}",
-                destpath.display()
-            )
-        })?;
 
         let efi_path = if let Some(efi_components) = efi_comps {
-            for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
-            }
+            // Use shared helper to copy components from /usr/lib/efi
+            self.copy_efi_components_to_esp(&src_dir, destd, &destpath, &efi_components)?;
             EFILIB
         } else {
             let updates = component_updatedirname(self);
             let src = updates
                 .to_str()
-                .context("Include invalid UTF-8 characters in path")?;
+                .with_context(|| format!("Invalid UTF-8: {}", updates.display()))?;
+            let dest = destpath
+                .to_str()
+                .with_context(|| format!("Invalid UTF-8: {}", destpath.display()))?;
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
@@ -622,6 +796,11 @@ impl Component for Efi {
         } else {
             anyhow::bail!("Failed to find {SHIM} in the image")
         }
+    }
+
+    /// Package mode copy: Simple copy from /usr/lib/efi to boot/ESP.
+    fn package_mode_copy_to_boot(&self, root: &Path) -> Result<()> {
+        self.package_mode_copy_to_boot_impl(root)
     }
 }
 
@@ -918,7 +1097,6 @@ Boot0003* test";
         );
         Ok(())
     }
-    #[cfg(test)]
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir("etc")?;
@@ -948,7 +1126,7 @@ Boot0003* test";
         {
             tmpd.atomic_write(
                 "etc/system-release",
-                "Red Hat Enterprise Linux CoreOS release 4
+                r"Red Hat Enterprise Linux CoreOS release 4
                 ",
             )?;
             let name = get_product_name(&tmpd)?;
@@ -992,6 +1170,151 @@ Boot0003* test";
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(efi_comps, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_package_mode_copy_to_boot_discovery() -> Result<()> {
+        // Test that we can discover components from /usr/lib/efi
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+
+        // Create mock EFI components
+        std::fs::create_dir_all(efi_path.join("shim/15.8-3/EFI/fedora"))?;
+        std::fs::create_dir_all(efi_path.join("grub2/2.12-28/EFI/fedora"))?;
+
+        // Write some test files
+        std::fs::write(
+            efi_path.join("shim/15.8-3/EFI/fedora/shimx64.efi"),
+            b"shim content",
+        )?;
+        std::fs::write(
+            efi_path.join("grub2/2.12-28/EFI/fedora/grubx64.efi"),
+            b"grub content",
+        )?;
+
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+
+        // Test component discovery
+        let efi_comps = match get_efi_component_from_usr(utf8_tpath, EFILIB)? {
+            Some(comps) if !comps.is_empty() => comps,
+            _ => {
+                anyhow::bail!("Should have found components");
+            }
+        };
+
+        // Verify we found the expected components
+        assert_eq!(efi_comps.len(), 2);
+        let names: Vec<_> = efi_comps.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"shim"));
+        assert!(names.contains(&"grub2"));
+
+        // Verify paths are correct
+        for comp in &efi_comps {
+            assert!(comp.path.starts_with("usr/lib/efi"));
+            assert!(comp.path.ends_with("EFI"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_package_mode_shim_installation() -> Result<()> {
+        // Test that shim can be installed from /usr/lib/efi to ESP
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+
+        // Create mock /usr/lib/efi structure with shim
+        let efi_path = tpath.join("usr/lib/efi");
+        let shim_path = efi_path.join("shim/15.8-3/EFI/fedora");
+        std::fs::create_dir_all(&shim_path)?;
+
+        // Write shim binary
+        let shim_content = b"mock shim binary content";
+        std::fs::write(shim_path.join(SHIM), shim_content)?;
+
+        // Create additional shim files that might be present
+        std::fs::write(shim_path.join("MokManager.efi"), b"mok manager content")?;
+        std::fs::write(shim_path.join("fbx64.efi"), b"fallback content")?;
+
+        // Create mock ESP directory structure (simulating /boot/efi in container)
+        let esp_path = tpath.join("boot/efi");
+        std::fs::create_dir_all(&esp_path)?;
+
+        // Create EFI directory in ESP
+        let esp_efi_path = esp_path.join("EFI");
+        std::fs::create_dir_all(&esp_efi_path)?;
+
+        // Set up sysroot directory
+        let sysroot_dir = openat::Dir::open(tpath)?;
+
+        // Get EFI components from usr/lib/efi
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+        assert!(efi_comps.is_some(), "Should find shim component");
+        let efi_comps = efi_comps.unwrap();
+        assert_eq!(efi_comps.len(), 1, "Should find exactly one component");
+        assert_eq!(efi_comps[0].name, "shim");
+        assert_eq!(efi_comps[0].version, "15.8-3");
+
+        // Create Efi instance and copy components to ESP
+        let esp_dir = openat::Dir::open(&esp_path).context("Opening ESP dir for test")?;
+        let efi = Efi::default();
+        efi.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
+
+        // Expected path: /boot/efi/EFI/fedora/shimx64.efi (or shimaa64.efi, etc.)
+        let copied_shim_path = esp_path.join("EFI/fedora").join(SHIM);
+        assert!(
+            copied_shim_path.exists(),
+            "Shim should be copied to ESP at {}",
+            copied_shim_path.display()
+        );
+
+        // Verify the shim file is actually a file, not a directory
+        assert!(
+            copied_shim_path.is_file(),
+            "Shim should be a file at {}",
+            copied_shim_path.display()
+        );
+
+        // Verify the content matches exactly
+        let copied_content = std::fs::read(&copied_shim_path)?;
+        assert_eq!(
+            copied_content, shim_content,
+            "Shim content should match exactly"
+        );
+
+        // Verify the directory structure is correct
+        assert!(
+            esp_path.join("EFI").exists(),
+            "EFI directory should exist in ESP at {}",
+            esp_path.join("EFI").display()
+        );
+        assert!(esp_path.join("EFI").is_dir(), "EFI should be a directory");
+
+        assert!(
+            esp_path.join("EFI/fedora").exists(),
+            "Vendor directory (fedora) should exist in ESP at {}",
+            esp_path.join("EFI/fedora").display()
+        );
+        assert!(
+            esp_path.join("EFI/fedora").is_dir(),
+            "EFI/fedora should be a directory"
+        );
+
+        // Verify the path structure matches expected package mode layout
+        // Source: /usr/lib/efi/shim/15.8-3/EFI/fedora/shimx64.efi
+        // Dest:   /boot/efi/EFI/fedora/shimx64.efi
+        let expected_base = esp_path.join("EFI/fedora");
+        assert_eq!(
+            copied_shim_path.parent(),
+            Some(expected_base.as_path()),
+            "Shim should be directly under EFI/fedora/, not in a subdirectory"
+        );
+
         Ok(())
     }
 }
