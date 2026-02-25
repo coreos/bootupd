@@ -79,6 +79,9 @@ pub(crate) trait Component {
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
+
+    /// Copy from /usr/lib/efi to boot/ESP (package mode)
+    fn package_mode_copy_to_boot(&self, root: &Path) -> Result<()>;
 }
 
 /// Given a component name, create an implementation.

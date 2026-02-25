@@ -724,6 +724,22 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     Ok(())
 }
 
+/// Copy bootloader files from /usr/lib/efi to boot/ESP for package mode installations.
+pub(crate) fn copy_to_boot(root: &Path) -> Result<()> {
+    let all_components = get_components_impl(false);
+    if all_components.is_empty() {
+        anyhow::bail!("No components available for this platform.");
+    }
+
+    for component in all_components.values() {
+        component
+            .package_mode_copy_to_boot(root)
+            .with_context(|| format!("Failed to copy component {} to boot", component.name()))?;
+    }
+
+    Ok(())
+}
+
 /// Writes a stripped GRUB config to `stripped_config_name`, removing lines between
 /// `### BEGIN /etc/grub.d/15_ostree ###` and `### END /etc/grub.d/15_ostree ###`.
 fn strip_grub_config_file(

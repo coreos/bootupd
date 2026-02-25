@@ -276,4 +276,9 @@ impl Component for Bios {
     fn get_efi_vendor(&self, _: &Path) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Package mode copy is EFI-only
+    fn package_mode_copy_to_boot(&self, _root: &Path) -> Result<()> {
+        Ok(())
+    }
 }
