@@ -1,0 +1,32 @@
+# This prepare is used to control when bootupd is installed using
+# the distribution package or when it is built from source in the test environment
+prepare:
+  - name: Set BOOTUPD_BIN_DIR when built from source
+    when: use_built_from_src is defined and use_built_from_src == true
+    how: shell
+    script: |
+      set -x -e -o pipefail
+      echo "Preparing the test environment"
+      BOOTUPD_BIN_NAME="bootupd"
+      PARENT_DIR=$(dirname "${TMT_TREE}")
+      BOOTUPD_BIN_FULL_PATH=$(find "${PARENT_DIR}" -type f -name "${BOOTUPD_BIN_NAME}")
+      if [ -z "${BOOTUPD_BIN_FULL_PATH}" ]; then
+          echo "bootupd file not found."
+          exit 1
+      elif [ "$(echo "${BOOTUPD_BIN_FULL_PATH}" | wc -l)" -gt 1 ]; then
+          echo "error: found multiple 'bootupd' binaries:" >&2
+          echo "${BOOTUPD_BIN_FULL_PATH}" >&2
+          exit 1
+      fi
+      BOOTUPD_BIN_DIR=$(dirname "${BOOTUPD_BIN_FULL_PATH}")
+      echo "BOOTUPD_BIN_DIR=${BOOTUPD_BIN_DIR}" > /tmp/bootupd_bin_dir
+  - name: Install bootupd package
+    when: use_built_from_src is not defined or use_built_from_src == false
+    how: install
+    package: bootupd
+  - name: Set BOOTUPD_BIN_DIR when installed package
+    when: use_built_from_src is not defined or use_built_from_src == false
+    how: shell
+    script: |
+      set -x -e -o pipefail
+      echo "BOOTUPD_BIN_DIR=/usr/libexec"  > /tmp/bootupd_bin_dir
