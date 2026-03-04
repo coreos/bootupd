@@ -81,7 +81,7 @@ pub(crate) trait Component {
     ) -> Result<InstalledContent>;
 
     /// Used on the client to validate an installed version.
-    fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
+    fn validate(&self, current: &InstalledContent, device: &Device) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
