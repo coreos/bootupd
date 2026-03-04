@@ -20,7 +20,11 @@ pub(crate) enum ValidationResult {
     Errors(Vec<String>),
 }
 
-/// A component along with a possible update
+/// A bootloader subsystem (EFI or BIOS) that can be installed, updated, and validated.
+///
+/// Components encapsulate platform-specific bootloader management. Each implementation
+/// handles installing bootloader files during image builds, applying updates at runtime,
+/// and optionally adopting existing installations not originally managed by bootupd.
 pub(crate) trait Component {
     /// Returns the name of the component; this will be used for serialization
     /// and should remain stable.
