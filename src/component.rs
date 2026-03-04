@@ -10,6 +10,8 @@ use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use bootc_internal_blockdev::Device;
+
 use crate::{bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -33,7 +35,7 @@ pub(crate) trait Component {
     /// In an operating system whose initially booted disk image is not
     /// using bootupd, detect whether it looks like the component exists
     /// and "synthesize" content metadata from it.
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>>;
+    fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>>;
 
     // Backup the current grub config, and install static grub config from tree
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()>;
@@ -57,7 +59,7 @@ pub(crate) trait Component {
         &self,
         src_root: &str,
         dest_root: &str,
-        device: &str,
+        device: Option<&Device>,
         update_firmware: bool,
     ) -> Result<InstalledContent>;
 

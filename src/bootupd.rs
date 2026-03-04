@@ -31,6 +31,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use bootc_internal_blockdev::Device;
+
 pub(crate) enum ConfigMode {
     None,
     Static,
@@ -50,15 +52,12 @@ impl ConfigMode {
 pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
-    device: Option<&str>,
+    devices: &[Device],
     configs: ConfigMode,
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
 ) -> Result<()> {
-    // TODO: Change this to an Option<&str>; though this probably balloons into having
-    // DeviceComponent and FileBasedComponent
-    let device = device.unwrap_or("");
     let source_root_dir = openat::Dir::open(source_root).context("Opening source root")?;
     SavedState::ensure_not_present(dest_root)
         .context("failed to install, invalid re-install attempted")?;
@@ -90,8 +89,8 @@ pub(crate) fn install(
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
     for &component in target_components.iter() {
-        // skip for BIOS if device is empty
-        if component.name() == "BIOS" && device.is_empty() {
+        // skip for BIOS if no devices specified
+        if component.name() == "BIOS" && devices.is_empty() {
             println!(
                 "Skip installing component {} without target device",
                 component.name()
@@ -518,15 +517,18 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
 pub struct RootContext {
     pub sysroot: openat::Dir,
     pub path: Utf8PathBuf,
-    pub devices: Vec<String>,
+
+    // The block device backing the root filesystem.
+    // This is used to determine the device to install to for components that need it, and also passed to component update/adoption logic which may need it for validation or other purposes.
+    pub device: Device,
 }
 
 impl RootContext {
-    fn new(sysroot: openat::Dir, path: &str, devices: Vec<String>) -> Self {
+    fn new(sysroot: openat::Dir, path: &str, device: Device) -> Self {
         Self {
             sysroot,
             path: Utf8Path::new(path).into(),
-            devices,
+            device,
         }
     }
 }
@@ -535,8 +537,8 @@ impl RootContext {
 fn prep_before_update() -> Result<RootContext> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
-    Ok(RootContext::new(sysroot, path, devices))
+    let device = bootc_internal_blockdev::list_dev(Utf8Path::new(path).into())?;
+    Ok(RootContext::new(sysroot, path, device))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {

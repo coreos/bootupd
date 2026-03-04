@@ -7,7 +7,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::process::Command;
 
-use crate::blockdev;
+use bootc_internal_blockdev::Device;
+
 use crate::bootupd::RootContext;
 use crate::component::*;
 use crate::freezethaw::fsfreeze_thaw_cycle;
@@ -110,16 +111,18 @@ impl Component for Bios {
         &self,
         src_root: &str,
         dest_root: &str,
-        device: &str,
+        device: Option<&Device>,
         _update_firmware: bool,
     ) -> Result<InstalledContent> {
+        let device =
+            device.ok_or_else(|| anyhow::anyhow!("BIOS component requires a target device"))?;
         let src_dir = openat::Dir::open(src_root)
             .with_context(|| format!("opening source directory {src_root}"))?;
         let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        self.run_grub_install(dest_root, device)?;
+        self.run_grub_install(dest_root, &device.path())?;
         Ok(InstalledContent {
             meta,
             filetree: None,
@@ -140,7 +143,7 @@ impl Component for Bios {
         Ok(Some(meta))
     }
 
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+    fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
         if crate::efi::is_efi_booted()? && devices.is_none() {
             log::debug!("Skip BIOS adopt");
@@ -214,7 +217,7 @@ impl Component for Bios {
         update: &ContentMetadata,
         with_static_config: bool,
     ) -> Result<Option<InstalledContent>> {
-        let bios_devices = blockdev::find_colocated_bios_boot(&rootcxt.devices)?;
+        let bios_devices = rootcxt.device.find_colocated_bios_boot()?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
             return Ok(None);
         };
