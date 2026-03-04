@@ -5,6 +5,7 @@
  */
 
 use std::cell::RefCell;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,13 +24,15 @@ use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
 use widestring::U16CString;
 
+use bootc_internal_blockdev::Device;
+
 use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
 use crate::util;
-use crate::{blockdev, filetree, grubconfigs};
 use crate::{component::*, packagesystem::*};
+use crate::{filetree, grubconfigs};
 
 /// Well-known paths to the ESP that may have been mounted external to us.
 pub(crate) const ESP_MOUNTS: &[&str] = &["boot/efi", "efi", "boot"];
@@ -147,7 +150,12 @@ impl Efi {
     }
 
     #[context("Updating EFI firmware variables")]
-    fn update_firmware(&self, device: &str, espdir: &openat::Dir, vendordir: &str) -> Result<()> {
+    fn update_firmware(
+        &self,
+        device: &Device,
+        espdir: &openat::Dir,
+        vendordir: &str,
+    ) -> Result<()> {
         if !is_efi_booted()? {
             log::debug!("Not booted via EFI, skipping firmware update");
             return Ok(());
@@ -177,11 +185,15 @@ impl Efi {
         log::debug!("Get product name: '{product_name}'");
         assert!(product_name.len() > 0);
 
-        let esp_part_num = blockdev::get_esp_partition_number(device)?;
+        // Multi-device is handled by the caller: Efi::install() is called once
+        // per device in the loop at bootupd.rs install(), so each device's ESP
+        // gets its firmware updated individually.
+        let esp_part_num = device.get_esp_partition_number()?;
 
         // clear all the boot entries that match the target name
         clear_efi_target(&product_name)?;
-        create_efi_boot_entry(device, esp_part_num.trim(), &loader, &product_name)
+        let device_path = device.path();
+        create_efi_boot_entry(&device_path, esp_part_num.trim(), &loader, &product_name)
     }
 }
 
@@ -268,7 +280,7 @@ impl Component for Efi {
         "EFI"
     }
 
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+    fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>> {
         if devices.is_none() {
             log::trace!("No ESP detected");
             return Ok(None);
@@ -317,7 +329,7 @@ impl Component for Efi {
         updatemeta: &ContentMetadata,
         with_static_config: bool,
     ) -> Result<Option<InstalledContent>> {
-        let esp_devices = blockdev::find_colocated_esps(&rootcxt.devices)?;
+        let esp_devices = rootcxt.device.find_colocated_esps()?;
         let Some(meta) = self.query_adopt(&esp_devices)? else {
             return Ok(None);
         };
@@ -339,7 +351,8 @@ impl Component for Efi {
 
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices {
-            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+            let destpath =
+                &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
 
             let efidir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
             validate_esp_fstype(&efidir)?;
@@ -379,7 +392,7 @@ impl Component for Efi {
         &self,
         src_root: &str,
         dest_root: &str,
-        device: &str,
+        device: Option<&Device>,
         update_firmware: bool,
     ) -> Result<InstalledContent> {
         let src_dir = openat::Dir::open(src_root)
@@ -389,19 +402,24 @@ impl Component for Efi {
         };
         log::debug!("Found metadata {}", meta.version);
 
-        // Let's attempt to use an already mounted ESP at the target
-        // dest_root if one is already mounted there in a known ESP location.
-        let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
+        // Determine the destination path for the ESP.
+        // If a device is provided, find and mount its ESP partition (unmounting
+        // any previously mounted ESP first to target the correct device).
+        // If no device is provided, fall back to an already-mounted ESP.
+        let destpath = if let Some(dev) = device {
+            // Unmount any previously mounted ESP to ensure we install to the
+            // correct device. This is important for multi-device installs where
+            // each device has its own ESP.
+            self.unmount()?;
+
+            let esp_device = dev
+                .find_partition_of_esp()
+                .with_context(|| format!("Failed to find ESP device on {}", dev.path()))?;
+            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device.path()))?
+        } else if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
             destdir
         } else {
-            // Using `blockdev` to find the partition instead of partlabel because
-            // we know the target install toplevel device already.
-            if device.is_empty() {
-                anyhow::bail!("Device value not provided");
-            }
-            let esp_device = blockdev::get_esp_partition(device)?
-                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
-            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
+            anyhow::bail!("No device specified and no mounted ESP found");
         };
 
         let destd = &openat::Dir::open(&destpath)
@@ -438,8 +456,12 @@ impl Component for Efi {
         // Get filetree from efi path
         let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(efi_path)?)?;
         if update_firmware {
-            if let Some(vendordir) = self.get_efi_vendor(src_path.join(efi_path).as_std_path())? {
-                self.update_firmware(device, destd, &vendordir)?
+            if let Some(dev) = device {
+                if let Some(vendordir) =
+                    self.get_efi_vendor(src_path.join(efi_path).as_std_path())?
+                {
+                    self.update_firmware(dev, destd, &vendordir)?
+                }
             }
         }
         Ok(InstalledContent {
@@ -477,12 +499,13 @@ impl Component for Efi {
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 
-        let Some(esp_devices) = blockdev::find_colocated_esps(&rootcxt.devices)? else {
+        let Some(esp_devices) = rootcxt.device.find_colocated_esps()? else {
             anyhow::bail!("Failed to find all esp devices");
         };
 
         for esp in esp_devices {
-            let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
+            let destpath =
+                &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
             let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
@@ -560,8 +583,8 @@ impl Component for Efi {
     }
 
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        let devices = crate::blockdev::get_devices("/").context("get parent devices")?;
-        let esp_devices = blockdev::find_colocated_esps(&devices)?;
+        let device = bootc_internal_blockdev::list_dev(Utf8Path::new("/").into())?;
+        let esp_devices = device.find_colocated_esps()?;
         if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
         }
@@ -573,7 +596,7 @@ impl Component for Efi {
         let mut errs = Vec::new();
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices.iter() {
-            let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
+            let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp.path()))?;
 
             let efidir = openat::Dir::open(&destpath.join("EFI"))
                 .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
