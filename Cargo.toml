@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bootc-internal-blockdev = "0.1.0"
+bootc-internal-blockdev = { git = "https://github.com/bootc-dev/bootc" }
 bootc-internal-utils = "0.1.0"
 cap-std-ext = "4.0.7"
 camino = "1.2.2"
