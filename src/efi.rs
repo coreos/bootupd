@@ -5,7 +5,6 @@
  */
 
 use std::cell::RefCell;
-use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,6 +60,26 @@ const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 /// The options of cp command for installation
 const OPTIONS: &[&str] = &["-rp", "--reflink=auto"];
 
+/// Check if the given path is a mount point via statx(MOUNT_ROOT).
+fn is_mount_point(path: &Path) -> Result<bool> {
+    use rustix::fs::{AtFlags, StatxAttributes, StatxFlags};
+    // See https://github.com/coreos/cap-std-ext/blob/5493d689/src/dirext.rs#L514
+    // CWD is unused here because callers always pass absolute paths.
+    let r = rustix::fs::statx(
+        rustix::fs::CWD,
+        path,
+        AtFlags::NO_AUTOMOUNT | AtFlags::SYMLINK_NOFOLLOW,
+        StatxFlags::empty(),
+    )?;
+    if r.stx_attributes_mask.contains(StatxAttributes::MOUNT_ROOT) {
+        Ok(r.stx_attributes.contains(StatxAttributes::MOUNT_ROOT))
+    } else {
+        anyhow::bail!(
+            "could not determine if {path:?} is a mount point (kernel too old for MOUNT_ROOT)"
+        )
+    }
+}
+
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
     Path::new("/sys/firmware/efi")
@@ -91,9 +110,7 @@ impl Efi {
                 // different device than its parent. Without this check, a vfat
                 // subdirectory (e.g. /boot/efi on a vfat /boot) could be
                 // misidentified as a mounted ESP.
-                let path_dev = std::fs::metadata(&path)?.dev();
-                let parent_dev = std::fs::metadata(path.parent().unwrap_or(&path))?.dev();
-                if path_dev == parent_dev {
+                if !is_mount_point(&path)? {
                     // Same device as parent - this is a subdirectory, not a mount point
                     log::debug!("Skipping {path:?}: vfat but not a mount point");
                     continue;
@@ -123,6 +140,18 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
+
+            // Check if the target is already a mounted ESP (e.g. the host
+            // already has the ESP mounted when running install-to-filesystem).
+            let st = rustix::fs::statfs(&mnt)?;
+            if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                if is_mount_point(&mnt)? {
+                    log::debug!("ESP already mounted at {mnt:?}, reusing");
+                    mountpoint = Some(mnt);
+                    break;
+                }
+            }
+
             std::process::Command::new("mount")
                 .arg(&esp_device)
                 .arg(&mnt)
