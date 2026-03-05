@@ -123,6 +123,20 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
+
+            // Check if the target is already a mounted ESP (e.g. the host
+            // already has the ESP mounted when running install-to-filesystem).
+            let st = rustix::fs::statfs(&mnt)?;
+            if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                let path_dev = std::fs::metadata(&mnt)?.dev();
+                let parent_dev = std::fs::metadata(mnt.parent().unwrap_or(&mnt))?.dev();
+                if path_dev != parent_dev {
+                    log::debug!("ESP already mounted at {mnt:?}, reusing");
+                    mountpoint = Some(mnt);
+                    break;
+                }
+            }
+
             std::process::Command::new("mount")
                 .arg(&esp_device)
                 .arg(&mnt)
