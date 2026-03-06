@@ -54,6 +54,7 @@ if [ "$TMT_REBOOT_COUNT" -eq 0 ]; then
     # change grub.efi and it will be synced after copy-to-boot
     echo test > "${grub_target_path}"
     bootupctl backend copy-to-boot
+    sync
 
     # get checksum from source /usr/lib/efi/grub2/xx/EFI/fedora/grub.efi
     source_checksum=$(sha256sum "${grub_source_path}" | cut -d' ' -f1)
