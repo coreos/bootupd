@@ -23,8 +23,6 @@ use rustix::mount::{
     fsconfig_create, fsconfig_set_path, fsmount, fsopen, move_mount, FsMountFlags, FsOpenFlags,
     MountAttrFlags, MoveMountFlags, UnmountFlags,
 };
-use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
-use walkdir::WalkDir;
 use widestring::U16CString;
 
 use bootc_internal_blockdev::Device;
@@ -95,19 +93,19 @@ fn mount_esp(esp_device: &Path, target: &Path) -> Result<()> {
     use rustix::fs::CWD;
 
     let fs_fd = fsopen("vfat", FsOpenFlags::empty()).context("fsopen vfat")?;
-    fsconfig_set_path(fs_fd.as_fd(), "source", esp_device, CWD)
+    fsconfig_set_path(rustix::fd::AsFd::as_fd(&fs_fd), "source", esp_device, CWD)
         .context("fsconfig_set_path source")?;
-    fsconfig_create(fs_fd.as_fd()).context("fsconfig_create")?;
+    fsconfig_create(rustix::fd::AsFd::as_fd(&fs_fd)).context("fsconfig_create")?;
     let mount_fd = fsmount(
-        fs_fd.as_fd(),
+        rustix::fd::AsFd::as_fd(&fs_fd),
         FsMountFlags::empty(),
         MountAttrFlags::empty(),
     )
     .context("fsmount")?;
     let target_dir = std::fs::File::open(target).context("open target dir for move_mount")?;
-    let target_fd = unsafe { BorrowedFd::borrow_raw(target_dir.as_raw_fd()) };
+    let target_fd = unsafe { rustix::fd::BorrowedFd::borrow_raw(target_dir.as_raw_fd()) };
     move_mount(
-        mount_fd.as_fd(),
+        rustix::fd::AsFd::as_fd(&mount_fd),
         "",
         target_fd,
         ".",
@@ -263,10 +261,10 @@ impl Efi {
         let efi = sysroot
             .open_dir(EFIVARFS.strip_prefix("/").unwrap())
             .context("Opening efivars dir")?;
-        let st = rustix::fs::fstatvfs(efi.as_fd())?;
+        let st = rustix::fs::fstatvfs(rustix::fd::AsFd::as_fd(&efi))?;
         // Do nothing if efivars is readonly or empty
         // See https://github.com/coreos/bootupd/issues/972
-        if st.f_flag.contains(StatVfsMountFlags::RDONLY)
+        if st.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
             || std::fs::read_dir(EFIVARFS)?.next().is_none()
         {
             log::info!("Skipped EFI variables update: efivars not writable or empty");
@@ -318,8 +316,6 @@ impl Efi {
                 efi_comp.name,
                 efi_comp.version
             );
-            // Copy contents of component's EFI dir (e.g. fedora/) into temp_efi_path so merged
-            // layout is EFI/fedora/..., not EFI/EFI/fedora/...
             let src_efi_contents = format!("{}/.", efi_comp.path);
             filetree::copy_dir_with_args(
                 sysroot_dir,
@@ -330,7 +326,6 @@ impl Efi {
             .with_context(|| format!("Copying {} to merge dir", efi_comp.path))?;
         }
 
-        // Ensure ESP/EFI exists (e.g. first install)
         esp_dir.ensure_dir_all(std::path::Path::new("EFI"), 0o755)?;
         let esp_efi_dir = esp_dir.sub_dir("EFI").context("Opening ESP EFI dir")?;
 
@@ -370,7 +365,6 @@ impl Efi {
     fn package_mode_copy_to_boot_impl(&self, sysroot: &Path) -> Result<()> {
         let sysroot_path = Utf8Path::from_path(sysroot)
             .with_context(|| format!("Invalid UTF-8: {}", sysroot.display()))?;
-        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
 
         let efi_comps = match get_efi_component_from_usr(sysroot_path, EFILIB)? {
             Some(comps) if !comps.is_empty() => comps,
@@ -398,6 +392,7 @@ impl Efi {
             .with_context(|| format!("Opening ESP at {}", esp_path.display()))?;
         validate_esp_fstype(&esp_dir)?;
 
+        let sysroot_dir = openat::Dir::open(sysroot).context("Opening sysroot for reading")?;
         self.copy_efi_components_to_esp(&sysroot_dir, &esp_dir, &esp_path, &efi_comps)?;
 
         log::info!(
@@ -868,7 +863,7 @@ impl Drop for Efi {
 }
 
 fn validate_esp_fstype(dir: &openat::Dir) -> Result<()> {
-    let dir = unsafe { BorrowedFd::borrow_raw(dir.as_raw_fd()) };
+    let dir = unsafe { rustix::fd::BorrowedFd::borrow_raw(dir.as_raw_fd()) };
     let stat = rustix::fs::fstatfs(&dir)?;
     if stat.f_type != libc::MSDOS_SUPER_MAGIC {
         bail!(
@@ -958,7 +953,10 @@ pub(crate) fn create_efi_boot_entry(
 fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<PathBuf>> {
     let mut result = Vec::new();
 
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if entry.file_type().is_file() {
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == target_file {
@@ -988,7 +986,7 @@ fn get_efi_component_from_usr<'a>(
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
-    let mut components: Vec<EFIComponent> = WalkDir::new(&efilib_path)
+    let mut components: Vec<EFIComponent> = walkdir::WalkDir::new(&efilib_path)
         .min_depth(3) // <name>/<version>/EFI: so 3 levels down
         .max_depth(3)
         .into_iter()
@@ -1032,7 +1030,7 @@ fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
     if !efi.exists() {
         return Ok(());
     }
-    for entry in WalkDir::new(&efi) {
+    for entry in walkdir::WalkDir::new(&efi) {
         let entry = entry?;
 
         if entry.file_type().is_file() {
