@@ -145,7 +145,6 @@ impl Efi {
             if !mnt.exists() {
                 continue;
             }
-            #[cfg(target_os = "linux")]
             if mount_esp(esp_device, &mnt).is_ok() {
                 log::debug!("Mounted at {mnt:?}");
                 mountpoint = Some(mnt);
@@ -299,9 +298,10 @@ impl Efi {
             filetree::FileTree::new_from_dir(&source_dir).context("Building source filetree")?;
         let current_filetree =
             filetree::FileTree::new_from_dir(&esp_efi_dir).context("Building current filetree")?;
-        let diff = current_filetree
+        let mut diff = current_filetree
             .diff(&source_filetree)
             .context("Computing EFI diff")?;
+        diff.removals.clear();
 
         // Check available space before writing to prevent partial updates when the partition is full
         let required_bytes = current_filetree.total_size() + source_filetree.total_size();
