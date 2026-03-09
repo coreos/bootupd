@@ -148,6 +148,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
+ "cap-std-ext",
  "fn-error-context",
  "libc",
  "regex",
@@ -178,6 +179,44 @@ dependencies = [
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bootc-internal-utils"
+version = "0.1.0"
+source = "git+https://github.com/bootc-dev/bootc#df3e863fec17ea35ea5e12e4a21b323662d54a27"
+dependencies = [
+ "anstream 1.0.0",
+ "anyhow",
+ "cap-std-ext",
+ "chrono",
+ "owo-colors",
+ "rustix 1.1.3",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "bootc-mount"
+version = "0.0.0"
+source = "git+https://github.com/bootc-dev/bootc#df3e863fec17ea35ea5e12e4a21b323662d54a27"
+dependencies = [
+ "anyhow",
+ "bootc-internal-utils 0.1.0 (git+https://github.com/bootc-dev/bootc)",
+ "camino",
+ "cap-std-ext",
+ "fn-error-context",
+ "libc",
+ "rustix 1.1.3",
+ "serde",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -244,38 +283,40 @@ dependencies = [
 
 [[package]]
 name = "cap-primitives"
-version = "3.4.2"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc15faeed2223d8b8e8cc1857f5861935a06d06713c4ac106b722ae9ce3c369"
+checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
  "io-extras",
- "io-lifetimes",
+ "io-lifetimes 3.0.1",
  "ipnet",
  "maybe-owned",
- "rustix 0.38.44",
- "windows-sys 0.59.0",
+ "rustix 1.1.3",
+ "rustix-linux-procfs",
+ "windows-sys 0.61.1",
  "winx",
 ]
 
 [[package]]
 name = "cap-std"
-version = "3.4.2"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3dbd3e8e8d093d6ccb4b512264869e1281cdb032f7940bd50b2894f96f25609"
+checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
 dependencies = [
+ "camino",
  "cap-primitives",
  "io-extras",
- "io-lifetimes",
- "rustix 0.38.44",
+ "io-lifetimes 3.0.1",
+ "rustix 1.1.3",
 ]
 
 [[package]]
 name = "cap-std-ext"
-version = "4.0.7"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fe962d42e07c22aec2618191c3683412735b7e6dcd7bab2eec811ab4697c58e"
+checksum = "d201b8b353bc963f2e8c374be7866dba47082ff041fb0db2d7543f2b9c8367ce"
 dependencies = [
  "cap-primitives",
  "cap-tempfile",
@@ -285,14 +326,17 @@ dependencies = [
 
 [[package]]
 name = "cap-tempfile"
-version = "3.4.2"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ffa1c0edc4958d742bab2e903e52f93ccee482072680e08d6ce0784873e65b1"
+checksum = "42f22d5c0b1147e8bd9105fa004450f673c139d7e632f7edc3980f94a51f20f3"
 dependencies = [
+ "camino",
  "cap-std",
- "rand",
- "rustix 0.38.44",
+ "rand 0.9.2",
+ "rustix 1.1.3",
+ "rustix-linux-procfs",
  "uuid",
+ "windows-sys 0.61.1",
 ]
 
 [[package]]
@@ -627,12 +671,12 @@ dependencies = [
 
 [[package]]
 name = "io-extras"
-version = "0.18.4"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2285ddfe3054097ef4b2fe909ef8c3bcd1ea52a8f0d274416caebeef39f04a65"
+checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
- "io-lifetimes",
- "windows-sys 0.59.0",
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1225,10 +1269,8 @@ checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags 2.8.0",
  "errno",
- "itoa",
  "libc",
  "linux-raw-sys 0.4.15",
- "once_cell",
  "windows-sys 0.59.0",
 ]
 
