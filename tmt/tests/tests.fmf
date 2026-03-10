@@ -1,0 +1,7 @@
+/test-copy-to-boot:
+  summary: Test copy-to-boot on package mode
+  duration: 10m
+  adjust:
+    - when: distro != fedora
+      enabled: false
+  test: bash package/test-copy-to-boot.sh
