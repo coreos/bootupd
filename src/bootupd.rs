@@ -31,6 +31,10 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use bootc_internal_blockdev::Device;
+use cap_std::fs::Dir;
+use cap_std_ext::cap_std;
+
 pub(crate) enum ConfigMode {
     None,
     Static,
@@ -50,15 +54,12 @@ impl ConfigMode {
 pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
-    device: Option<&str>,
+    devices: &[Device],
     configs: ConfigMode,
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
 ) -> Result<()> {
-    // TODO: Change this to an Option<&str>; though this probably balloons into having
-    // DeviceComponent and FileBasedComponent
-    let device = device.unwrap_or("");
     let source_root_dir = openat::Dir::open(source_root).context("Opening source root")?;
     SavedState::ensure_not_present(dest_root)
         .context("failed to install, invalid re-install attempted")?;
@@ -90,8 +91,8 @@ pub(crate) fn install(
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
     for &component in target_components.iter() {
-        // skip for BIOS if device is empty
-        if component.name() == "BIOS" && device.is_empty() {
+        // skip for BIOS if no devices specified
+        if component.name() == "BIOS" && devices.is_empty() {
             println!(
                 "Skip installing component {} without target device",
                 component.name()
@@ -108,15 +109,70 @@ pub(crate) fn install(
             continue;
         }
 
-        let meta = component
-            .install(&source_root, dest_root, device, update_firmware)
-            .with_context(|| format!("installing component {}", component.name()))?;
-        log::info!("Installed {} {}", component.name(), meta.meta.version);
-        state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&Path::new(source_root))? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+        // Determine which devices to install to. For EFI, filter to only
+        // devices that have an ESP partition.
+        let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
+            // No devices specified: install once with auto-detection (None).
+            vec![None]
+        } else if component.name() == "EFI" {
+            // For EFI, only install to devices that have an ESP partition.
+            let esp_devices: Vec<&Device> = devices
+                .iter()
+                .filter(|dev| match dev.find_partition_of_esp() {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("Skipping device {} for EFI: {:#}", dev.path(), e);
+                        false
+                    }
+                })
+                .collect();
+            if esp_devices.is_empty() {
+                // No devices had a detectable ESP partition. This can happen with
+                // loopback devices or other setups where partition scanning fails.
+                // Fall back to auto-detection — the EFI component will look for
+                // an already-mounted ESP at the destination.
+                log::info!(
+                    "No ESP partitions detected on specified devices; \
+                     falling back to mounted ESP detection"
+                );
+                vec![None]
+            } else {
+                esp_devices.into_iter().map(Some).collect()
+            }
+        } else {
+            devices.iter().map(|dev| Some(dev)).collect()
+        };
+
+        for device in &devices_to_install {
+            let device_desc = device.map_or("(auto)".to_string(), |d| d.path());
+            let meta = component
+                .install(source_root, dest_root, *device, update_firmware)
+                .with_context(|| {
+                    format!(
+                        "installing component {} to device {}",
+                        component.name(),
+                        device_desc,
+                    )
+                })?;
+            log::info!(
+                "Installed {} {} to {}",
+                component.name(),
+                meta.meta.version,
+                device_desc,
+            );
+            // State is tracked per-component, not per-device. The metadata
+            // (version, filetree, etc.) is identical across all devices, so we
+            // only need to record it once. Updates and validation discover all
+            // colocated devices at runtime (e.g. via find_colocated_esps()).
+            if !state.installed.contains_key(component.name()) {
+                state.installed.insert(component.name().into(), meta);
+            }
+            // Yes this is a hack...the Component thing just turns out to be too generic.
+            if installed_efi_vendor.is_none() {
+                if let Some(vendor) = component.get_efi_vendor(Path::new(source_root))? {
+                    installed_efi_vendor = Some(vendor);
+                }
+            }
         }
     }
     let sysroot = &openat::Dir::open(dest_root)?;
@@ -368,6 +424,22 @@ pub(crate) fn adopt_and_update(
     }
 }
 
+/// Get the block device backing the current root by trying `/boot` first,
+/// then falling back to `/sysroot`. This avoids issues with virtual
+/// filesystems like composefs that are mounted on `/`.
+#[context("Finding block device from boot or sysroot")]
+fn list_dev_current_root() -> Result<Device> {
+    let auth = cap_std::ambient_authority();
+    for path in ["/boot", "/sysroot"] {
+        if let Ok(dir) = Dir::open_ambient_dir(path, auth) {
+            if let Ok(dev) = bootc_internal_blockdev::list_dev_by_dir(&dir) {
+                return Ok(dev);
+            }
+        }
+    }
+    anyhow::bail!("Failed to find block device from /boot or /sysroot")
+}
+
 /// daemon implementation of component validate
 pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let state = SavedState::load_from_disk("/")?.unwrap_or_default();
@@ -375,7 +447,8 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    component.validate(inst)
+    let device = list_dev_current_root()?;
+    component.validate(inst, &device)
 }
 
 pub(crate) fn status() -> Result<Status> {
@@ -518,15 +591,20 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
 pub struct RootContext {
     pub sysroot: openat::Dir,
     pub path: Utf8PathBuf,
-    pub devices: Vec<String>,
+
+    /// The block device backing the root filesystem.
+    ///
+    /// Used to determine the device to install to for components that need
+    /// it, and passed to component update/adoption logic for validation.
+    pub device: Device,
 }
 
 impl RootContext {
-    fn new(sysroot: openat::Dir, path: &str, devices: Vec<String>) -> Self {
+    fn new(sysroot: openat::Dir, path: &str, device: Device) -> Self {
         Self {
             sysroot,
             path: Utf8Path::new(path).into(),
-            devices,
+            device,
         }
     }
 }
@@ -535,8 +613,8 @@ impl RootContext {
 fn prep_before_update() -> Result<RootContext> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
-    Ok(RootContext::new(sysroot, path, devices))
+    let device = list_dev_current_root()?;
+    Ok(RootContext::new(sysroot, path, device))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
