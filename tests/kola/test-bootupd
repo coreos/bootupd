@@ -141,7 +141,7 @@ if [ -d /sys/firmware/efi ]; then
   update_metadata_move EFI-bak EFI
 
   # Should succeed if BIOS metadata is missing
-  rm -f ${bootupdir}/BIOS.json
+  bootupctl remove-component bios
   bootupctl update | tee out.txt
   assert_file_has_content out.txt 'Adopted and updated: EFI:'
   assert_not_file_has_content out.txt 'Adopted and updated: BIOS:'
@@ -156,7 +156,7 @@ else
   update_metadata_move BIOS-bak BIOS
 
   # Should succeed if EFI metadata is missing
-  rm -f ${bootupdir}/EFI.json
+  bootupctl remove-component efi
   bootupctl update | tee out.txt
   assert_file_has_content out.txt 'Adopted and updated: BIOS:'
   assert_not_file_has_content out.txt 'Adopted and updated: EFI:'

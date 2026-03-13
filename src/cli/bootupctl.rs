@@ -65,6 +65,8 @@ pub enum CtlVerb {
         about = "Migrate a system to a static GRUB config"
     )]
     MigrateStaticGrubConfig,
+    #[clap(name = "remove-component", about = "Remove component")]
+    RemoveComponent(RemoveComponentOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -95,6 +97,13 @@ pub struct AdoptAndUpdateOpts {
     with_static_config: bool,
 }
 
+#[derive(Debug, Parser)]
+pub struct RemoveComponentOpts {
+    /// Component name to be removed
+    #[clap(value_parser)]
+    component: String,
+}
+
 impl CtlCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
@@ -103,6 +112,7 @@ impl CtlCommand {
             CtlVerb::Update => Self::run_update(),
             CtlVerb::AdoptAndUpdate(opts) => Self::run_adopt_and_update(opts),
             CtlVerb::Validate => Self::run_validate(),
+            CtlVerb::RemoveComponent(opts) => Self::run_remove_component(opts),
             CtlVerb::Backend(CtlBackend::Generate(opts)) => {
                 super::bootupd::DCommand::run_generate_meta(opts)
             }
@@ -149,6 +159,11 @@ impl CtlCommand {
     fn run_validate() -> Result<()> {
         ensure_running_in_systemd()?;
         bootupd::client_run_validate()
+    }
+
+    /// Runner for `remove-component` verb.
+    fn run_remove_component(opts: RemoveComponentOpts) -> Result<()> {
+        bootupd::client_run_remove_component(&opts.component)
     }
 
     /// Runner for `migrate-static-grub-config` verb.

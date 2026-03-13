@@ -24,8 +24,8 @@ if [ "$container" ] || [ -f /run/.containerenv ] || [ -f /.dockerenv ]; then
   if [ "${arch}" == "x86_64" ]; then
     [ "${components_text_x86_64}" == "${output_text}" ]
     [ "${components_json_x86_64}" == "${output_json}" ]
-    # test if BIOS.json is missing
-    mv /usr/lib/bootupd/updates/BIOS.json{,-bak}
+    # test with no BIOS.json
+    bootupctl remove-component bios
     output_text=$(bootupctl status | tr -d '\r')
     output_json=$(bootupctl status --json)
   fi
@@ -35,13 +35,18 @@ if [ "$container" ] || [ -f /run/.containerenv ] || [ -f /.dockerenv ]; then
       [ "${components_json_aarch64}" == "${output_json}" ]
   fi
 
-  # test if no components
-  mv /usr/lib/bootupd/updates/EFI.json{,-bak}
+  # test with no components
+  bootupctl remove-component efi
   output_text=$(bootupctl status | tr -d '\r')
   output_json=$(bootupctl status --json)
   [ -z "${output_text}" ]
   [ "${none_components_json}" == "${output_json}" ]
 
+  # remove none existing component  
+  if bootupctl remove-component test 2>err.txt; then
+    echo "unexpectedly passed remove none existing component"
+    exit 1
+  fi
 else
   echo "Skip running as not in container"
 fi
