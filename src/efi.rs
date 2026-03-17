@@ -560,7 +560,9 @@ impl Component for Efi {
     }
 
     fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        let devices = crate::blockdev::get_devices("/").context("get parent devices")?;
+        let Some(devices) = crate::blockdev::get_devices("/")? else {
+            return Ok(ValidationResult::Skip);
+        };
         let esp_devices = blockdev::find_colocated_esps(&devices)?;
         if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
