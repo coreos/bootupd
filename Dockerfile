@@ -26,8 +26,11 @@ COPY --from=build /out/ /
 # Remove /var/roothome as workaround
 RUN <<EORUN
 set -xeuo pipefail
-[ -d /var/roothome ] && rm -rf /var/roothome
+rm -rf /var/roothome
 EORUN
-# Sanity check this too
-RUN bootc container lint --fatal-warnings
+# Install CI test scripts (used by bcvk ephemeral smoke tests)
+COPY --from=build /build/ci/ephemeral-test.sh /usr/libexec/bootupd-tests/ephemeral-test.sh
+# Sanity check this too; don't use --fatal-warnings as some base images
+# have pre-existing warnings (e.g. /run/systemd content in Fedora).
+RUN bootc container lint
 
