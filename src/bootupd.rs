@@ -531,17 +531,28 @@ impl RootContext {
     }
 }
 
-/// Initialize parent devices to prepare the update
-fn prep_before_update() -> Result<RootContext> {
+/// Initialize parent devices to prepare the update.
+///
+/// Returns `Ok(None)` when the root has no block-backed boot filesystem,
+/// meaning there is no on-disk bootloader to manage. This happens in
+/// environments like virtiofs (bcvk ephemeral), NFS root, ISO boot, etc.
+fn prep_before_update() -> Result<Option<RootContext>> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
-    Ok(RootContext::new(sysroot, path, devices))
+    let Some(devices) = crate::blockdev::get_devices(path)? else {
+        println!(
+            "No block-backed boot filesystem found; bootloader update is not applicable, skipping."
+        );
+        return Ok(None);
+    };
+    Ok(Some(RootContext::new(sysroot, path, devices)))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
     crate::try_fail_point!("update");
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.components.is_empty() && status.adoptable.is_empty() {
         println!("No components installed.");
@@ -596,7 +607,9 @@ pub(crate) fn client_run_update() -> Result<()> {
 }
 
 pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");

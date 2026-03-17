@@ -5,8 +5,13 @@ use anyhow::{Context, Result};
 use bootc_internal_blockdev::PartitionTable;
 use fn_error_context::context;
 
+/// Try to find the block devices backing `/boot` or `/sysroot`.
+///
+/// Returns `Ok(None)` when neither path has a block-backed filesystem (e.g.
+/// virtiofs, NFS, ISO 9660). This is normal for environments without an
+/// on-disk bootloader.
 #[context("get parent devices from mount point boot or sysroot")]
-pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
+pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Option<Vec<String>>> {
     let target_root = target_root.as_ref();
     let mut source = None;
 
@@ -26,14 +31,14 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
 
     let source = match source {
         Some(s) => s,
-        None => anyhow::bail!("Failed to inspect filesystem from boot or sysroot"),
+        None => return Ok(None),
     };
 
     // Find the parent devices of the source path
     let parent_devices = bootc_internal_blockdev::find_parent_devices(&source)
         .with_context(|| format!("While looking for backing devices of {}", source))?;
     log::debug!("Found parent devices: {parent_devices:?}");
-    Ok(parent_devices)
+    Ok(Some(parent_devices))
 }
 
 /// Find esp partition on the same device
