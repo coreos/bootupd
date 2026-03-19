@@ -7,7 +7,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::process::Command;
 
-use crate::blockdev;
+use bootc_internal_blockdev::Device;
+
 use crate::bootupd::RootContext;
 use crate::component::*;
 use crate::freezethaw::fsfreeze_thaw_cycle;
@@ -110,16 +111,20 @@ impl Component for Bios {
         &self,
         src_root: &str,
         dest_root: &str,
-        device: &str,
+        device: Option<&Device>,
         _update_firmware: bool,
     ) -> Result<InstalledContent> {
+        let device =
+            device.ok_or_else(|| anyhow::anyhow!("BIOS component requires a target device"))?;
         let src_dir = openat::Dir::open(src_root)
             .with_context(|| format!("opening source directory {src_root}"))?;
         let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        self.run_grub_install(dest_root, device)?;
+        self.run_grub_install(dest_root, &device.path())
+            .with_context(|| format!("installing GRUB on {}", device.path()))?;
+
         Ok(InstalledContent {
             meta,
             filetree: None,
@@ -140,7 +145,7 @@ impl Component for Bios {
         Ok(Some(meta))
     }
 
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>> {
+    fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>> {
         #[cfg(target_arch = "x86_64")]
         if crate::efi::is_efi_booted()? && devices.is_none() {
             log::debug!("Skip BIOS adopt");
@@ -214,14 +219,17 @@ impl Component for Bios {
         update: &ContentMetadata,
         with_static_config: bool,
     ) -> Result<Option<InstalledContent>> {
-        let bios_devices = blockdev::find_colocated_bios_boot(&rootcxt.devices)?;
+        let bios_devices = rootcxt.device.find_colocated_bios_boot()?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
             return Ok(None);
         };
 
-        for parent in rootcxt.devices.iter() {
-            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-            log::debug!("Installed grub modules on {parent}");
+        // Install grub onto each parent (whole-disk) device. For BIOS boot on
+        // multi-disk setups (e.g. RAID), grub must be written to every backing
+        // disk's MBR/BIOS-boot partition so the system can boot from any one.
+        for parent in rootcxt.device.find_all_roots()? {
+            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            log::debug!("Installed grub modules on {}", parent.path());
         }
 
         if with_static_config {
@@ -256,9 +264,9 @@ impl Component for Bios {
             .query_update(&rootcxt.sysroot)?
             .expect("update available");
 
-        for parent in rootcxt.devices.iter() {
-            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-            log::debug!("Installed grub modules on {parent}");
+        for parent in rootcxt.device.find_all_roots()? {
+            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            log::debug!("Installed grub modules on {}", parent.path());
         }
 
         let adopted_from = None;
@@ -269,7 +277,7 @@ impl Component for Bios {
         })
     }
 
-    fn validate(&self, _: &InstalledContent) -> Result<ValidationResult> {
+    fn validate(&self, _: &InstalledContent, _device: &Device) -> Result<ValidationResult> {
         Ok(ValidationResult::Skip)
     }
 

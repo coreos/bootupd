@@ -23,6 +23,18 @@ FROM $base
 # Clean out the default to ensure we're using our updated content
 RUN rpm -e bootupd
 COPY --from=build /out/ /
+# Install bootc from copr
+RUN <<EORUN
+set -xeuo pipefail
+dnf -y install dnf-plugins-core
+dnf -y copr enable rhcontainerbot/bootc centos-stream-9-x86_64
+dnf -y install bootc
+dnf clean all
+rm -rf /var/log
+rm -rf /var/lib
+rm -rf /var/cache
+rm -rf /run/rhsm
+EORUN
 # Remove /var/roothome as workaround
 RUN <<EORUN
 set -xeuo pipefail

@@ -10,6 +10,8 @@ use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use bootc_internal_blockdev::Device;
+
 use crate::{bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -20,7 +22,11 @@ pub(crate) enum ValidationResult {
     Errors(Vec<String>),
 }
 
-/// A component along with a possible update
+/// A bootloader subsystem (EFI or BIOS) that can be installed, updated, and validated.
+///
+/// Components encapsulate platform-specific bootloader management. Each implementation
+/// handles installing bootloader files during image builds, applying updates at runtime,
+/// and optionally adopting existing installations not originally managed by bootupd.
 pub(crate) trait Component {
     /// Returns the name of the component; this will be used for serialization
     /// and should remain stable.
@@ -29,7 +35,7 @@ pub(crate) trait Component {
     /// In an operating system whose initially booted disk image is not
     /// using bootupd, detect whether it looks like the component exists
     /// and "synthesize" content metadata from it.
-    fn query_adopt(&self, devices: &Option<Vec<String>>) -> Result<Option<Adoptable>>;
+    fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>>;
 
     // Backup the current grub config, and install static grub config from tree
     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()>;
@@ -53,7 +59,7 @@ pub(crate) trait Component {
         &self,
         src_root: &str,
         dest_root: &str,
-        device: &str,
+        device: Option<&Device>,
         update_firmware: bool,
     ) -> Result<InstalledContent>;
 
@@ -75,7 +81,7 @@ pub(crate) trait Component {
     ) -> Result<InstalledContent>;
 
     /// Used on the client to validate an installed version.
-    fn validate(&self, current: &InstalledContent) -> Result<ValidationResult>;
+    fn validate(&self, current: &InstalledContent, device: &Device) -> Result<ValidationResult>;
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;

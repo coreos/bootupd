@@ -1,5 +1,8 @@
 use crate::bootupd::{self, ConfigMode};
 use anyhow::{Context, Result};
+use camino::Utf8Path;
+use cap_std::fs::Dir;
+use cap_std_ext::cap_std;
 use clap::Parser;
 use log::LevelFilter;
 
@@ -46,9 +49,15 @@ pub struct InstallOpts {
     #[clap(value_parser)]
     dest_root: String,
 
-    /// Target device, used by bios bootloader installation
+    /// Target device(s) for bootloader installation. Can be specified multiple
+    /// times to install to multiple devices (e.g., for multi-disk RAID/LVM setups).
+    #[clap(long, action = clap::ArgAction::Append, conflicts_with = "filesystem")]
+    device: Vec<String>,
+
+    /// Filesystem path to inspect for backing devices. Bootupd will walk up the
+    /// device hierarchy to find physical disks and install to all ESPs found.
     #[clap(long)]
-    device: Option<String>,
+    filesystem: Option<String>,
 
     /// Enable installation of the built-in static config files
     #[clap(long)]
@@ -110,10 +119,25 @@ impl DCommand {
         } else {
             ConfigMode::None
         };
+
+        // Resolve devices: either discover backing devices from a filesystem path,
+        // or convert explicitly specified device paths to Device objects.
+        let devices = if let Some(ref fs_path) = opts.filesystem {
+            let dir = Dir::open_ambient_dir(fs_path, cap_std::ambient_authority())
+                .with_context(|| format!("Opening filesystem path {fs_path}"))?;
+            let device = bootc_internal_blockdev::list_dev_by_dir(&dir)?;
+            device.find_all_roots()?
+        } else {
+            opts.device
+                .iter()
+                .map(|d| bootc_internal_blockdev::list_dev(Utf8Path::new(d)))
+                .collect::<Result<Vec<_>>>()?
+        };
+
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,
-            opts.device.as_deref(),
+            &devices,
             configmode,
             opts.update_firmware,
             opts.components.as_deref(),

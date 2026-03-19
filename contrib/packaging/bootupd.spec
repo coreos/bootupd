@@ -42,6 +42,7 @@ Summary:        %{summary}
 # Unlicense OR MIT
 License:        Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND BSD-3-Clause AND MIT AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT) AND (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) AND (Unlicense OR MIT)
 %{?systemd_requires}
+Conflicts:      bootc < 1.14.1
 
 %description -n %{crate} %{_description}
 
