@@ -7,22 +7,46 @@ if [ ! -d "/sysroot/ostree/repo/" ]; then
   exit 100
 fi
 
+components_text_x86_64='Available components: BIOS EFI'
+components_json_x86_64='{"components":["BIOS","EFI"]}'
+
+components_text_aarch64='Available components: EFI'
+components_json_aarch64='{"components":["EFI"]}'
+
+none_components_json='{"components":[]}'
+
 # check if running in container
 if [ "$container" ] || [ -f /run/.containerenv ] || [ -f /.dockerenv ]; then
   arch="$(uname --machine)"
-  if [[ "${arch}" == "x86_64" ]]; then
-    components_text='Available components: BIOS EFI'
-    components_json='{"components":["BIOS","EFI"]}'
-  else
-    # Assume aarch64 for now
-    components_text='Available components: EFI'
-    components_json='{"components":["EFI"]}'
+  output_text=$(bootupctl status | tr -d '\r')
+  output_json=$(bootupctl status --json)
+
+  if [ "${arch}" == "x86_64" ]; then
+    [ "${components_text_x86_64}" == "${output_text}" ]
+    [ "${components_json_x86_64}" == "${output_json}" ]
+    # test with no BIOS.json
+    bootupctl remove-component bios
+    output_text=$(bootupctl status | tr -d '\r')
+    output_json=$(bootupctl status --json)
   fi
 
-  output=$(bootupctl status | tr -d '\r')
-  [ "${components_text}" == "${output}" ]
-  output=$(bootupctl status --json)
-  [ "${components_json}" == "${output}" ]
+  if [ "${arch}" == "x86_64" ] || [ "${arch}" == "aarch64" ]; then
+      [ "${components_text_aarch64}" == "${output_text}" ]
+      [ "${components_json_aarch64}" == "${output_json}" ]
+  fi
+
+  # test with no components
+  bootupctl remove-component efi
+  output_text=$(bootupctl status | tr -d '\r')
+  output_json=$(bootupctl status --json)
+  [ -z "${output_text}" ]
+  [ "${none_components_json}" == "${output_json}" ]
+
+  # remove none existing component  
+  if bootupctl remove-component test 2>err.txt; then
+    echo "unexpectedly passed remove none existing component"
+    exit 1
+  fi
 else
   echo "Skip running as not in container"
 fi

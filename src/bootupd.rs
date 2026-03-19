@@ -24,6 +24,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::crate_version;
 use fn_error_context::context;
 use libc::mode_t;
+use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -266,6 +267,20 @@ pub(crate) fn get_components_impl(_auto: bool) -> Components {
 
 pub(crate) fn get_components() -> Components {
     get_components_impl(false)
+}
+
+/// Return available components
+#[context("Get available components")]
+pub(crate) fn get_available_components(sysroot: &openat::Dir) -> Result<Components> {
+    let mut avail = BTreeMap::new();
+
+    for (name, component) in get_components_impl(false) {
+        if crate::component::get_component_update(sysroot, component.as_ref())?.is_some() {
+            avail.insert(name, component);
+        }
+    }
+
+    Ok(avail)
 }
 
 pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
@@ -713,6 +728,36 @@ pub(crate) fn client_run_validate() -> Result<()> {
     }
     if caught_validation_error {
         anyhow::bail!("Caught validation errors");
+    }
+    Ok(())
+}
+
+pub(crate) fn client_run_remove_component(component_name: &str) -> Result<()> {
+    let sysroot = openat::Dir::open("/").context("opening sysroot directory /")?;
+
+    let components = get_available_components(&sysroot)?;
+
+    // Find the component (ignore ASCII case)
+    if let Some((name, component)) = components
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(component_name))
+    {
+        let comp_dirname = crate::component::component_updatedirname(component.as_ref());
+
+        // Construct the path relative to sysroot: BOOTUPD_UPDATES_DIR/<comp>.json
+        let path = comp_dirname.with_extension("json");
+
+        // Remove the file using the sysroot Dir handle
+        sysroot.remove_file_optional(&path).map_err(|e| {
+            if let Some(libc::EACCES) = e.raw_os_error() {
+                anyhow::anyhow!("Permission denied: Cannot remove component file at /{}. Try running with sudo.", path.display())
+            } else {
+                anyhow::anyhow!(e).context(format!("Failed to remove component file /{}", path.display()))
+            }
+        })?;
+        println!("Removed component '{}'", name);
+    } else {
+        anyhow::bail!("Could not find component '{}'", component_name);
     }
     Ok(())
 }
