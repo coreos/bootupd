@@ -215,6 +215,39 @@ impl FileTree {
         Ok(Self { children })
     }
 
+    /// Like [`new_from_dir`] but only walks the specified
+    /// `<name>/<version>/` subdirectories and strips that prefix from each
+    /// entry.  Each entry in `prefixes` is a relative path like
+    /// `"shim/15.9-1"` that identifies the component version directory to
+    /// include.
+    ///
+    /// "FOO/1.0/EFI/vendor/foo.efi" -> "EFI/vendor/foo.efi"
+    /// "BAR/2.0/bar.dtb"            -> "bar.dtb"
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
+    #[allow(dead_code)]
+    pub(crate) fn new_from_dir_strip_prefix_for<S: AsRef<str>>(
+        dir: &openat::Dir,
+        prefixes: &[S],
+    ) -> Result<Self> {
+        let mut children = BTreeMap::new();
+        for prefix_str in prefixes {
+            let prefix = prefix_str.as_ref();
+            let sub = dir
+                .sub_dir(prefix)
+                .with_context(|| format!("opening component dir {}", prefix))?;
+            for (k, mut v) in Self::unsorted_from_dir(&sub)?.drain() {
+                let source = format!("{}/{}", prefix, k);
+                v.source = Some(source);
+                children.insert(k, v);
+            }
+        }
+        Ok(Self { children })
+    }
+
     /// Determine the changes *from* self to the updated tree
     #[cfg(any(
         target_arch = "x86_64",
@@ -1014,6 +1047,43 @@ mod tests {
         assert!(dst_dir.exists("remapped/data.bin")?);
         assert!(dst_dir.exists("sub/foo.dat")?);
         assert!(dst_dir.exists("top.dat")?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_from_dir_strip_prefix_for() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let root = tmpdir.path().join("root");
+
+        // Two-level <name>/<version>/ layout with an EFI subtree
+        // and a flat (non-EFI) component.
+        std::fs::create_dir_all(root.join("FOO/1.0/EFI/vendor"))?;
+        std::fs::write(root.join("FOO/1.0/EFI/vendor/foo.efi"), "foo data")?;
+        std::fs::create_dir_all(root.join("BAR/2.0"))?;
+        std::fs::write(root.join("BAR/2.0/bar.dtb"), "bar data")?;
+        std::fs::write(root.join("BAR/2.0/baz.bin"), "baz data")?;
+
+        let dir = openat::Dir::open(&root)?;
+
+        // With all prefixes, every component is included.
+        let ft = FileTree::new_from_dir_strip_prefix_for(&dir, &["FOO/1.0", "BAR/2.0"])?;
+        assert!(ft.children.contains_key("EFI/vendor/foo.efi"));
+        assert!(ft.children.contains_key("bar.dtb"));
+        assert!(ft.children.contains_key("baz.bin"));
+        assert_eq!(
+            ft.children["EFI/vendor/foo.efi"].source.as_deref(),
+            Some("FOO/1.0/EFI/vendor/foo.efi")
+        );
+        assert_eq!(
+            ft.children["bar.dtb"].source.as_deref(),
+            Some("BAR/2.0/bar.dtb")
+        );
+
+        // With a subset of prefixes, only matching components are included.
+        let ft2 = FileTree::new_from_dir_strip_prefix_for(&dir, &["FOO/1.0"])?;
+        assert!(ft2.children.contains_key("EFI/vendor/foo.efi"));
+        assert!(!ft2.children.contains_key("bar.dtb"));
+
         Ok(())
     }
 }
