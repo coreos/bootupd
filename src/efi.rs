@@ -635,11 +635,11 @@ impl Component for Efi {
             for p in cruft.iter() {
                 ostreeboot.remove_all_optional(p)?;
             }
-            // Transfer ostree-boot EFI files to usr/lib/efi
+            // Transfer ostree-boot efi/ files to usr/lib/efi
             transfer_ostree_boot_to_usr(sysroot_path)?;
 
-            // Remove usr/lib/ostree-boot/efi/EFI dir (after transfer) or if it is empty
-            ostreeboot.remove_all_optional("efi/EFI")?;
+            // Remove the entire efi/ tree after transfer, or if it is empty
+            ostreeboot.remove_all_optional("efi")?;
         }
 
         if let Some(efi_components) =
@@ -961,55 +961,73 @@ fn latest_versions(components: &[EFIComponent]) -> Vec<&EFIComponent> {
     result
 }
 
-/// Copy files from usr/lib/ostree-boot/efi/EFI to /usr/lib/efi/<component>/<evr>/
+/// Copy files from usr/lib/ostree-boot/efi/ to usr/lib/efi/<component>/<evr>/
+///
+/// Walks the entire `efi/` directory (both `EFI/` subdirectories and
+/// root-level firmware files) and uses `rpm -qf` to determine which
+/// package owns each file so it can be placed in the right component
+/// directory under `usr/lib/efi/`.
 fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
+    transfer_ostree_boot_to_usr_impl(sysroot, |sysroot_path, filepath| {
+        let boot_filepath = Path::new("/boot/efi").join(filepath);
+        crate::packagesystem::query_file(
+            sysroot_path.to_str().unwrap(),
+            boot_filepath.to_str().unwrap(),
+        )
+    })
+}
+
+/// Inner implementation that accepts a package-resolver callback so it
+/// can be unit-tested without a real RPM database.
+///
+/// `resolve_pkg(sysroot, filepath)` must return `"<name> <evr>"`.
+fn transfer_ostree_boot_to_usr_impl<F>(sysroot: &Path, resolve_pkg: F) -> Result<()>
+where
+    F: Fn(&Path, &Path) -> Result<String>,
+{
     let ostreeboot_efi = Path::new(ostreeutil::BOOT_PREFIX).join("efi");
     let ostreeboot_efi_path = sysroot.join(&ostreeboot_efi);
 
-    let efi = ostreeboot_efi_path.join("EFI");
-    if !efi.exists() {
+    if !ostreeboot_efi_path.exists() {
         return Ok(());
     }
-    for entry in WalkDir::new(&efi) {
+
+    let sysroot_dir = openat::Dir::open(sysroot)?;
+    // Source dir is usr/lib/ostree-boot/efi
+    let src = sysroot_dir
+        .sub_dir(&ostreeboot_efi)
+        .context("Opening ostree-boot/efi dir")?;
+
+    for entry in WalkDir::new(&ostreeboot_efi_path) {
         let entry = entry?;
-
-        if entry.file_type().is_file() {
-            let entry_path = entry.path();
-
-            // get path EFI/{BOOT,<vendor>}/<file>
-            let filepath = entry_path.strip_prefix(&ostreeboot_efi_path)?;
-            // get path /boot/efi/EFI/{BOOT,<vendor>}/<file>
-            let boot_filepath = Path::new("/boot/efi").join(filepath);
-
-            // Run `rpm -qf <filepath>`
-            let pkg = crate::packagesystem::query_file(
-                sysroot.to_str().unwrap(),
-                boot_filepath.to_str().unwrap(),
-            )?;
-
-            let (name, evr) = pkg.split_once(' ').unwrap();
-            let component = name.split('-').next().unwrap_or("");
-            // get path usr/lib/efi/<component>/<evr>
-            let efilib_path = Path::new(EFILIB).join(component).join(evr);
-
-            let sysroot_dir = openat::Dir::open(sysroot)?;
-            // Ensure dest parent directory exists
-            if let Some(parent) = efilib_path.join(filepath).parent() {
-                sysroot_dir.ensure_dir_all(parent, 0o755)?;
-            }
-
-            // Source dir is usr/lib/ostree-boot/efi
-            let src = sysroot_dir
-                .sub_dir(&ostreeboot_efi)
-                .context("Opening ostree-boot dir")?;
-            // Dest dir is usr/lib/efi/<component>/<evr>
-            let dest = sysroot_dir
-                .sub_dir(&efilib_path)
-                .context("Opening usr/lib/efi dir")?;
-            // Copy file from ostree-boot to usr/lib/efi
-            src.copy_file_at(filepath, &dest, filepath)
-                .context("Copying file to usr/lib/efi")?;
+        if !entry.file_type().is_file() {
+            continue;
         }
+
+        // get path relative to the efi/ root (e.g. EFI/BOOT/shim.efi or start4.elf)
+        let filepath = entry.path().strip_prefix(&ostreeboot_efi_path)?;
+
+        // Run `rpm -qf /boot/efi/<filepath>` to find the owning package
+        let pkg = resolve_pkg(sysroot, filepath)?;
+
+        let (name, evr) = pkg
+            .split_once(' ')
+            .with_context(|| format!("parsing rpm output: {}", pkg))?;
+        // get path usr/lib/efi/<component>/<evr>
+        let efilib_path = Path::new(EFILIB).join(name).join(evr);
+
+        // Ensure dest parent directory exists
+        if let Some(parent) = efilib_path.join(filepath).parent() {
+            sysroot_dir.ensure_dir_all(parent, 0o755)?;
+        }
+
+        // Dest dir is usr/lib/efi/<component>/<evr>
+        let dest = sysroot_dir
+            .sub_dir(&efilib_path)
+            .context("Opening usr/lib/efi dir")?;
+        // Copy file from ostree-boot to usr/lib/efi
+        src.copy_file_at(filepath, &dest, filepath)
+            .context("Copying file to usr/lib/efi")?;
     }
     Ok(())
 }
@@ -1314,6 +1332,68 @@ Boot0003* test";
         assert_eq!(
             std::fs::read_to_string(dst.join("EFI/vendor/foo.efi"))?,
             "foo data"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_ostree_boot_to_usr() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let sysroot = tmpdir.path();
+
+        // Simulate usr/lib/ostree-boot/efi/ with both EFI/ and root-level files
+        let efi_dir = sysroot.join("usr/lib/ostree-boot/efi");
+        std::fs::create_dir_all(efi_dir.join("EFI/vendor"))?;
+        std::fs::write(efi_dir.join("EFI/vendor/foo.efi"), "foo data")?;
+        std::fs::create_dir_all(efi_dir.join("EFI/BOOT"))?;
+        std::fs::write(efi_dir.join("EFI/BOOT/BOOTAA64.EFI"), "boot data")?;
+        // Root-level files
+        std::fs::write(efi_dir.join("bar.dtb"), "bar data")?;
+        std::fs::write(efi_dir.join("baz.bin"), "baz data")?;
+        std::fs::create_dir_all(efi_dir.join("sub"))?;
+        std::fs::write(efi_dir.join("sub/quux.dat"), "quux data")?;
+
+        // Ensure the destination base directory exists
+        std::fs::create_dir_all(sysroot.join(EFILIB))?;
+
+        // Fake resolver: EFI files belong to "FOO 1.0", root-level
+        // files to "BAR 2.0"
+        let resolve = |_sysroot: &Path, filepath: &Path| -> Result<String> {
+            let s = filepath.to_str().unwrap();
+            if s.starts_with("EFI") {
+                Ok("FOO 1.0".to_string())
+            } else {
+                Ok("BAR 2.0".to_string())
+            }
+        };
+
+        transfer_ostree_boot_to_usr_impl(sysroot, resolve)?;
+
+        // EFI files should be under EFILIB/FOO/1.0/EFI/...
+        let foo_base = sysroot.join("usr/lib/efi/FOO/1.0");
+        assert_eq!(
+            std::fs::read_to_string(foo_base.join("EFI/vendor/foo.efi"))?,
+            "foo data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(foo_base.join("EFI/BOOT/BOOTAA64.EFI"))?,
+            "boot data"
+        );
+
+        // Root-level files should be under EFILIB/BAR/2.0/
+        let bar_base = sysroot.join("usr/lib/efi/BAR/2.0");
+        assert_eq!(
+            std::fs::read_to_string(bar_base.join("bar.dtb"))?,
+            "bar data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bar_base.join("baz.bin"))?,
+            "baz data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bar_base.join("sub/quux.dat"))?,
+            "quux data"
         );
 
         Ok(())
