@@ -30,6 +30,8 @@ use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
 use crate::util;
+use uapi_version::Version;
+
 use crate::{component::*, packagesystem::*};
 use crate::{filetree, grubconfigs};
 
@@ -79,6 +81,11 @@ fn is_mount_point(path: &Path) -> Result<bool> {
         )
     }
 }
+
+/// Copy options that merge source contents into an existing destination
+/// directory instead of creating a subdirectory (used for non-EFI
+/// components like firmware that live at the ESP root).
+const OPTIONS_MERGE: &[&str] = &["-rp", "--reflink=auto", "-T"];
 
 /// Return `true` if the system is booted via EFI
 pub(crate) fn is_efi_booted() -> Result<bool> {
@@ -236,6 +243,65 @@ impl Efi {
         let device_path = device.path();
         create_efi_boot_entry(&device_path, esp_part_num.trim(), &loader, &product_name)
     }
+
+    fn ensure_efi_prefix(&self, mut ft: filetree::FileTree) -> filetree::FileTree {
+        let needs_prefix =
+            !ft.children.is_empty() && ft.children.keys().all(|k| !k.starts_with("EFI/"));
+        if needs_prefix {
+            ft.prepend_prefix("EFI");
+        }
+        ft
+    }
+
+    /// Build a `FileTree` from either the new `usr/lib/efi/` layout (when
+    /// pre-resolved components are provided) or the legacy
+    /// `usr/lib/bootupd/updates/EFI` directory.
+    ///
+    /// For the new layout, only the latest version of each component is
+    /// included so that duplicate destination keys cannot arise.
+    fn build_filetree(
+        &self,
+        root_dir: &openat::Dir,
+        components: Option<&[EFIComponent]>,
+    ) -> Result<(PathBuf, filetree::FileTree)> {
+        if let Some(components) = components {
+            let p = PathBuf::from(EFILIB);
+            let dir = root_dir
+                .sub_dir(&p)
+                .with_context(|| format!("opening {}", p.display()))?;
+            let latest = latest_versions(components);
+            let prefixes: Vec<String> = latest
+                .iter()
+                .map(|c| format!("{}/{}", c.name, c.version))
+                .collect();
+            let ft = filetree::FileTree::new_from_dir_strip_prefix_for(&dir, &prefixes)?;
+            Ok((p, ft))
+        } else {
+            let p = component_updatedirname(self);
+            let dir = root_dir
+                .sub_dir(&p)
+                .with_context(|| format!("opening {}", p.display()))?;
+            let mut ft = filetree::FileTree::new_from_dir(&dir).context("reading update dir")?;
+            ft = self.ensure_efi_prefix(ft);
+            Ok((p, ft))
+        }
+    }
+
+    /// Build the update `FileTree`, resolving EFI components from the
+    /// sysroot and delegating to `build_filetree`.
+    fn build_update_filetree(
+        &self,
+        sysroot: &openat::Dir,
+        sysroot_path: &Utf8Path,
+    ) -> Result<(PathBuf, filetree::FileTree)> {
+        let efilib_path = sysroot_path.join(EFILIB);
+        let components = if efilib_path.exists() {
+            get_efi_component_from_usr(sysroot_path, EFILIB)?
+        } else {
+            None
+        };
+        self.build_filetree(sysroot, components.as_deref())
+    }
 }
 
 #[context("Get product name")]
@@ -344,9 +410,9 @@ impl Component for Efi {
             anyhow::bail!("Failed to find efi vendor");
         };
 
-        // destdir is /boot/efi/EFI
+        // destdir is /boot/efi
         let efidir = destdir
-            .sub_dir(&vendor)
+            .sub_dir(&format!("EFI/{}", vendor))
             .with_context(|| format!("Opening EFI/{}", vendor))?;
 
         if !efidir.exists(grubconfigs::GRUBCONFIG_BACKUP)? {
@@ -375,33 +441,25 @@ impl Component for Efi {
             return Ok(None);
         };
 
-        let updated_path = {
-            let efilib_path = rootcxt.path.join(EFILIB);
-            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
-            {
-                PathBuf::from(EFILIB)
-            } else {
-                component_updatedirname(self)
-            }
-        };
+        let (updated_path, updatef) =
+            self.build_update_filetree(&rootcxt.sysroot, &rootcxt.path)?;
         let updated = rootcxt
             .sysroot
             .sub_dir(&updated_path)
             .with_context(|| format!("opening update dir {}", updated_path.display()))?;
-        let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices {
             let destpath =
                 &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
-            validate_esp_fstype(&efidir)?;
+            let destdir = openat::Dir::open(destpath).context("opening ESP dir")?;
+            validate_esp_fstype(&destdir)?;
 
             // For adoption, we should only touch files that we know about.
-            let diff = updatef.relative_diff_to(&efidir)?;
+            let diff = updatef.relative_diff_to(&destdir)?;
             log::trace!("applying adoption diff: {}", &diff);
-            filetree::apply_diff(&updated, &efidir, &diff, None)
+            filetree::apply_diff(&updated, &destdir, &diff, None)
                 .context("applying filesystem changes")?;
 
             // Backup current config and install static config
@@ -413,13 +471,13 @@ impl Component for Efi {
                     );
                 } else {
                     println!("ostree repo 'sysroot.bootloader' config option is not set yet");
-                    self.migrate_static_grub_config(rootcxt.path.as_str(), &efidir)?;
+                    self.migrate_static_grub_config(rootcxt.path.as_str(), &destdir)?;
                 };
             }
 
             // Do the sync before unmount
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
-            drop(efidir);
+            fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
+            drop(destdir);
             self.unmount().context("unmount after adopt")?;
         }
         Ok(Some(InstalledContent {
@@ -480,27 +538,30 @@ impl Component for Efi {
             )
         })?;
 
-        let efi_path = if let Some(efi_components) = efi_comps {
+        // Copy files to the ESP
+        if let Some(ref efi_components) = efi_comps {
             for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
+                if efi.has_efi_subdir {
+                    filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
+                } else {
+                    filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS_MERGE)?;
+                }
             }
-            EFILIB
         } else {
             let updates = component_updatedirname(self);
             let src = updates
                 .to_str()
                 .context("Include invalid UTF-8 characters in path")?;
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
-            &src.to_owned()
         };
 
-        // Get filetree from efi path
-        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(efi_path)?)?;
+        // Build the filetree from the update source
+        let (update_path, ft) = self.build_filetree(&src_dir, efi_comps.as_deref())?;
+        let efi_vendor_search = src_path.as_std_path().join(update_path);
+
         if update_firmware {
             if let Some(dev) = device {
-                if let Some(vendordir) =
-                    self.get_efi_vendor(src_path.join(efi_path).as_std_path())?
-                {
+                if let Some(vendordir) = self.get_efi_vendor(efi_vendor_search.as_path())? {
                     self.update_firmware(dev, destd, &vendordir)?
                 }
             }
@@ -517,28 +578,23 @@ impl Component for Efi {
         rootcxt: &RootContext,
         current: &InstalledContent,
     ) -> Result<InstalledContent> {
-        let currentf = current
+        let mut currentf = current
             .filetree
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
+        currentf = self.ensure_efi_prefix(currentf);
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
-        let updated_path = {
-            let efilib_path = rootcxt.path.join(EFILIB);
-            if efilib_path.exists() && get_efi_component_from_usr(&rootcxt.path, EFILIB)?.is_some()
-            {
-                PathBuf::from(EFILIB)
-            } else {
-                component_updatedirname(self)
-            }
-        };
+
+        let (updated_path, updatef) =
+            self.build_update_filetree(&rootcxt.sysroot, &rootcxt.path)?;
+
+        let diff = currentf.diff(&updatef)?;
 
         let updated = rootcxt
             .sysroot
             .sub_dir(&updated_path)
             .with_context(|| format!("opening update dir {}", updated_path.display()))?;
-        let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
-        let diff = currentf.diff(&updatef)?;
 
         let Some(esp_devices) = rootcxt.device.find_colocated_esps()? else {
             anyhow::bail!("Failed to find all esp devices");
@@ -547,7 +603,7 @@ impl Component for Efi {
         for esp in esp_devices {
             let destpath =
                 &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
-            let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            let destdir = openat::Dir::open(destpath).context("opening ESP dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
@@ -628,19 +684,20 @@ impl Component for Efi {
         if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);
         }
-        let currentf = current
+        let mut currentf = current
             .filetree
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
+        currentf = self.ensure_efi_prefix(currentf);
 
         let mut errs = Vec::new();
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices.iter() {
             let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp.path()))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI"))
-                .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-            let diff = currentf.relative_diff_to(&efidir)?;
+            let destdir = openat::Dir::open(destpath)
+                .with_context(|| format!("opening ESP dir {}", destpath.display()))?;
+            let diff = currentf.relative_diff_to(&destdir)?;
 
             for f in diff.changes.iter() {
                 errs.push(format!("Changed: {}", f));
@@ -649,7 +706,7 @@ impl Component for Efi {
                 errs.push(format!("Removed: {}", f));
             }
             assert_eq!(diff.additions.len(), 0);
-            drop(efidir);
+            drop(destdir);
             self.unmount().context("unmount after validate")?;
         }
 
@@ -806,9 +863,15 @@ pub struct EFIComponent {
     pub name: String,
     pub version: String,
     path: Utf8PathBuf,
+    has_efi_subdir: bool,
 }
 
-/// Get EFIComponents from e.g. usr/lib/efi, like "usr/lib/efi/<name>/<version>/EFI"
+/// Get EFIComponents from e.g. usr/lib/efi.
+///
+/// Each component lives at `<usr_path>/<name>/<version>/`.  When the version
+/// directory contains an `EFI/` subdirectory the content is EFI-specific
+/// (shim, grub, etc.) and gets the `EFI/` prefix on the ESP.  Otherwise the
+/// files are copied directly to the root of the ESP (e.g. RPi firmware).
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
@@ -816,39 +879,86 @@ fn get_efi_component_from_usr<'a>(
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
-    let mut components: Vec<EFIComponent> = WalkDir::new(&efilib_path)
-        .min_depth(3) // <name>/<version>/EFI: so 3 levels down
-        .max_depth(3)
+    let mut components: Vec<EFIComponent> = Vec::new();
+
+    for entry in WalkDir::new(&efilib_path)
+        .min_depth(2)
+        .max_depth(2)
         .into_iter()
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            if !entry.file_type().is_dir() || entry.file_name() != "EFI" {
-                return None;
-            }
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
 
-            let abs_path = entry.path();
-            let rel_path = abs_path.strip_prefix(sysroot).ok()?;
-            let utf8_rel_path = Utf8PathBuf::from_path_buf(rel_path.to_path_buf()).ok()?;
+        let abs_path = entry.path();
+        let rel_path = match abs_path.strip_prefix(sysroot) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let utf8_rel_path = match Utf8PathBuf::from_path_buf(rel_path.to_path_buf()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
-            let mut components = utf8_rel_path.components();
+        let mut comps = utf8_rel_path.components();
+        let Some(name) = comps.nth(skip_count).map(|c| c.to_string()) else {
+            continue;
+        };
+        let Some(version) = comps.next().map(|c| c.to_string()) else {
+            continue;
+        };
 
-            let name = components.nth(skip_count)?.to_string();
-            let version = components.next()?.to_string();
-
-            Some(EFIComponent {
+        let efi_subdir = abs_path.join("EFI");
+        if efi_subdir.exists() && efi_subdir.is_dir() {
+            components.push(EFIComponent {
                 name,
                 version,
-                path: utf8_rel_path,
-            })
-        })
-        .collect();
+                path: utf8_rel_path.join("EFI"),
+                has_efi_subdir: true,
+            });
+        } else {
+            let has_content = WalkDir::new(abs_path)
+                .min_depth(1)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .any(|e| e.file_type().is_file());
+            if has_content {
+                components.push(EFIComponent {
+                    name,
+                    version,
+                    path: utf8_rel_path,
+                    has_efi_subdir: false,
+                });
+            }
+        }
+    }
 
-    if components.len() == 0 {
+    if components.is_empty() {
         return Ok(None);
     }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Some(components))
+}
+
+/// Given a list of EFI components (potentially with multiple versions per
+/// component name), return only the latest version for each name.
+///
+/// Versions are compared lexicographically; this is sufficient for RPM EVR
+/// strings where the epoch:version-release ordering is consistent.
+fn latest_versions(components: &[EFIComponent]) -> Vec<&EFIComponent> {
+    let mut by_name: std::collections::HashMap<&str, &EFIComponent> =
+        std::collections::HashMap::new();
+    for c in components {
+        let entry = by_name.entry(c.name.as_str()).or_insert(c);
+        if Version::from(c.version.as_str()) > Version::from(entry.version.as_str()) {
+            *entry = c;
+        }
+    }
+    let mut result: Vec<_> = by_name.into_values().collect();
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
 }
 
 /// Copy files from usr/lib/ostree-boot/efi/EFI to /usr/lib/efi/<component>/<evr>/
@@ -1043,11 +1153,13 @@ Boot0003* test";
                     name: "BAR".to_string(),
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/BAR/1.1/EFI"),
+                    has_efi_subdir: true,
                 },
                 EFIComponent {
                     name: "FOO".to_string(),
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
+                    has_efi_subdir: true,
                 },
             ])
         );
@@ -1055,6 +1167,155 @@ Boot0003* test";
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(efi_comps, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_efi_component_mixed() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+
+        // EFI component (has EFI/ subdirectory)
+        let efi_comp_dir = efi_path.join("FOO/1.0/EFI/vendor");
+        std::fs::create_dir_all(&efi_comp_dir)?;
+        std::fs::write(efi_comp_dir.join("foo.efi"), "foo data")?;
+
+        // Non-EFI component (files directly in version dir)
+        let non_efi_dir = efi_path.join("BAR/2.0");
+        std::fs::create_dir_all(&non_efi_dir)?;
+        std::fs::write(non_efi_dir.join("bar.dtb"), "bar data")?;
+        std::fs::write(non_efi_dir.join("baz.bin"), "baz data")?;
+
+        // Empty version dir (should be ignored)
+        std::fs::create_dir_all(efi_path.join("EMPTY/1.0"))?;
+
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+        let comps = comps.expect("components should be found");
+
+        assert_eq!(comps.len(), 2);
+        assert_eq!(comps[0].name, "BAR");
+        assert!(!comps[0].has_efi_subdir);
+        assert_eq!(comps[0].path, Utf8PathBuf::from("usr/lib/efi/BAR/2.0"));
+
+        assert_eq!(comps[1].name, "FOO");
+        assert!(comps[1].has_efi_subdir);
+        assert_eq!(comps[1].path, Utf8PathBuf::from("usr/lib/efi/FOO/1.0/EFI"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_from_dir_strip_prefix() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let efilib = tmpdir.path().join("efilib");
+
+        // EFI component: FOO/1.0/EFI/vendor/foo.efi
+        std::fs::create_dir_all(efilib.join("FOO/1.0/EFI/vendor"))?;
+        std::fs::write(efilib.join("FOO/1.0/EFI/vendor/foo.efi"), "foo data")?;
+
+        // Non-EFI component: BAR/2.0/{bar.dtb,baz.bin}
+        std::fs::create_dir_all(efilib.join("BAR/2.0"))?;
+        std::fs::write(efilib.join("BAR/2.0/bar.dtb"), "bar data")?;
+        std::fs::write(efilib.join("BAR/2.0/baz.bin"), "baz data")?;
+
+        let dir = openat::Dir::open(&efilib)?;
+        let ft = filetree::FileTree::new_from_dir_strip_prefix_for(&dir, &["FOO/1.0", "BAR/2.0"])?;
+
+        assert!(ft.children.contains_key("EFI/vendor/foo.efi"));
+        assert!(ft.children.contains_key("bar.dtb"));
+        assert!(ft.children.contains_key("baz.bin"));
+
+        // Source paths should point back to the original relative paths
+        assert_eq!(
+            ft.children["EFI/vendor/foo.efi"].source.as_deref(),
+            Some("FOO/1.0/EFI/vendor/foo.efi")
+        );
+        assert_eq!(
+            ft.children["bar.dtb"].source.as_deref(),
+            Some("BAR/2.0/bar.dtb")
+        );
+
+        // ensure_efi_prefix should NOT re-prefix (some keys already have EFI/)
+        let efi = Efi::default();
+        let ft2 = efi.ensure_efi_prefix(ft.clone());
+        assert_eq!(
+            ft.children.keys().collect::<Vec<_>>(),
+            ft2.children.keys().collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rpi4_esp_update_flow() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let p = tmpdir.path();
+
+        // Source directory simulating EFILIB with mixed EFI and non-EFI
+        // components (e.g. bootloader + root-level firmware)
+        let src = p.join("src");
+        std::fs::create_dir_all(src.join("FOO/1.0/EFI/vendor"))?;
+        std::fs::write(src.join("FOO/1.0/EFI/vendor/foo.efi"), "foo data")?;
+        let fw_dir = src.join("BAR/2.0");
+        std::fs::create_dir_all(&fw_dir)?;
+        std::fs::write(fw_dir.join("bar.dtb"), "bar data")?;
+        std::fs::write(fw_dir.join("baz.bin"), "baz data")?;
+        std::fs::write(fw_dir.join("quux.dat"), "quux data")?;
+        std::fs::write(fw_dir.join("conf.txt"), "conf data")?;
+
+        let dst = p.join("dst");
+        std::fs::create_dir_all(&dst)?;
+
+        let src_dir = openat::Dir::open(&src)?;
+        let dst_dir = openat::Dir::open(&dst)?;
+
+        let ft =
+            filetree::FileTree::new_from_dir_strip_prefix_for(&src_dir, &["FOO/1.0", "BAR/2.0"])?;
+
+        assert!(ft.children.contains_key("EFI/vendor/foo.efi"));
+        assert!(ft.children.contains_key("bar.dtb"));
+        assert!(ft.children.contains_key("baz.bin"));
+        assert!(ft.children.contains_key("quux.dat"));
+        assert!(ft.children.contains_key("conf.txt"));
+
+        // Install to empty ESP
+        let empty_ft = filetree::FileTree {
+            children: std::collections::BTreeMap::new(),
+        };
+        let diff = empty_ft.diff(&ft)?;
+        assert_eq!(diff.additions.len(), 5);
+
+        filetree::apply_diff(&src_dir, &dst_dir, &diff, None)?;
+
+        assert!(dst_dir.exists("EFI/vendor/foo.efi")?);
+        assert!(dst_dir.exists("bar.dtb")?);
+        assert!(dst_dir.exists("baz.bin")?);
+        assert!(dst_dir.exists("quux.dat")?);
+        assert!(dst_dir.exists("conf.txt")?);
+        assert_eq!(
+            std::fs::read_to_string(dst.join("EFI/vendor/foo.efi"))?,
+            "foo data"
+        );
+        assert_eq!(std::fs::read_to_string(dst.join("bar.dtb"))?, "bar data");
+
+        // Simulate update (change one non-EFI file)
+        std::fs::write(fw_dir.join("bar.dtb"), "bar data v2")?;
+        let ft_v2 =
+            filetree::FileTree::new_from_dir_strip_prefix_for(&src_dir, &["FOO/1.0", "BAR/2.0"])?;
+
+        let diff2 = ft.diff(&ft_v2)?;
+        assert_eq!(diff2.changes.len(), 1);
+        assert!(diff2.changes.contains("bar.dtb"));
+
+        filetree::apply_diff(&src_dir, &dst_dir, &diff2, None)?;
+        assert_eq!(std::fs::read_to_string(dst.join("bar.dtb"))?, "bar data v2");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("EFI/vendor/foo.efi"))?,
+            "foo data"
+        );
+
         Ok(())
     }
 }

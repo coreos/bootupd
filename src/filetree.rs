@@ -228,7 +228,6 @@ impl FileTree {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    #[allow(dead_code)]
     pub(crate) fn new_from_dir_strip_prefix_for<S: AsRef<str>>(
         dir: &openat::Dir,
         prefixes: &[S],
@@ -246,6 +245,22 @@ impl FileTree {
             }
         }
         Ok(Self { children })
+    }
+
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ))]
+    pub(crate) fn prepend_prefix(&mut self, prefix: &str) {
+        let old = std::mem::take(&mut self.children);
+        let mut new_children = BTreeMap::new();
+        for (k, v) in old {
+            let mut p = Utf8PathBuf::from(prefix);
+            p.push(k);
+            new_children.insert(p.into_string(), v);
+        }
+        self.children = new_children;
     }
 
     /// Determine the changes *from* self to the updated tree
