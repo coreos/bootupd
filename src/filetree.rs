@@ -41,6 +41,12 @@ use openssl::hash::{Hasher, MessageDigest};
 ))]
 use rustix::fd::BorrowedFd;
 use serde::{Deserialize, Serialize};
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+))]
+use std::cmp::Ordering;
 #[allow(unused_imports)]
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
@@ -531,9 +537,49 @@ pub(crate) fn apply_diff(
             .with_context(|| format!("copying {:?} to {:?}", copy_src, path_tmp))?;
     }
 
+    // Sort updates to enforce stable order and atomic sequence
+    let mut update_list: Vec<_> = updates.iter().collect();
+    update_list.sort_by(|(dst_a, tmp_a), (dst_b, tmp_b)| {
+        let a_is_efi = dst_a.starts_with("EFI");
+        let b_is_efi = dst_b.starts_with("EFI");
+
+        // 1. EFI subfolders first
+        if a_is_efi && !b_is_efi {
+            return Ordering::Less;
+        }
+        if !a_is_efi && b_is_efi {
+            return Ordering::Greater;
+        }
+
+        // 2. Directories next, then files
+        let a_is_dir = destdir
+            .metadata(tmp_a.as_str())
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        let b_is_dir = destdir
+            .metadata(tmp_b.as_str())
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+
+        if a_is_dir && !b_is_dir {
+            return Ordering::Less;
+        }
+        if !a_is_dir && b_is_dir {
+            return Ordering::Greater;
+        }
+
+        // 3. Stable string order
+        dst_a.cmp(dst_b)
+    });
+
     // do local exchange or rename
-    for (dst, tmp) in updates.iter() {
+    for (dst, tmp) in update_list {
         let dst = dst.as_std_path();
+        if let Some(parent) = dst.parent() {
+            if !parent.as_os_str().is_empty() {
+                destdir.ensure_dir_all(parent, DEFAULT_FILE_MODE)?;
+            }
+        }
         log::trace!("doing local exchange for {} and {:?}", tmp, dst);
         if destdir.exists(dst)? {
             destdir
@@ -937,10 +983,19 @@ mod tests {
         // "original/data.bin" -> "remapped/data.bin" via source_map
         src_dir.ensure_dir_all("original", 0o755)?;
         src_dir.write_file("original/data.bin", 0o644)?;
+        // Additional files in subdirectories and at the root,
+        // added without remapping.
+        src_dir.ensure_dir_all("sub", 0o755)?;
+        src_dir.write_file("sub/foo.dat", 0o644)?;
+        src_dir.write_file("top.dat", 0o644)?;
 
         let mut additions = HashSet::new();
         additions.insert("remapped/data.bin".to_string());
+        additions.insert("sub/foo.dat".to_string());
+        additions.insert("top.dat".to_string());
 
+        // source_map: dest path -> source path, only needed when the
+        // two differ (here a prefix was added to the dest key).
         let mut source_map = HashMap::new();
         source_map.insert(
             "remapped/data.bin".to_string(),
@@ -957,6 +1012,8 @@ mod tests {
         apply_diff(&src_dir, &dst_dir, &diff, None)?;
 
         assert!(dst_dir.exists("remapped/data.bin")?);
+        assert!(dst_dir.exists("sub/foo.dat")?);
+        assert!(dst_dir.exists("top.dat")?);
         Ok(())
     }
 }
