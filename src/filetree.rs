@@ -103,6 +103,8 @@ pub(crate) struct FileTreeDiff {
     pub(crate) additions: HashSet<String>,
     pub(crate) removals: HashSet<String>,
     pub(crate) changes: HashSet<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) source_map: HashMap<String, String>,
 }
 
 impl Display for FileTreeDiff {
@@ -241,12 +243,18 @@ impl FileTree {
         let mut additions = HashSet::new();
         let mut removals = HashSet::new();
         let mut changes = HashSet::new();
+        let mut source_map = HashMap::new();
 
         for (k, v1) in self.children.iter() {
             if let Some(v2) = updated.children.get(k) {
                 if v1 != v2 {
-                    // Save the source path for changes
-                    changes.insert(v2.source.as_ref().unwrap_or(k).clone());
+                    // Save the destination key and record the source path for changes
+                    changes.insert(k.clone());
+                    if let Some(src) = v2.source.as_ref() {
+                        if src != k {
+                            source_map.insert(k.clone(), src.clone());
+                        }
+                    }
                 }
             } else {
                 removals.insert(k.clone());
@@ -257,14 +265,20 @@ impl FileTree {
                 if self.children.contains_key(k) {
                     continue;
                 }
-                // Save the source path for additions
-                additions.insert(v.source.as_ref().unwrap_or(k).clone());
+                // Save the destination key and record the source path for additions
+                additions.insert(k.clone());
+                if let Some(src) = v.source.as_ref() {
+                    if src != k {
+                        source_map.insert(k.clone(), src.clone());
+                    }
+                }
             }
         }
         Ok(FileTreeDiff {
             additions,
             removals,
             changes,
+            source_map,
         })
     }
 
@@ -278,6 +292,7 @@ impl FileTree {
     pub(crate) fn relative_diff_to(&self, dir: &openat::Dir) -> Result<FileTreeDiff> {
         let mut removals = HashSet::new();
         let mut changes = HashSet::new();
+        let mut source_map = HashMap::new();
 
         for (path, info) in self.children.iter() {
             assert!(!path.starts_with('/'));
@@ -288,12 +303,22 @@ impl FileTree {
                         let target_info = FileMetadata::new_from_path(dir, path)?;
                         if info != &target_info {
                             // Save the source path for changes
-                            changes.insert(info.source.as_ref().unwrap_or(path).clone());
+                            changes.insert(path.clone());
+                            if let Some(src) = info.source.as_ref() {
+                                if src != path {
+                                    source_map.insert(path.clone(), src.clone());
+                                }
+                            }
                         }
                     }
                     _ => {
                         // If a file became a directory
-                        changes.insert(info.source.as_ref().unwrap_or(path).clone());
+                        changes.insert(path.clone());
+                        if let Some(src) = info.source.as_ref() {
+                            if src != path {
+                                source_map.insert(path.clone(), src.clone());
+                            }
+                        }
                     }
                 }
             } else {
@@ -304,6 +329,7 @@ impl FileTree {
             additions: HashSet::new(),
             removals,
             changes,
+            source_map,
         })
     }
 }
@@ -474,9 +500,13 @@ pub(crate) fn apply_diff(
     }
     // Write changed or new files to temp dir or temp file
     for pathstr in diff.changes.iter().chain(diff.additions.iter()) {
-        let src_path = Utf8Path::new(pathstr);
-        let path = get_dest_efi_path(src_path);
-        let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
+        let path = Utf8Path::new(pathstr);
+        let copy_src = if let Some(src) = diff.source_map.get(pathstr) {
+            Utf8Path::new(src)
+        } else {
+            path
+        };
+        let (first_dir, first_dir_tmp) = get_first_dir(path)?;
         let mut path_tmp = Utf8PathBuf::from(&first_dir_tmp);
         if first_dir != path {
             if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
@@ -497,8 +527,8 @@ pub(crate) fn apply_diff(
         }
         updates.insert(first_dir, first_dir_tmp);
         srcdir
-            .copy_file_at(src_path.as_std_path(), destdir, path_tmp.as_std_path())
-            .with_context(|| format!("copying {:?} to {:?}", src_path, path_tmp))?;
+            .copy_file_at(copy_src.as_std_path(), destdir, path_tmp.as_std_path())
+            .with_context(|| format!("copying {:?} to {:?}", copy_src, path_tmp))?;
     }
 
     // do local exchange or rename
@@ -887,6 +917,46 @@ mod tests {
             let b_btime_foo_new = fs::metadata(pb.join(foo))?.created()?;
             assert_eq!(b_btime_foo_new, b_btime_foo);
         }
+        Ok(())
+    }
+
+    /// Test that apply_diff() uses source_map to copy from the original
+    /// source path when it differs from the destination key.
+    #[test]
+    fn test_apply_diff_source_map() -> Result<()> {
+        let tmpd = tempfile::tempdir()?;
+        let p = tmpd.path();
+        let src = p.join("src");
+        let dst = p.join("dst");
+        std::fs::create_dir(&src)?;
+        std::fs::create_dir(&dst)?;
+
+        let src_dir = openat::Dir::open(&src)?;
+        let dst_dir = openat::Dir::open(&dst)?;
+
+        // "original/data.bin" -> "remapped/data.bin" via source_map
+        src_dir.ensure_dir_all("original", 0o755)?;
+        src_dir.write_file("original/data.bin", 0o644)?;
+
+        let mut additions = HashSet::new();
+        additions.insert("remapped/data.bin".to_string());
+
+        let mut source_map = HashMap::new();
+        source_map.insert(
+            "remapped/data.bin".to_string(),
+            "original/data.bin".to_string(),
+        );
+
+        let diff = FileTreeDiff {
+            additions,
+            removals: HashSet::new(),
+            changes: HashSet::new(),
+            source_map,
+        };
+
+        apply_diff(&src_dir, &dst_dir, &diff, None)?;
+
+        assert!(dst_dir.exists("remapped/data.bin")?);
         Ok(())
     }
 }
