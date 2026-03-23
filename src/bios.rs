@@ -1,8 +1,6 @@
 use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use openat_ext::OpenatDirExt;
-#[cfg(target_arch = "powerpc64")]
-use std::borrow::Cow;
 use std::io::prelude::*;
 use std::path::Path;
 use std::process::Command;
@@ -20,27 +18,22 @@ use crate::packagesystem;
 pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
 
 #[cfg(target_arch = "powerpc64")]
-fn target_device(device: &str) -> Result<Cow<str>> {
+fn target_device(device: &Device) -> Result<String> {
     const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
     /// We make a best-effort to support MBR partitioning too.
     const PREPBOOT_MBR_TYPE: &str = "41";
 
-    // Here we use lsblk to see if the device has any partitions at all
-    let dev = bootc_internal_blockdev::list_dev(device.into())?;
-    if dev.children.is_none() {
-        return Ok(device.into());
-    };
-    // If it does, directly call `sfdisk` and bypass lsblk because inside a container
-    // we may not have all the cached udev state (that I think is in /run).
-    let device = bootc_internal_blockdev::partitions_of(device.into())?;
+    if !device.has_children() {
+        return Ok(device.path());
+    }
+
     let prepdev = device
-        .partitions
-        .iter()
-        .find(|p| matches!(p.parttype.as_str(), PREPBOOT_GUID | PREPBOOT_MBR_TYPE))
+        .find_partition_of_type(PREPBOOT_GUID)
+        .or_else(|| device.find_partition_of_type(PREPBOOT_MBR_TYPE))
         .ok_or_else(|| {
             anyhow::anyhow!("Failed to find PReP partition with GUID {PREPBOOT_GUID}")
         })?;
-    Ok(prepdev.path().as_str().to_owned().into())
+    Ok(prepdev.path())
 }
 
 #[derive(Default)]
@@ -64,7 +57,7 @@ impl Bios {
     }
 
     // Run grub2-install
-    fn run_grub_install(&self, dest_root: &str, device: &str) -> Result<()> {
+    fn run_grub_install(&self, dest_root: &str, device: &Device) -> Result<()> {
         if !self.check_grub_modules()? {
             bail!("Failed to find grub2-modules");
         }
@@ -82,7 +75,7 @@ impl Bios {
         cmd.args(["--target", "i386-pc"])
             .args(["--boot-directory", boot_dir.to_str().unwrap()])
             .args(["--modules", "mdraid1x part_gpt"])
-            .arg(device);
+            .arg(&device.path());
 
         #[cfg(target_arch = "powerpc64")]
         {
@@ -90,7 +83,7 @@ impl Bios {
             cmd.args(&["--target", "powerpc-ieee1275"])
                 .args(&["--boot-directory", boot_dir.to_str().unwrap()])
                 .arg("--no-nvram")
-                .arg(&*device);
+                .arg(&device);
         }
 
         let cmdout = cmd.output()?;
@@ -122,7 +115,7 @@ impl Component for Bios {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        self.run_grub_install(dest_root, &device.path())
+        self.run_grub_install(dest_root, device)
             .with_context(|| format!("installing GRUB on {}", device.path()))?;
 
         Ok(InstalledContent {
@@ -228,7 +221,7 @@ impl Component for Bios {
         // multi-disk setups (e.g. RAID), grub must be written to every backing
         // disk's MBR/BIOS-boot partition so the system can boot from any one.
         for parent in rootcxt.device.find_all_roots()? {
-            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
             log::debug!("Installed grub modules on {}", parent.path());
         }
 
@@ -265,7 +258,7 @@ impl Component for Bios {
             .expect("update available");
 
         for parent in rootcxt.device.find_all_roots()? {
-            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
             log::debug!("Installed grub modules on {}", parent.path());
         }
 
