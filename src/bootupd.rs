@@ -187,11 +187,30 @@ pub(crate) fn install(
         Some(uuid) => {
             let meta = get_static_config_meta()?;
             state.static_configs = Some(meta);
+
+            // On multi-device setups (e.g. RAID 1 with an ESP per disk) we
+            // need every ESP to carry grub.cfg and bootuuid.cfg so the system
+            // can boot from any disk.  Gather the additional ESP device paths
+            // now and pass them into grubconfigs::install so it writes to all
+            // of them.
+            let additional_esps: Vec<String> = if installed_efi_vendor.is_some() {
+                devices
+                    .first()
+                    .and_then(|dev| dev.find_colocated_esps().ok().flatten())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|dev| dev.path())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             crate::grubconfigs::install(
                 sysroot,
                 Some(&source_root_dir),
                 installed_efi_vendor.as_deref(),
                 uuid,
+                &additional_esps,
             )?;
             // On other architectures, assume that there's nothing to do.
         }
