@@ -117,30 +117,68 @@ pub(crate) fn install(
 
     if let Some(vendordir) = installed_efi_vendor {
         log::debug!("vendordir={:?}", &vendordir);
-        let vendor = PathBuf::from(vendordir);
-        let target = &vendor.join("grub.cfg");
         let dest_efidir = target_root
             .sub_dir_optional("boot/efi/EFI")
             .context("Opening /boot/efi/EFI")?;
         if let Some(efidir) = dest_efidir {
-            configdir
-                .copy_file_at("grub-static-efi.cfg", &efidir, target)
-                .context("Copying static EFI")?;
-            println!("Installed: {target:?}");
-            if let Some(uuid_path) = uuid_path {
-                let target = &vendor.join(uuid_path);
-                grub2dir
-                    .copy_file_at(uuid_path, &efidir, target)
-                    .context("Writing bootuuid.cfg to efi dir")?;
-                println!("Installed: {target:?}");
-            }
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+            write_esp_configs(&configdir, &grub2dir, &efidir, vendordir, uuid_path)?;
         } else {
+            let target = PathBuf::from(vendordir).join("grub.cfg");
             println!("Could not find /boot/efi/EFI when installing {target:?}");
         }
     }
 
     Ok(())
+}
+
+/// Write grub.cfg and optionally bootuuid.cfg to an ESP's EFI directory.
+///
+/// `efidir` should be the `EFI/` directory on the mounted ESP.
+/// `configdir` is the static grub config source (e.g. /usr/lib/bootupd/grub2-static/).
+/// `grub2dir` is the boot partition's grub2 directory (contains bootuuid.cfg).
+fn write_esp_configs(
+    configdir: &openat::Dir,
+    grub2dir: &openat::Dir,
+    efidir: &openat::Dir,
+    vendordir: &str,
+    uuid_path: Option<&str>,
+) -> Result<()> {
+    let vendor = PathBuf::from(vendordir);
+    let target = &vendor.join("grub.cfg");
+    configdir
+        .copy_file_at("grub-static-efi.cfg", efidir, target)
+        .context("Copying static EFI")?;
+    println!("Installed: {target:?}");
+    if let Some(uuid_path) = uuid_path {
+        let target = &vendor.join(uuid_path);
+        grub2dir
+            .copy_file_at(uuid_path, efidir, target)
+            .context("Writing bootuuid.cfg to efi dir")?;
+        println!("Installed: {target:?}");
+    }
+    fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+    Ok(())
+}
+
+/// Install grub.cfg and bootuuid.cfg to an ESP mounted at the given path.
+///
+/// This is used by the multi-device install path to sync GRUB configs to
+/// additional ESPs after the primary install writes to one.
+#[context("Installing GRUB configs to additional ESP")]
+pub(crate) fn install_to_esp(
+    src_root: Option<&openat::Dir>,
+    boot_grub2: &openat::Dir,
+    efidir: &openat::Dir,
+    vendordir: &str,
+    write_uuid: bool,
+) -> Result<()> {
+    let configdir = if let Some(src_root) = src_root {
+        src_root.sub_dir(Path::new(CONFIGDIR).strip_prefix("/")?)?
+    } else {
+        openat::Dir::open(Path::new(CONFIGDIR))?
+    };
+    let uuid_path = if write_uuid { Some("bootuuid.cfg") } else { None };
+    write_esp_configs(&configdir, boot_grub2, efidir, vendordir, uuid_path)
 }
 
 #[context("Create file boot/grub2/grubenv")]

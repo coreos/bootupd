@@ -32,6 +32,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
+use bootc_internal_utils::CommandRunExt;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 
@@ -193,6 +194,20 @@ pub(crate) fn install(
                 installed_efi_vendor.as_deref(),
                 uuid,
             )?;
+
+            // grubconfigs::install writes grub.cfg and bootuuid.cfg to the
+            // single ESP currently mounted at /boot/efi.  On multi-device
+            // setups we need to sync these files to every other ESP so that
+            // any disk can boot independently.
+            if let Some(ref vendor) = installed_efi_vendor {
+                sync_grub_configs_to_all_esps(
+                    sysroot,
+                    Some(&source_root_dir),
+                    devices,
+                    vendor,
+                    uuid,
+                )?;
+            }
             // On other architectures, assume that there's nothing to do.
         }
         None => {}
@@ -206,6 +221,89 @@ pub(crate) fn install(
     state_guard
         .update_state(&state)
         .context("failed to update state")?;
+
+    Ok(())
+}
+
+/// Sync GRUB config files (grub.cfg and bootuuid.cfg) to all ESP partitions
+/// found across the provided devices.
+///
+/// `grubconfigs::install()` writes these files to the single ESP currently
+/// mounted at `/boot/efi`. On multi-device setups (e.g. RAID 1 with an ESP
+/// per disk) we need every ESP to carry a copy so the system can boot from
+/// any disk.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "powerpc64",
+    target_arch = "riscv64"
+))]
+#[context("Syncing GRUB configs to all ESPs")]
+fn sync_grub_configs_to_all_esps(
+    sysroot: &openat::Dir,
+    source_root: Option<&openat::Dir>,
+    devices: &[Device],
+    vendor: &str,
+    write_uuid: bool,
+) -> Result<()> {
+    if devices.is_empty() {
+        return Ok(());
+    }
+
+    // Collect all ESP partition device paths.
+    let esp_parts: Vec<String> = devices
+        .iter()
+        .filter_map(|dev| dev.find_partition_of_esp().ok().map(|p| p.path()))
+        .collect();
+
+    if esp_parts.len() < 2 {
+        log::debug!("Fewer than 2 ESPs found, nothing to sync");
+        return Ok(());
+    }
+
+    let boot_grub2 = sysroot
+        .sub_dir(Path::new("boot").join(crate::grubconfigs::GRUB2DIR))
+        .context("Opening /boot/grub2")?;
+
+    let tmpdir = tempfile::tempdir().context("Creating temporary mount point")?;
+    let tmpmnt = tmpdir.path();
+
+    for esp_path in &esp_parts {
+        log::info!("Syncing GRUB configs to ESP {esp_path}");
+
+        // Mount the ESP
+        std::process::Command::new("mount")
+            .arg(esp_path)
+            .arg(tmpmnt)
+            .run_inherited()
+            .with_context(|| format!("Mounting ESP {esp_path}"))?;
+
+        let result = (|| -> Result<()> {
+            // Ensure the vendor directory exists under EFI/
+            let efi_vendor = tmpmnt.join("EFI").join(vendor);
+            std::fs::create_dir_all(&efi_vendor)
+                .with_context(|| format!("Creating {:?}", efi_vendor))?;
+
+            let efidir = openat::Dir::open(tmpmnt.join("EFI"))
+                .context("Opening EFI directory on ESP")?;
+
+            crate::grubconfigs::install_to_esp(
+                source_root,
+                &boot_grub2,
+                &efidir,
+                vendor,
+                write_uuid,
+            )
+        })();
+
+        // Always unmount, even on error
+        std::process::Command::new("umount")
+            .arg(tmpmnt)
+            .run_inherited()
+            .with_context(|| format!("Unmounting ESP {esp_path}"))?;
+
+        result?;
+    }
 
     Ok(())
 }
