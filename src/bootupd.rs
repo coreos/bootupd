@@ -268,6 +268,20 @@ pub(crate) fn get_components() -> Components {
     get_components_impl(false)
 }
 
+/// Return available components
+#[context("Get available components")]
+pub(crate) fn get_available_components(sysroot: &openat::Dir) -> Result<Components> {
+    let mut avail = BTreeMap::new();
+
+    for (name, component) in get_components_impl(false) {
+        if crate::component::get_component_update(sysroot, component.as_ref())?.is_some() {
+            avail.insert(name, component);
+        }
+    }
+
+    Ok(avail)
+}
+
 pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
     // create bootupd update dir which will save component metadata files for both components
     let updates_dir = Path::new(sysroot_path).join(crate::model::BOOTUPD_UPDATES_DIR);
