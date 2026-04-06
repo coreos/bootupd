@@ -28,27 +28,12 @@ dependencies = [
 
 [[package]]
 name = "anstream"
-version = "0.6.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
-dependencies = [
- "anstyle",
- "anstyle-parse 0.2.7",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
 dependencies = [
  "anstyle",
- "anstyle-parse 1.0.0",
+ "anstyle-parse",
  "anstyle-query",
  "anstyle-wincon",
  "colorchoice",
@@ -61,15 +46,6 @@ name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
-
-[[package]]
-name = "anstyle-parse"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
 
 [[package]]
 name = "anstyle-parse"
@@ -135,9 +111,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "0.2.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54393bf69cc17ef659609f3b1143beed0f7529c79ef045a876621a2f946a0051"
+checksum = "c5bc5a21ec66f6dbd7c54759cbe7d301d77384e1a63b6be84970e318c56616ea"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -156,9 +132,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-mount"
-version = "0.1.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2112a3bed0dd0ce551b7505fae6e7b57609952c666c3345d85ac289f3b396276"
+checksum = "a7b13d6fe6cf9bb631dfb6b7abfba83dcf6d65e16aa4dafab3a9a7047424a2cc"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
@@ -174,12 +150,13 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-utils"
-version = "0.1.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3292185c166091432ecbc6b203c0c73953d6b5965908368c51df800f1c549ed"
+checksum = "d592b7c0bc95d09071b248233ead1aaf16b7f42de62cbaa4c9f0ae1b3e342d5e"
 dependencies = [
- "anstream 0.6.21",
+ "anstream",
  "anyhow",
+ "cap-std-ext",
  "chrono",
  "owo-colors",
  "rustix",
@@ -474,7 +451,7 @@ version = "0.11.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
 dependencies = [
- "anstream 1.0.0",
+ "anstream",
  "anstyle",
  "env_filter",
  "jiff",
@@ -794,9 +771,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.183"
+version = "0.2.184"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
+checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 
 [[package]]
 name = "libsystemd"

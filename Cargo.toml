@@ -21,8 +21,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bootc-internal-blockdev = "0.2.0"
-bootc-internal-utils = "0.1.0"
+bootc-internal-blockdev = "1.15.0"
+bootc-internal-utils = "1.15.0"
 cap-std-ext = "5.0.0"
 camino = "1.2.2"
 chrono = { version = "0.4.44", features = ["serde"] }
