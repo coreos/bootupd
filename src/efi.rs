@@ -854,7 +854,7 @@ impl Component for Efi {
         }
     }
 
-    /// Package mode copy: Simple copy from /usr/lib/efi to boot/ESP.
+    /// Package mode: merge `/usr/lib/efi` onto the ESP (write alongside, then atomic rename).
     fn package_mode_copy_to_boot(&self, root: &Path) -> Result<()> {
         self.package_mode_copy_to_boot_impl(root)
     }

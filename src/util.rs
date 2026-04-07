@@ -63,8 +63,7 @@ pub(crate) fn available_space_bytes(dir: &openat::Dir) -> Result<u64> {
 
 pub(crate) fn ensure_writable_mount<P: AsRef<Path>>(p: P) -> Result<()> {
     let p = p.as_ref();
-    let stat =
-        rustix::fs::statvfs(p).map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+    let stat = rustix::fs::statvfs(p).with_context(|| format!("statvfs {:?}", p))?;
     if !stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
         return Ok(());
     }
