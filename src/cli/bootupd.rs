@@ -38,6 +38,11 @@ pub enum DVerb {
     GenerateUpdateMetadata(GenerateOpts),
     #[clap(name = "install", about = "Install components")]
     Install(InstallOpts),
+    #[clap(
+        name = "copy-to-boot",
+        about = "Copy bootloader files from /usr/lib/efi to ESP (package mode), EFI only"
+    )]
+    CopyToBoot,
 }
 
 #[derive(Debug, Parser)]
@@ -97,6 +102,7 @@ impl DCommand {
         match self.cmd {
             DVerb::Install(opts) => Self::run_install(opts),
             DVerb::GenerateUpdateMetadata(opts) => Self::run_generate_meta(opts),
+            DVerb::CopyToBoot => Self::run_copy_to_boot(),
         }
     }
 
@@ -144,6 +150,11 @@ impl DCommand {
             opts.auto,
         )
         .context("boot data installation failed")?;
+        Ok(())
+    }
+
+    pub(crate) fn run_copy_to_boot() -> Result<()> {
+        bootupd::copy_to_boot(std::path::Path::new("/")).context("copying to boot failed")?;
         Ok(())
     }
 }
