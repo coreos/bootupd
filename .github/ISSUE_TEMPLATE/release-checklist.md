@@ -11,6 +11,8 @@ The release process follows the usual PR-and-review flow, allowing an external r
 
 In order to ease downstream packaging of Rust binaries, an archive of vendored dependencies is also provided (only relevant for offline builds).
 
+crates.io publishing uses [trusted publishing](https://crates.io/docs/trusted-publishing) (OIDC, no API tokens) and triggers automatically on tag push (`.github/workflows/crates-release.yml`).
+
 ## Requirements
 
 This guide requires:
@@ -22,10 +24,7 @@ This guide requires:
  * `cargo` (suggested: latest stable toolchain from [rustup][rustup])
  * `cargo-release` (suggested: `cargo install -f cargo-release`)
  * `cargo vendor-filterer` (suggested: `cargo install -f cargo-vendor-filterer`)
- * A verified account on crates.io
  * Write access to this GitHub project
- * Upload access to this project on GitHub, crates.io
- * Membership in the [Fedora CoreOS Crates Owners group](https://github.com/orgs/coreos/teams/fedora-coreos-crates-owners/members)
 
 ## Release checklist
 
@@ -54,15 +53,15 @@ This guide requires:
   - [ ] verify `Cargo.toml` has the expected version
   - [ ] `git-evtag sign v${RELEASE_VER}`
   - [ ] `git push --tags origin v${RELEASE_VER}`
-  - [ ] `cargo publish`
+  - [ ] **Automated:** `crates-release.yml` publishes to crates.io via trusted publishing
 
 - publish this release on GitHub:
   - [ ] find the new tag in the [GitHub tag list](https://github.com/coreos/bootupd/tags), click the triple dots menu, and create a release for it
   - [ ] write a short changelog with `git shortlog $last_tag..` (i.e. re-use the PR content). See previous releases for format, for example [`v0.2.25`](https://hackmd.io/@hhei/SkYe0AtMye)
-  - [ ] upload `target/${PROJECT}-${RELEASE_VER}-vendor.tar.gz`
+  - [ ] upload `target/${PROJECT}-${RELEASE_VER}-vendor.tar.zstd`
   - [ ] record digests of local artifacts:
     - `sha256sum target/package/${PROJECT}-${RELEASE_VER}.crate`
-    - `sha256sum target/${PROJECT}-${RELEASE_VER}-vendor.tar.gz`
+    - `sha256sum target/${PROJECT}-${RELEASE_VER}-vendor.tar.zstd`
   - [ ] publish release
 
 - clean up:
