@@ -427,17 +427,19 @@ pub(crate) fn adopt_and_update(
 /// Get the block device backing the current root by trying `/boot` first,
 /// then falling back to `/sysroot`. This avoids issues with virtual
 /// filesystems like composefs that are mounted on `/`.
-#[context("Finding block device from boot or sysroot")]
-fn list_dev_current_root() -> Result<Device> {
+///
+/// Returns `Ok(None)` when no block-backed filesystem is found (e.g. virtiofs
+/// in bcvk ephemeral, NFS root, ISO boot), so callers can skip gracefully.
+fn list_dev_current_root() -> Result<Option<Device>> {
     let auth = cap_std::ambient_authority();
     for path in ["/boot", "/sysroot"] {
         if let Ok(dir) = Dir::open_ambient_dir(path, auth) {
             if let Ok(dev) = bootc_internal_blockdev::list_dev_by_dir(&dir) {
-                return Ok(dev);
+                return Ok(Some(dev));
             }
         }
     }
-    anyhow::bail!("Failed to find block device from /boot or /sysroot")
+    Ok(None)
 }
 
 /// daemon implementation of component validate
@@ -447,7 +449,9 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    let device = list_dev_current_root()?;
+    let Some(device) = list_dev_current_root()? else {
+        return Ok(ValidationResult::Skip);
+    };
     component.validate(inst, &device)
 }
 
@@ -609,17 +613,27 @@ impl RootContext {
     }
 }
 
-/// Initialize parent devices to prepare the update
-fn prep_before_update() -> Result<RootContext> {
+/// Initialize parent devices to prepare the update.
+///
+/// Returns `Ok(None)` when no block-backed boot filesystem is found,
+/// so the caller can skip the update gracefully.
+fn prep_before_update() -> Result<Option<RootContext>> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let device = list_dev_current_root()?;
-    Ok(RootContext::new(sysroot, path, device))
+    let Some(device) = list_dev_current_root()? else {
+        println!(
+            "No block-backed boot filesystem found; bootloader update is not applicable, skipping."
+        );
+        return Ok(None);
+    };
+    Ok(Some(RootContext::new(sysroot, path, device)))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
     crate::try_fail_point!("update");
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.components.is_empty() && status.adoptable.is_empty() {
         println!("No components installed.");
@@ -674,7 +688,9 @@ pub(crate) fn client_run_update() -> Result<()> {
 }
 
 pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
