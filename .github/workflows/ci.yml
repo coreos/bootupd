@@ -114,3 +114,19 @@ jobs:
         run: |
           set -xeuo pipefail
           sudo podman run --rm -v $PWD:/run/src -w /run/src --privileged localhost/bootupd:latest tests/tests/generate-update-metadata.sh
+
+  # Verify bootupd works in a bcvk ephemeral (virtiofs) environment.
+  # This catches regressions where bootloader-update.service fails on
+  # systems without a disk-backed bootloader (direct kernel boot).
+  ephemeral:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+      - name: Build container image
+        run: sudo podman build --build-arg=base=quay.io/fedora/fedora-bootc:43 -t localhost/bootupd:latest -f Dockerfile .
+      - name: Smoke test (bcvk ephemeral)
+        timeout-minutes: 10
+        run: sudo bcvk ephemeral run-ssh localhost/bootupd:latest -- /usr/libexec/bootupd-tests/ephemeral-test.sh
