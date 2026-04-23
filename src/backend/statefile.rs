@@ -57,7 +57,8 @@ fn get_parent_device(root: &Dir) -> Result<Device> {
     if root_fs.fstype == "overlay" && root_fs.source.contains("composefs") {
         // Root is mounted as overlay composefs, lsblk will throw an error
         // Ergo, find backing device by looking at mountpoints for /sysroot | /boot
-        return list_dev_current_root();
+        return list_dev_current_root()?
+            .context("Failed to find block device from /boot or /sysroot");
     }
 
     return bootc_internal_blockdev::list_dev_by_dir(root);
