@@ -53,7 +53,7 @@ ok validate
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-1:'
+assert_file_has_content out.txt "  Installed: ${TARGET_GRUB_NAME}-"
 assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
 assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_EVR}"
 assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_EVR}"

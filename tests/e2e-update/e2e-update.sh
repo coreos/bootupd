@@ -74,6 +74,7 @@ grubarch=
 case $(arch) in
     x86_64) grubarch=x64;;
     aarch64) grubarch=aa64;;
+    riscv64) grubarch=riscv64;;
     *) fatal "Unhandled arch $(arch)";;
 esac
 target_grub_name=grub2-efi-${grubarch}

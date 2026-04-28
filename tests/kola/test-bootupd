@@ -58,8 +58,15 @@ test -n "${shimx64_path}" && test -n "${grubx64_path}"
 
 bootupctl status > out.txt
 evr=$(rpm -q grub2-common --qf '%{EVR}')
+case $(arch) in
+    x86_64) grubarch=x64;;
+    aarch64) grubarch=aa64;;
+    riscv64) grubarch=riscv64;;
+    *) fatal "Unhandled arch $(arch)";;
+esac
+grub_efi_name=grub2-efi-${grubarch}
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+assert_file_has_content_literal out.txt '  Installed: '"${grub_efi_name}"'-'"${evr}"
 assert_file_has_content_literal out.txt 'Update: At latest version'
 assert_file_has_content out.txt '^CoreOS aleph version:'
 ok status
@@ -92,21 +99,21 @@ mv new.json ${bootupdir}/EFI.json
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
-assert_not_file_has_content out.txt '  Installed: grub2-.*,test'
+assert_file_has_content_literal out.txt '  Installed: '"${grub_efi_name}"'-'"${evr}"
+assert_not_file_has_content out.txt '  Installed: '"${grub_efi_name}"'-.*,test'
 assert_file_has_content_literal out.txt 'Update: Available:'
 ok update avail
 
 bootupctl status --json > status.json
 jq -r '.components.EFI.installed.version' < status.json > installed.txt
-assert_file_has_content installed.txt '^grub2-'"${evr}"
+assert_file_has_content installed.txt '^'"${grub_efi_name}"'-'"${evr}"
 
 bootupctl update | tee out.txt
-assert_file_has_content out.txt 'Updated EFI: grub2-.*,test'
+assert_file_has_content out.txt 'Updated EFI: '"${grub_efi_name}"'-.*,test'
 
 bootupctl status > out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content out.txt '  Installed: grub2-.*,test'
+assert_file_has_content out.txt '  Installed: '"${grub_efi_name}"'-.*,test'
 assert_file_has_content_literal out.txt 'Update: At latest version'
 ok status after update
 
