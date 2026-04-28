@@ -73,6 +73,8 @@ pub enum CtlBackend {
     Generate(super::bootupd::GenerateOpts),
     #[clap(name = "install", hide = true)]
     Install(super::bootupd::InstallOpts),
+    #[clap(name = "copy-to-boot", hide = true)]
+    CopyToBoot,
 }
 
 #[derive(Debug, Parser)]
@@ -108,6 +110,9 @@ impl CtlCommand {
             }
             CtlVerb::Backend(CtlBackend::Install(opts)) => {
                 super::bootupd::DCommand::run_install(opts)
+            }
+            CtlVerb::Backend(CtlBackend::CopyToBoot) => {
+                super::bootupd::DCommand::run_copy_to_boot()
             }
             CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
         }
