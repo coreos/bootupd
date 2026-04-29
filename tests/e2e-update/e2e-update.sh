@@ -77,6 +77,7 @@ case $(arch) in
     *) fatal "Unhandled arch $(arch)";;
 esac
 target_grub_name=grub2-efi-${grubarch}
+target_grub_pkg=$(rpm -qp --queryformat='%{nevra}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
 target_grub_evr=$(rpm -qp --queryformat='%{evr}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
 target_commit=$(cosa meta --get-value ostree-commit)
 echo "Target commit: ${target_commit}"
@@ -97,6 +98,7 @@ systemd:
         RemainAfterExit=yes
         Environment=TARGET_COMMIT=${target_commit}
         Environment=TARGET_GRUB_NAME=${target_grub_name}
+        Environment=TARGET_GRUB_PKG=${target_grub_pkg}
         Environment=TARGET_GRUB_EVR=${target_grub_evr}
         Environment=SRCDIR=/run/bootupd-source
         # Run via shell because selinux denies systemd writing to 9p apparently

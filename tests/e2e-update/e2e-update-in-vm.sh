@@ -53,11 +53,21 @@ ok validate
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-1:'
-assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
-assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_EVR}"
-assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_EVR}"
-assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload-1.0'
+
+if [[ -d /usr/lib/efi ]]; then
+    assert_file_has_content_literal out.txt '  Installed: grub2-1:'
+    assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
+    assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_EVR}"
+    assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_EVR}"
+    assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload-1.0'
+else
+    assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
+    assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
+    assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_PKG}"
+    assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_PKG}"
+    assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload-1.0'
+fi
+
 bootupctl status --print-if-available > out.txt
 assert_file_has_content_literal 'out.txt' 'Updates available: BIOS EFI'
 ok update avail

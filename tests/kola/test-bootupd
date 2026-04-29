@@ -4,7 +4,7 @@ set -xeuo pipefail
 . ${KOLA_EXT_DATA}/libtest.sh
 
 tmpdir=$(mktemp -d)
-cd ${tmpdir}
+cd "${tmpdir}"
 echo "using tmpdir: ${tmpdir}"
 touch .testtmp
 trap cleanup EXIT
@@ -21,18 +21,36 @@ function cleanup () {
 
 # Mount the EFI partition.
 tmpefimount=$(mount_tmp_efi)
-bootmount=/boot
+# Path to <tmp_efi_mount>/EFI
 tmpefidir=${tmpefimount}/EFI
+# /usr/lib/bootupd/updates
 bootupdir=/usr/lib/bootupd/updates
+# fedora
 efisubdir=fedora
+# /usr/lib/bootupd/updates/EFI
+efiupdir=${bootupdir}/EFI
+# /usr/lib/ostree-boot/efi/EFI
+ostbaseefi=/usr/lib/ostree-boot/efi/EFI
+# /usr/lib/ostree-boot/efi/EFI/fedora
+ostefi=${ostbaseefi}/${efisubdir}
 shimx64=shimx64.efi
 grubx64=grubx64.efi
-efilib=/usr/lib/efi
+usrlibefi=/usr/lib/efi
+# Path to <tmp_efi_mount>/EFI/fedora
 tmpefisubdir=${tmpefidir}/${efisubdir}
+
+if [ -d efilib ]; then efilib_exists=true; else efilib_exists=false; fi
 
 prepare_efi_update() {
   test -w /usr
   rm -rf ${bootupdir}/EFI.json
+}
+
+prepare_efi_update_old_layout() {
+  test -w /usr
+  mkdir -p ${ostbaseefi}
+  cp -a ${efiupdir}.orig/* ${ostbaseefi}/
+  rm -rf ${efiupdir} ${bootupdir}/EFI.json
 }
 
 # backup: update_metadata_move EFI EFI-bak
@@ -48,18 +66,30 @@ update_metadata_move() {
   mv -- "$src" "$dst"
 }
 
-# Find the files under usr/lib/efi after transferred
-shim_path=$(find ${efilib} -name shim.efi)
-shimx64_path=$(find ${efilib} -name ${shimx64})
-grubx64_path=$(find ${efilib} -name ${grubx64})
+if $efilib_exists; then
+    # Find the files under usr/lib/efi after transferred
+    shim_path=$(find ${usrlibefi} -name shim.efi)
+    shimx64_path=$(find ${usrlibefi} -name ${shimx64})
+    grubx64_path=$(find ${usrlibefi} -name ${grubx64})
 
-test -n "${shimx64_path}" && test -n "${grubx64_path}"
-! test -d "/usr/lib/bootupd/updates/EFI"
+    test -n "${shimx64_path}" && test -n "${grubx64_path}"
+    test -d "/usr/lib/bootupd/updates/EFI" && exit 1
+else
+    shim_path=$(find ${bootupdir} -name shim.efi)
+    shimx64_path=$(find ${bootupdir} -name ${shimx64})
+    grubx64_path=$(find ${bootupdir} -name ${grubx64})
+
+    test -n "${shimx64_path}" && test -n "${grubx64_path}"
+fi
 
 bootupctl status > out.txt
 evr=$(rpm -q grub2-common --qf '%{EVR}')
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+if  $efilib_exists; then
+    assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+else
+    assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
+fi
 assert_file_has_content_literal out.txt 'Update: At latest version'
 assert_file_has_content out.txt '^CoreOS aleph version:'
 ok status
@@ -75,10 +105,18 @@ assert_file_has_content err.txt 'error: This command requires root privileges'
 # From here we'll fake updates
 test -w /usr || rpm-ostree usroverlay
 
-prepare_efi_update
+if $efilib_exists; then
+    prepare_efi_update
+    rm -v "${shim_path}"
+    echo bootupd-test-changes >> "${grubx64_path}"
+else
+    # Save a backup copy of the update dir
+    cp -a ${efiupdir} ${efiupdir}.orig
+    prepare_efi_update_old_layout
+    rm -v ${ostefi}/shim.efi
+    echo bootupd-test-changes >> ${ostefi}/grubx64.efi
+fi
 
-rm -v ${shim_path}
-echo bootupd-test-changes >> ${grubx64_path}
 /usr/libexec/bootupd generate-update-metadata /
 ver=$(jq -r .version < ${bootupdir}/EFI.json)
 vers=$(jq -r .versions < ${bootupdir}/EFI.json)
@@ -92,14 +130,23 @@ mv new.json ${bootupdir}/EFI.json
 
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+if  $efilib_exists; then
+    assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+else
+    assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
+fi
 assert_not_file_has_content out.txt '  Installed: grub2-.*,test'
 assert_file_has_content_literal out.txt 'Update: Available:'
 ok update avail
 
 bootupctl status --json > status.json
 jq -r '.components.EFI.installed.version' < status.json > installed.txt
-assert_file_has_content installed.txt '^grub2-'"${evr}"
+
+if  $efilib_exists; then
+    assert_file_has_content installed.txt '^grub2-'"${evr}"
+else
+    assert_file_has_content installed.txt '^grub2-efi-x64'
+fi
 
 bootupctl update | tee out.txt
 assert_file_has_content out.txt 'Updated EFI: grub2-.*,test'
@@ -115,13 +162,13 @@ ok validate after update
 
 # FIXME see above
 # assert_file_has_content ${tmpefidir}/${efisubdir}/somenew.efi 'somenewfile'
-if test -f ${tmpefisubdir}/shim.efi; then 
+if test -f "${tmpefisubdir}/shim.efi"; then 
   fatal "failed to remove file"
 fi
-if ! grep -q 'bootupd-test-changes' ${tmpefisubdir}/${grubx64}; then
+if ! grep -q 'bootupd-test-changes' "${tmpefisubdir}/${grubx64}"; then
   fatal "failed to update modified file"
 fi
-cmp ${tmpefisubdir}/${shimx64} ${shimx64_path}
+cmp "${tmpefisubdir}/${shimx64}" "${shimx64_path}"
 ok filesystem changes
 
 bootupctl update | tee out.txt
@@ -162,7 +209,7 @@ else
   assert_not_file_has_content out.txt 'Adopted and updated: EFI:'
 fi
 
-echo "some additions" >> ${tmpefisubdir}/${shimx64}
+echo "some additions" >> "${tmpefisubdir}/${shimx64}"
 if bootupctl validate 2>err.txt; then
   fatal "unexpectedly passed validation"
 fi
