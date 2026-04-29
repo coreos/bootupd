@@ -15,7 +15,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
-use chrono::prelude::*;
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
@@ -29,7 +28,7 @@ use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util;
+use crate::util::{self, get_metadata_timestamp};
 use crate::{component::*, packagesystem::*};
 use crate::{filetree, grubconfigs};
 
@@ -817,10 +816,8 @@ fn generate_meta_from_usr_efi(sysroot_path: &Utf8Path) -> Result<ContentMetadata
     }
     modules_vec.sort_unstable();
 
-    // change to now to workaround https://github.com/coreos/bootupd/issues/933
-    let timestamp = std::time::SystemTime::now();
     let meta = ContentMetadata {
-        timestamp: chrono::DateTime::<Utc>::from(timestamp),
+        timestamp: get_metadata_timestamp()?,
         version: packages.join(","),
         versions: Some(modules_vec),
     };
