@@ -3,6 +3,8 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
+use fn_error_context::context;
 use openat_ext::OpenatDirExt;
 
 /// Parse an environment variable as UTF-8
@@ -120,4 +122,26 @@ impl Drop for SignalTerminationGuard {
     fn drop(&mut self) {
         signal_hook_registry::unregister(self.0);
     }
+}
+
+#[context("Getting timestamp for metadata")]
+pub fn get_metadata_timestamp() -> Result<DateTime<Utc>> {
+    let ts = match std::env::var("SOURCE_DATE_EPOCH") {
+        Ok(value) => {
+            let unix_secs = value
+                .parse::<i64>()
+                .context("Parsing SOURCE_DATE_EPOCH as integer")?;
+
+            chrono::DateTime::from_timestamp_secs(unix_secs).ok_or_else(|| {
+                anyhow::anyhow!("SOURCE_DATE_EPOCH value '{value}' is not a valid timestamp")
+            })?
+        }
+        Err(std::env::VarError::NotPresent) => {
+            let timestamp = std::time::SystemTime::now();
+            chrono::DateTime::<Utc>::from(timestamp)
+        }
+        Err(e) => Err(e).context("Reading SOURCE_DATE_EPOCH")?,
+    };
+
+    Ok(ts)
 }
