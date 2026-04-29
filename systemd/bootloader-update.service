@@ -4,6 +4,9 @@ Documentation=https://github.com/coreos/bootupd
 
 [Service]
 Type=oneshot
+# It doesn't make sense to update bootloader in "Live" environments.
+# https://github.com/coreos/fedora-coreos-tracker/issues/2136
+ExecCondition=/bin/bash -c '[[ ! $(findmnt -n -o FSTYPE /sysroot) =~ ^(erofs|squashfs)$ ]]'
 ExecStart=/usr/bin/bootupctl update
 RemainAfterExit=yes
 # Keep this stuff in sync with SYSTEMD_ARGS_BOOTUPD in general
