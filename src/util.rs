@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 
@@ -6,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use fn_error_context::context;
 use openat_ext::OpenatDirExt;
+use rustix::fd::BorrowedFd;
 
 /// Parse an environment variable as UTF-8
 #[allow(dead_code)]
@@ -53,9 +55,17 @@ pub(crate) fn filenames(dir: &openat::Dir) -> Result<HashSet<String>> {
     Ok(ret)
 }
 
+/// Return the available space in bytes on the filesystem containing the given directory.
+/// Uses f_bavail * f_frsize from fstatvfs to avoid partial updates when the partition is full.
+pub(crate) fn available_space_bytes(dir: &openat::Dir) -> Result<u64> {
+    let fd = unsafe { BorrowedFd::borrow_raw(dir.as_raw_fd()) };
+    let st = rustix::fs::fstatvfs(fd)?;
+    Ok((st.f_bavail as u64) * (st.f_frsize as u64))
+}
+
 pub(crate) fn ensure_writable_mount<P: AsRef<Path>>(p: P) -> Result<()> {
     let p = p.as_ref();
-    let stat = rustix::fs::statvfs(p)?;
+    let stat = rustix::fs::statvfs(p).with_context(|| format!("statvfs {:?}", p))?;
     if !stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
         return Ok(());
     }
