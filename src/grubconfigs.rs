@@ -27,12 +27,17 @@ const GRUB_FILES: [&str; 3] = ["bootuuid.cfg", GRUBCONFIG, GRUBENV];
 pub(crate) const GRUBCONFIG_FILE_MODE: u32 = 0o600;
 
 /// Install the static GRUB config files.
+///
+/// When `additional_esp_devices` is non-empty, grub.cfg and bootuuid.cfg are
+/// also written to every listed ESP partition (each is mounted temporarily,
+/// written to, then unmounted).
 #[context("Installing static GRUB configs")]
 pub(crate) fn install(
     target_root: &openat::Dir,
     src_root: Option<&openat::Dir>,
     installed_efi_vendor: Option<&str>,
     write_uuid: bool,
+    additional_esp_devices: &[String],
 ) -> Result<()> {
     let bootdir = &target_root.sub_dir("boot").context("Opening /boot")?;
     let boot_is_mount = {
@@ -117,29 +122,82 @@ pub(crate) fn install(
 
     if let Some(vendordir) = installed_efi_vendor {
         log::debug!("vendordir={:?}", &vendordir);
-        let vendor = PathBuf::from(vendordir);
-        let target = &vendor.join("grub.cfg");
         let dest_efidir = target_root
             .sub_dir_optional("boot/efi/EFI")
             .context("Opening /boot/efi/EFI")?;
         if let Some(efidir) = dest_efidir {
-            configdir
-                .copy_file_at("grub-static-efi.cfg", &efidir, target)
-                .context("Copying static EFI")?;
-            println!("Installed: {target:?}");
-            if let Some(uuid_path) = uuid_path {
-                let target = &vendor.join(uuid_path);
-                grub2dir
-                    .copy_file_at(uuid_path, &efidir, target)
-                    .context("Writing bootuuid.cfg to efi dir")?;
-                println!("Installed: {target:?}");
-            }
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+            write_esp_configs(&configdir, &grub2dir, &efidir, vendordir, uuid_path)?;
         } else {
+            let target = PathBuf::from(vendordir).join("grub.cfg");
             println!("Could not find /boot/efi/EFI when installing {target:?}");
+        }
+
+        // Write grub configs to every additional ESP so that any disk can
+        // boot independently in multi-device setups.
+        if !additional_esp_devices.is_empty() {
+            let tmpdir = tempfile::tempdir().context("Creating temporary mount point")?;
+            let tmpmnt = tmpdir.path();
+
+            for esp_path in additional_esp_devices {
+                log::info!("Installing GRUB configs to ESP {esp_path}");
+
+                std::process::Command::new("mount")
+                    .arg(esp_path)
+                    .arg(tmpmnt)
+                    .run_inherited()
+                    .with_context(|| format!("Mounting ESP {esp_path}"))?;
+
+                let result = (|| -> Result<()> {
+                    let efi_vendor = tmpmnt.join("EFI").join(vendordir);
+                    std::fs::create_dir_all(&efi_vendor)
+                        .with_context(|| format!("Creating {:?}", efi_vendor))?;
+
+                    let efidir = openat::Dir::open(&tmpmnt.join("EFI"))
+                        .context("Opening EFI directory on ESP")?;
+
+                    write_esp_configs(&configdir, &grub2dir, &efidir, vendordir, uuid_path)
+                })();
+
+                // Always unmount, even on error
+                std::process::Command::new("umount")
+                    .arg(tmpmnt)
+                    .run_inherited()
+                    .with_context(|| format!("Unmounting ESP {esp_path}"))?;
+
+                result?;
+            }
         }
     }
 
+    Ok(())
+}
+
+/// Write grub.cfg and optionally bootuuid.cfg to an ESP's EFI directory.
+///
+/// `efidir` should be the `EFI/` directory on the mounted ESP.
+/// `configdir` is the static grub config source (e.g. /usr/lib/bootupd/grub2-static/).
+/// `grub2dir` is the boot partition's grub2 directory (contains bootuuid.cfg).
+fn write_esp_configs(
+    configdir: &openat::Dir,
+    grub2dir: &openat::Dir,
+    efidir: &openat::Dir,
+    vendordir: &str,
+    uuid_path: Option<&str>,
+) -> Result<()> {
+    let vendor = PathBuf::from(vendordir);
+    let target = &vendor.join("grub.cfg");
+    configdir
+        .copy_file_at("grub-static-efi.cfg", efidir, target)
+        .context("Copying static EFI")?;
+    println!("Installed: {target:?}");
+    if let Some(uuid_path) = uuid_path {
+        let target = &vendor.join(uuid_path);
+        grub2dir
+            .copy_file_at(uuid_path, efidir, target)
+            .context("Writing bootuuid.cfg to efi dir")?;
+        println!("Installed: {target:?}");
+    }
+    fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
     Ok(())
 }
 
@@ -203,7 +261,7 @@ mod tests {
         std::fs::create_dir_all(tdp.join("boot/grub2"))?;
         std::fs::create_dir_all(tdp.join("boot/efi/EFI/BOOT"))?;
         std::fs::create_dir_all(tdp.join("boot/efi/EFI/fedora"))?;
-        install(&td, None, Some("fedora"), false).unwrap();
+        install(&td, None, Some("fedora"), false, &[]).unwrap();
 
         assert!(td.exists("boot/grub2/grub.cfg")?);
         assert!(td.exists("boot/efi/EFI/fedora/grub.cfg")?);
