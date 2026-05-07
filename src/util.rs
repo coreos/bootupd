@@ -5,7 +5,19 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use openat_ext::OpenatDirExt;
-use rustix::fd::BorrowedFd;
+use rustix::fd::{AsFd, BorrowedFd};
+
+/// [`openat::Dir`] only implements [`AsRawFd`]; this bridges to [`rustix::fd::AsFd`] so we can call
+/// [`rustix::fs::fstatvfs`] with `.as_fd()`, consistent with other rustix call sites in this crate
+/// (for example `cap_std::fs::Dir` in `efi.rs`).
+struct OpenatDirAsFd<'a>(&'a openat::Dir);
+
+impl AsFd for OpenatDirAsFd<'_> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: `openat::Dir` owns the fd; the borrow is tied to `&openat::Dir`.
+        unsafe { BorrowedFd::borrow_raw(self.0.as_raw_fd()) }
+    }
+}
 
 /// Parse an environment variable as UTF-8
 #[allow(dead_code)]
@@ -56,8 +68,7 @@ pub(crate) fn filenames(dir: &openat::Dir) -> Result<HashSet<String>> {
 /// Return the available space in bytes on the filesystem containing the given directory.
 /// Uses f_bavail * f_frsize from fstatvfs to avoid partial updates when the partition is full.
 pub(crate) fn available_space_bytes(dir: &openat::Dir) -> Result<u64> {
-    let fd = unsafe { BorrowedFd::borrow_raw(dir.as_raw_fd()) };
-    let st = rustix::fs::fstatvfs(fd)?;
+    let st = rustix::fs::fstatvfs(OpenatDirAsFd(dir).as_fd())?;
     Ok((st.f_bavail as u64) * (st.f_frsize as u64))
 }
 
