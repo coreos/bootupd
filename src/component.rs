@@ -86,7 +86,8 @@ pub(crate) trait Component {
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
 
-    /// Merge `/usr/lib/efi` onto the ESP for package-mode systems (EFI components only).
+    /// Merge `/usr/lib/efi` onto the ESP for package-mode systems (EFI only). Deletes only under
+    /// `EFI/<vendor>/` for vendors shipped in this merge; other ESP subtrees are left alone.
     fn package_mode_copy_to_boot(&self, root: &Path) -> Result<()>;
 }
 
