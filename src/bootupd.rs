@@ -802,7 +802,9 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     Ok(())
 }
 
-/// Copy bootloader files from /usr/lib/efi to boot/ESP for package mode installations.
+/// Copy EFI payloads from `/usr/lib/efi` onto the ESP for package-mode installs. Removals are
+/// scoped to `EFI/<vendor>/` trees present in this merge; other top-level ESP dirs are untouched.
+/// BIOS components are no-ops.
 pub(crate) fn copy_to_boot(root: &Path) -> Result<()> {
     let all_components = get_components_impl(false);
     if all_components.is_empty() {
