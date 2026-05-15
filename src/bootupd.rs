@@ -802,7 +802,7 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     Ok(())
 }
 
-/// Copy EFI payloads from `/usr/lib/efi` onto the ESP for package-mode installs. 
+/// Copy EFI payloads from `/usr/lib/efi` onto the ESP for package-mode installs.
 pub(crate) fn copy_to_boot(root: &Path) -> Result<()> {
     let all_components = get_components_impl(false);
     if all_components.is_empty() {
