@@ -323,7 +323,10 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
             std::cmp::Ordering::Less => p, // current < available -> upgrade
             _ => return Ok(ComponentUpdateResult::AtLatestVersion),
         },
-        None => return Ok(ComponentUpdateResult::AtLatestVersion),
+        None => {
+            component.query_requires_update(sysroot)?;
+            return Ok(ComponentUpdateResult::AtLatestVersion);
+        }
     };
 
     ensure_writable_boot()?;
