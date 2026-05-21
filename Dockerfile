@@ -27,6 +27,8 @@ COPY --from=build /out/ /
 RUN <<EORUN
 set -xeuo pipefail
 dnf -y install dnf-plugins-core
+# dnf5 (used on Fedora 43+) needs the copr plugin installed separately
+dnf -y install dnf5-plugins 2>/dev/null || true
 dnf -y copr enable rhcontainerbot/bootc centos-stream-9-x86_64
 dnf -y install bootc
 dnf clean all
