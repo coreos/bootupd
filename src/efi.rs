@@ -613,12 +613,15 @@ impl Component for Efi {
     }
 
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
-        let content_metadata = get_component_update(sysroot, self)?;
+        get_component_update(sysroot, self)
+    }
+
+    fn query_requires_update(&self, _sysroot: &openat::Dir) -> Result<()> {
         // Failed as expected if booted with EFI and no update metadata
-        if content_metadata.is_none() && is_efi_booted()? {
+        if is_efi_booted()? {
             anyhow::bail!("Failed to find EFI update metadata");
         }
-        Ok(content_metadata)
+        Ok(())
     }
 
     fn validate(&self, current: &InstalledContent, device: &Device) -> Result<ValidationResult> {

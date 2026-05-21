@@ -73,6 +73,11 @@ pub(crate) trait Component {
     /// Used on the client to query for an update cached in the current booted OS.
     fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>>;
 
+    /// This is called in the update code if query_update() returned no metadata.
+    /// It should return an error if the current booted system should expect some
+    /// metadata for this component.
+    fn query_requires_update(&self, sysroot: &openat::Dir) -> Result<()>;
+
     /// Used on the client to run an update.
     fn run_update(
         &self,
