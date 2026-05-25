@@ -111,9 +111,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.15.1"
+version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefb90275e78eb421e442d6f357fab418285925f40238a7b16bc33fbb7d6a244"
+checksum = "d4d0538d8f5fd1b42686f46d2142926697dc2b477d509e59f67ae45431910225"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -1358,9 +1358,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",
