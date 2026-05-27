@@ -34,6 +34,7 @@ rm -rf /var/log
 rm -rf /var/lib
 rm -rf /var/cache
 rm -rf /run/rhsm
+rm -rf /tmp/*
 EORUN
 # Remove /var/roothome as workaround
 RUN <<EORUN
