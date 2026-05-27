@@ -39,7 +39,7 @@ usrlibefi=/usr/lib/efi
 # Path to <tmp_efi_mount>/EFI/fedora
 tmpefisubdir=${tmpefidir}/${efisubdir}
 
-if [ -d efilib ]; then efilib_exists=true; else efilib_exists=false; fi
+if [ -d ${usrlibefi} ]; then efilib_exists=true; else efilib_exists=false; fi
 
 prepare_efi_update() {
   test -w /usr
