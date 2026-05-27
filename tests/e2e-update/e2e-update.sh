@@ -22,9 +22,10 @@ bootupd_git=$(cd ${dn} && git rev-parse --show-toplevel)
 testtmp=$(mktemp -d -p /var/tmp bootupd-e2e.XXXXXXX)
 export test_tmpdir=${testtmp}
 
-# This is new content for our update
-test_bootupd_payload_file=/boot/efi/EFI/fedora/test-bootupd.efi
-test_bootupd_payload_file1=/boot/efi/EFI/BOOT/test-bootupd1.efi
+# This is new content for our update; the path must match the
+# usr/lib/efi/<name>/<version>/EFI layout used by F44+ images.
+test_bootupd_payload_file=/usr/lib/efi/test_bootupd_payload/1.0/EFI/fedora/test-bootupd.efi
+test_bootupd_payload_file1=/usr/lib/efi/test_bootupd_payload/1.0/EFI/BOOT/test-bootupd1.efi
 build_rpm test_bootupd_payload \
   files "${test_bootupd_payload_file}
          ${test_bootupd_payload_file1}" \
@@ -51,8 +52,8 @@ add_override() {
 if test -z "${e2e_skip_build:-}"; then
     echo "Building starting image"
     rm -f ${overrides}/rpm/*.rpm
-    # Version from F43 prior to GA
-    add_override grub2-2.12-38.fc43
+    # Version from F44 prior to GA
+    add_override grub2-2.12-56.fc44
     runv cosa build
     runv cosa osbuild qemu
     prev_image=$(runv cosa meta --image-path qemu)
@@ -61,8 +62,8 @@ if test -z "${e2e_skip_build:-}"; then
     echo "packages: [test_bootupd_payload]" >> src/config/manifest.yaml
     rm -f ${overrides}/rpm/*.rpm
     echo "Building update ostree"
-    # Latest (current) version in F43
-    add_override grub2-2.12-40.fc43
+    # Latest (current) version in F44
+    add_override grub2-2.12-58.fc44
     mv ${test_tmpdir}/yumrepo/packages/$(arch)/*.rpm ${overrides}/rpm/
     # Only build ostree update
     runv cosa build ostree

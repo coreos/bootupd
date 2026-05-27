@@ -39,7 +39,7 @@ usrlibefi=/usr/lib/efi
 # Path to <tmp_efi_mount>/EFI/fedora
 tmpefisubdir=${tmpefidir}/${efisubdir}
 
-if [ -d efilib ]; then efilib_exists=true; else efilib_exists=false; fi
+if [ -d ${usrlibefi} ]; then efilib_exists=true; else efilib_exists=false; fi
 
 prepare_efi_update() {
   test -w /usr
@@ -179,13 +179,17 @@ mount -o remount,rw /boot
 rm -f /boot/bootupd-state.json
 
 if [ -d /sys/firmware/efi ]; then
-  # EFI boot: verify update failed if metadata is missing EFI.json
-  # Backup EFI.json and restore it later, or validate will fail
-  update_metadata_move EFI EFI-bak
-  if bootupctl update 2>err.txt; then
-    fatal "Should fail as missing EFI update metadata (booted with EFI)"
+  # EFI boot: verify update failed if metadata is missing EFI.json.
+  # Skip this check when using /usr/lib/efi, as metadata is derived from
+  # the directory structure so removing EFI.json does not cause a failure.
+  if ! $efilib_exists; then
+    # Backup EFI.json and restore it later, or validate will fail
+    update_metadata_move EFI EFI-bak
+    if bootupctl update 2>err.txt; then
+      fatal "Should fail as missing EFI update metadata (booted with EFI)"
+    fi
+    update_metadata_move EFI-bak EFI
   fi
-  update_metadata_move EFI-bak EFI
 
   # Should succeed if BIOS metadata is missing
   rm -f ${bootupdir}/BIOS.json
