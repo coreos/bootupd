@@ -55,7 +55,6 @@ signal-hook-registry = "1.4.8"
 debug = true
 
 [package.metadata.release]
-disable-publish = true
 disable-push = true
 post-release-commit-message = "cargo: development version bump"
 pre-release-commit-message = "cargo: bootupd release {{version}}"

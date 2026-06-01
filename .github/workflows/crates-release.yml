@@ -1,0 +1,27 @@
+# See https://crates.io/docs/trusted-publishing
+name: Publish to crates.io
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write     # Required for OIDC token exchange
+    steps:
+    - uses: actions/checkout@v6
+    - uses: rust-lang/crates-io-auth-action@v1
+      id: auth
+    - run: |
+        # Publish if this version is not already on crates.io.
+        VERSION=$(cargo read-manifest | jq -r '.version')
+        if cargo info --registry crates-io "bootupd@$VERSION" > /dev/null 2>&1; then
+          echo "bootupd@$VERSION is already published, skipping"
+        else
+          echo "Publishing bootupd@$VERSION..."
+          cargo publish
+          echo "Successfully published bootupd@$VERSION"
+        fi
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
