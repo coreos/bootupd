@@ -1,0 +1,25 @@
+discover:
+  how: fmf
+execute:
+  how: tmt
+provision:
+  how: virtual
+  hardware:
+    boot:
+      method: uefi
+  image: $@{test_image}
+  user: root
+prepare:
+  # Run on package mode VM especially on Fedora
+  - how: install
+    order: 20
+    package:
+      - bootupd
+
+
+/plan-test-copy-to-boot:
+  summary: Execute copy-to-boot test on package mode
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-copy-to-boot

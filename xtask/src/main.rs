@@ -32,6 +32,7 @@ fn try_main() -> Result<()> {
             "vendor" => vendor,
             "package" => package,
             "package-srpm" => package_srpm,
+            "spec" => spec,
             _ => print_help,
         };
         f(&sh)?;
@@ -155,10 +156,9 @@ fn impl_package(sh: &Shell) -> Result<Package> {
         )
         .run()?;
     }
-    // Compress with gzip and write to crate
-    let srcpath: Utf8PathBuf = Utf8Path::new("target").join(format!("{namev}.crate"));
-    cmd!(sh, "gzip --force --best {p}").run()?;
-    std::fs::rename(format!("{p}.gz"), &srcpath)?;
+    // Compress with zstd
+    let srcpath: Utf8PathBuf = format!("{p}.zstd").into();
+    cmd!(sh, "zstd --rm -f {p} -o {srcpath}").run()?;
 
     Ok(Package {
         version: v,
@@ -240,6 +240,42 @@ fn package_srpm(sh: &Shell) -> Result<()> {
     let _targetdir = get_target_dir()?;
     let srpm = impl_srpm(sh)?;
     println!("Generated: {srpm}");
+    Ok(())
+}
+
+fn update_spec(sh: &Shell) -> Result<Utf8PathBuf> {
+    let _targetdir = get_target_dir()?;
+    let p = Utf8Path::new("target");
+    let pkg = impl_package(sh)?;
+    let srcpath = pkg.srcpath.file_name().unwrap();
+    let v = pkg.version;
+    let src_vendorpath = pkg.vendorpath.file_name().unwrap();
+    {
+        let specin = File::open(format!("contrib/packaging/{NAME}.spec"))
+            .map(BufReader::new)
+            .context("Opening spec")?;
+        let mut o = File::create(p.join(format!("{NAME}.spec"))).map(BufWriter::new)?;
+        for line in specin.lines() {
+            let line = line?;
+            if line.starts_with("Version:") {
+                writeln!(o, "# Replaced by cargo xtask spec")?;
+                writeln!(o, "Version: {v}")?;
+            } else if line.starts_with("Source0") {
+                writeln!(o, "Source0: {srcpath}")?;
+            } else if line.starts_with("Source1") {
+                writeln!(o, "Source1: {src_vendorpath}")?;
+            } else {
+                writeln!(o, "{line}")?;
+            }
+        }
+    }
+    let spec_path = p.join(format!("{NAME}.spec"));
+    Ok(spec_path)
+}
+
+fn spec(sh: &Shell) -> Result<()> {
+    let s = update_spec(sh)?;
+    println!("Generated: {s}");
     Ok(())
 }
 
