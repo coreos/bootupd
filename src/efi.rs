@@ -286,7 +286,7 @@ fn read_efi_var_utf16_string(name: &str) -> Option<String> {
 }
 
 /// Read the LoaderInfo EFI variable if it exists.
-fn get_loader_info() -> Option<String> {
+pub(crate) fn get_loader_info() -> Option<String> {
     read_efi_var_utf16_string(LOADER_INFO_VAR_STR)
 }
 
