@@ -440,6 +440,7 @@ impl Component for Efi {
         dest_root: &str,
         device: Option<&Device>,
         update_firmware: bool,
+        bootloader: Bootloader,
     ) -> Result<InstalledContent> {
         let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
             .with_context(|| format!("opening source directory {src_root}"))?;
@@ -474,7 +475,7 @@ impl Component for Efi {
 
         let src_path = Utf8Path::new(src_root);
         let efi_comps = if src_path.join(EFILIB).exists() {
-            get_efi_component_from_usr(&src_path, EFILIB, None)?
+            get_efi_component_from_usr(&src_path, EFILIB, Some(bootloader))?
         } else {
             None
         };

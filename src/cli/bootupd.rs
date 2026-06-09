@@ -84,6 +84,11 @@ pub struct InstallOpts {
     /// then only enable installation to the ESP.
     #[clap(long)]
     auto: bool,
+
+    /// The bootloader to use
+    /// Defaults to Grub
+    #[clap(long, default_value_t = Bootloader::Grub)]
+    bootloader: Bootloader,
 }
 
 #[derive(Debug, Parser)]
@@ -151,6 +156,7 @@ impl DCommand {
             opts.update_firmware,
             opts.components.as_deref(),
             opts.auto,
+            opts.bootloader,
         )
         .context("boot data installation failed")?;
         Ok(())

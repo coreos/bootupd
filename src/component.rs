@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
 
-use crate::bootloader::Bootloader;
-use crate::{bootupd::RootContext, model::*};
+use crate::{bootloader::Bootloader, bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +63,7 @@ pub(crate) trait Component {
         dest_root: &str,
         device: Option<&Device>,
         update_firmware: bool,
+        bootloader: Bootloader,
     ) -> Result<InstalledContent>;
 
     /// Implementation of `bootupd generate-update-metadata` for a given component.

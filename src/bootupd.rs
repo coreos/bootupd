@@ -61,6 +61,7 @@ pub(crate) fn install(
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
+    bootloader: Bootloader,
 ) -> Result<()> {
     let source_root_dir =
         Dir::open_ambient_dir(source_root, ambient_authority()).context("Opening source root")?;
@@ -157,7 +158,7 @@ pub(crate) fn install(
         for device in &devices_to_install {
             let device_desc = device.map_or("(auto)".to_string(), |d| d.path());
             let meta = component
-                .install(source_root, dest_root, *device, update_firmware)
+                .install(source_root, dest_root, *device, update_firmware, bootloader)
                 .with_context(|| {
                     format!(
                         "installing component {} to device {}",
@@ -194,19 +195,21 @@ pub(crate) fn install(
         target_arch = "powerpc64",
         target_arch = "riscv64"
     ))]
-    match configs.enabled_with_uuid() {
-        Some(uuid) => {
-            let meta = get_static_config_meta()?;
-            state.static_configs = Some(meta);
-            crate::grubconfigs::install(
-                sysroot,
-                Some(&source_root_dir),
-                installed_efi_vendor.as_deref(),
-                uuid,
-            )?;
+    if bootloader == Bootloader::Grub {
+        match configs.enabled_with_uuid() {
+            Some(uuid) => {
+                let meta = get_static_config_meta()?;
+                state.static_configs = Some(meta);
+                crate::grubconfigs::install(
+                    sysroot,
+                    Some(&source_root_dir),
+                    installed_efi_vendor.as_deref(),
+                    uuid,
+                )?;
+            }
             // On other architectures, assume that there's nothing to do.
+            None => {}
         }
-        None => {}
     }
 
     // Unmount the ESP, etc.

@@ -113,7 +113,12 @@ impl Component for Bios {
         dest_root: &str,
         device: Option<&Device>,
         _update_firmware: bool,
+        bootloader: Bootloader,
     ) -> Result<InstalledContent> {
+        if !self.is_bootloader_supported(bootloader) {
+            anyhow::bail!("{bootloader} cannot be installed for bios");
+        }
+
         let device =
             device.ok_or_else(|| anyhow::anyhow!("BIOS component requires a target device"))?;
         let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
@@ -137,7 +142,7 @@ impl Component for Bios {
         sysroot_path: &str,
         bootloader: Bootloader,
     ) -> Result<Option<ContentMetadata>> {
-        if bootloader != Bootloader::Grub {
+        if !self.is_bootloader_supported(bootloader) {
             anyhow::bail!("{bootloader} cannot be installed for bios");
         }
 
