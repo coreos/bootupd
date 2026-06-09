@@ -112,6 +112,14 @@ pub(crate) fn install(
             continue;
         }
 
+        if !component.is_bootloader_supported(bootloader) {
+            println!(
+                "Skip installing component {} as it does not support bootloader {bootloader}",
+                component.name()
+            );
+            continue;
+        }
+
         // Determine which devices to install to. For EFI, filter to only
         // devices that have an ESP partition.
         let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
@@ -277,6 +285,15 @@ pub(crate) fn generate_update_metadata(sysroot_path: &str, bootloader: Bootloade
     std::fs::create_dir_all(&updates_dir)
         .with_context(|| format!("Failed to create updates dir {:?}", &updates_dir))?;
     for component in get_components().values() {
+        if !component.is_bootloader_supported(bootloader) {
+            println!(
+                "Bootloader {bootloader} not supported for {}. Skipping metadata generation",
+                component.name(),
+            );
+
+            continue;
+        }
+
         if let Some(v) = component.generate_update_metadata(sysroot_path, bootloader)? {
             println!(
                 "Generated update layout for {}: {}",

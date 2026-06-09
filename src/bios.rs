@@ -103,6 +103,10 @@ impl Component for Bios {
         "BIOS"
     }
 
+    fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool {
+        matches!(bootloader, Bootloader::Grub)
+    }
+
     fn install(
         &self,
         src_root: &str,
@@ -128,7 +132,15 @@ impl Component for Bios {
         })
     }
 
-    fn generate_update_metadata(&self, sysroot_path: &str, bootloader: Bootloader) -> Result<Option<ContentMetadata>> {
+    fn generate_update_metadata(
+        &self,
+        sysroot_path: &str,
+        bootloader: Bootloader,
+    ) -> Result<Option<ContentMetadata>> {
+        if bootloader != Bootloader::Grub {
+            anyhow::bail!("{bootloader} cannot be installed for bios");
+        }
+
         let grub_install = Path::new(sysroot_path).join(GRUB_BIN);
         if !grub_install.exists() {
             println!("Failed to find {:?}", grub_install);

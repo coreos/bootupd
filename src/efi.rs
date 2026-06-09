@@ -316,6 +316,10 @@ impl Component for Efi {
         "EFI"
     }
 
+    fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool {
+        matches!(bootloader, Bootloader::Grub | Bootloader::GrubCC)
+    }
+
     fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>> {
         if devices.is_none() {
             log::trace!("No ESP detected");

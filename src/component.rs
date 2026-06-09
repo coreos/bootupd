@@ -97,6 +97,8 @@ pub(crate) trait Component {
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
+
+    fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool;
 }
 
 /// Given a component name, create an implementation.
