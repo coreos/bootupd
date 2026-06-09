@@ -9,6 +9,7 @@ use std::process::Command;
 
 use bootc_internal_blockdev::Device;
 
+use crate::bootloader::Bootloader;
 use crate::bootupd::RootContext;
 use crate::component::*;
 use crate::freezethaw::fsfreeze_thaw_cycle;
@@ -127,7 +128,7 @@ impl Component for Bios {
         })
     }
 
-    fn generate_update_metadata(&self, sysroot_path: &str) -> Result<Option<ContentMetadata>> {
+    fn generate_update_metadata(&self, sysroot_path: &str, bootloader: Bootloader) -> Result<Option<ContentMetadata>> {
         let grub_install = Path::new(sysroot_path).join(GRUB_BIN);
         if !grub_install.exists() {
             println!("Failed to find {:?}", grub_install);

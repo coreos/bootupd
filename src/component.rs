@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
 
+use crate::bootloader::Bootloader;
 use crate::{bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -70,7 +71,11 @@ pub(crate) trait Component {
     /// this is an `rpm-ostree compose tree` for example.  For a dual-partition
     /// style updater, this would be run as part of a postprocessing step
     /// while the filesystem for the partition is mounted.
-    fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>>;
+    fn generate_update_metadata(
+        &self,
+        sysroot: &str,
+        bootloader: Bootloader,
+    ) -> Result<Option<ContentMetadata>>;
 
     /// Used on the client to query for an update cached in the current booted OS.
     fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>>;

@@ -1,5 +1,6 @@
 #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 use crate::bios;
+use crate::bootloader::Bootloader;
 use crate::component;
 use crate::component::{Component, ValidationResult};
 use crate::coreos;
@@ -270,13 +271,13 @@ pub(crate) fn get_components() -> Components {
     get_components_impl(false)
 }
 
-pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
+pub(crate) fn generate_update_metadata(sysroot_path: &str, bootloader: Bootloader) -> Result<()> {
     // create bootupd update dir which will save component metadata files for both components
     let updates_dir = Path::new(sysroot_path).join(crate::model::BOOTUPD_UPDATES_DIR);
     std::fs::create_dir_all(&updates_dir)
         .with_context(|| format!("Failed to create updates dir {:?}", &updates_dir))?;
     for component in get_components().values() {
-        if let Some(v) = component.generate_update_metadata(sysroot_path)? {
+        if let Some(v) = component.generate_update_metadata(sysroot_path, bootloader)? {
             println!(
                 "Generated update layout for {}: {}",
                 component.name(),
