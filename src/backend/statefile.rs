@@ -3,9 +3,11 @@
 use crate::model::SavedState;
 use crate::util::SignalTerminationGuard;
 use anyhow::{bail, Context, Result};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, Permissions, PermissionsExt};
+use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use fs2::FileExt;
-use openat_ext::OpenatDirExt;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
@@ -23,9 +25,18 @@ impl SavedState {
     /// While ordinarily the daemon runs as a systemd unit (which implicitly
     /// ensures a single instance) this is a double check against other
     /// execution paths.
-    pub(crate) fn acquire_write_lock(sysroot: openat::Dir) -> Result<StateLockGuard> {
-        let lockfile = sysroot.write_file(Self::WRITE_LOCK_PATH, 0o644)?;
-        lockfile.lock_exclusive()?;
+    pub(crate) fn acquire_write_lock(sysroot: Dir) -> Result<StateLockGuard> {
+        sysroot
+            .atomic_write_with_perms(Self::WRITE_LOCK_PATH, "", Permissions::from_mode(0o644))
+            .context("Creating lock file")?;
+
+        let lockfile = sysroot
+            .open(Self::WRITE_LOCK_PATH)
+            .context("Opening lock file")?
+            .into_std();
+
+        lockfile.lock_exclusive().context("Acquiring lock")?;
+
         let guard = StateLockGuard {
             sysroot,
             termguard: Some(SignalTerminationGuard::new()?),
@@ -36,7 +47,7 @@ impl SavedState {
 
     /// Use this for cases when the target root isn't booted, which is
     /// offline installs.
-    pub(crate) fn unlocked(sysroot: openat::Dir) -> Result<StateLockGuard> {
+    pub(crate) fn unlocked(sysroot: Dir) -> Result<StateLockGuard> {
         Ok(StateLockGuard {
             sysroot,
             termguard: None,
@@ -48,11 +59,11 @@ impl SavedState {
     #[context("Loading saved state")]
     pub(crate) fn load_from_disk(root_path: impl AsRef<Path>) -> Result<Option<SavedState>> {
         let root_path = root_path.as_ref();
-        let sysroot = openat::Dir::open(root_path)
+        let sysroot = Dir::open_ambient_dir(root_path, ambient_authority())
             .with_context(|| format!("opening sysroot '{}'", root_path.display()))?;
 
         let statefile_path = Path::new(Self::STATEFILE_DIR).join(Self::STATEFILE_NAME);
-        let saved_state = if let Some(statusf) = sysroot.open_file_optional(&statefile_path)? {
+        let saved_state = if let Some(statusf) = sysroot.open_optional(&statefile_path)? {
             let mut bufr = std::io::BufReader::new(statusf);
             let mut s = String::new();
             bufr.read_to_string(&mut s)?;
@@ -92,7 +103,7 @@ impl SavedState {
 /// Write-lock guard for statefile, protecting against concurrent state updates.
 #[derive(Debug)]
 pub(crate) struct StateLockGuard {
-    pub(crate) sysroot: openat::Dir,
+    pub(crate) sysroot: Dir,
     #[allow(dead_code)]
     termguard: Option<SignalTerminationGuard>,
     #[allow(dead_code)]
@@ -102,11 +113,16 @@ pub(crate) struct StateLockGuard {
 impl StateLockGuard {
     /// Atomically replace the on-disk state with a new version.
     pub(crate) fn update_state(&mut self, state: &SavedState) -> Result<()> {
-        let subdir = self.sysroot.sub_dir(SavedState::STATEFILE_DIR)?;
-        subdir.write_file_with_sync(SavedState::STATEFILE_NAME, 0o644, |w| -> Result<()> {
-            serde_json::to_writer(w, state)?;
-            Ok(())
-        })?;
+        let subdir = self.sysroot.open_dir(SavedState::STATEFILE_DIR)?;
+
+        subdir
+            .atomic_write_with_perms(
+                SavedState::STATEFILE_NAME,
+                serde_json::to_vec(state).context("Serializing state")?,
+                Permissions::from_mode(0o644),
+            )
+            .context("Writing state file")?;
+
         Ok(())
     }
 }

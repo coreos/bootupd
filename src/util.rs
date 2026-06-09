@@ -3,9 +3,9 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use cap_std::fs::Dir;
 use chrono::{DateTime, Utc};
 use fn_error_context::context;
-use openat_ext::OpenatDirExt;
 
 /// Parse an environment variable as UTF-8
 #[allow(dead_code)]
@@ -22,32 +22,28 @@ pub(crate) fn getenv_utf8(n: &str) -> Result<Option<String>> {
 }
 
 #[allow(dead_code)]
-pub(crate) fn filenames(dir: &openat::Dir) -> Result<HashSet<String>> {
+pub(crate) fn filenames(dir: &Dir) -> Result<HashSet<String>> {
     let mut ret = HashSet::new();
-    for entry in dir.list_dir(".")? {
+    for entry in dir.entries_utf8()? {
         let entry = entry?;
-        let Some(name) = entry.file_name().to_str() else {
-            bail!("Invalid UTF-8 filename: {:?}", entry.file_name())
+        let Ok(name) = entry.file_name() else {
+            bail!("Invalid filename: {:?}", entry.file_name())
         };
-        match dir.get_file_type(&entry)? {
-            openat::SimpleType::File => {
-                ret.insert(format!("/{name}"));
+        let file_type = entry.file_type()?;
+        if file_type.is_file() {
+            ret.insert(format!("/{name}"));
+        } else if file_type.is_dir() {
+            let child = dir.open_dir(&name)?;
+            for mut k in filenames(&child)?.drain() {
+                k.reserve(name.len() + 1);
+                k.insert_str(0, &name);
+                k.insert(0, '/');
+                ret.insert(k);
             }
-            openat::SimpleType::Dir => {
-                let child = dir.sub_dir(name)?;
-                for mut k in filenames(&child)?.drain() {
-                    k.reserve(name.len() + 1);
-                    k.insert_str(0, name);
-                    k.insert(0, '/');
-                    ret.insert(k);
-                }
-            }
-            openat::SimpleType::Symlink => {
-                bail!("Unsupported symbolic link {:?}", entry.file_name())
-            }
-            openat::SimpleType::Other => {
-                bail!("Unsupported non-file/directory {:?}", entry.file_name())
-            }
+        } else if file_type.is_symlink() {
+            bail!("Unsupported symbolic link {:?}", entry.file_name())
+        } else {
+            bail!("Unsupported non-file/directory {:?}", entry.file_name())
         }
     }
     Ok(ret)

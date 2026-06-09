@@ -5,8 +5,10 @@
  */
 
 use anyhow::{Context, Result};
+use cap_std::fs::{Dir, PermissionsExt};
+use cap_std::{ambient_authority, fs::Permissions};
+use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use openat_ext::OpenatDirExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -38,7 +40,7 @@ pub(crate) trait Component {
     fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>>;
 
     // Backup the current grub config, and install static grub config from tree
-    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()>;
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &Dir) -> Result<()>;
 
     /// Given an adoptable system and an update, perform the update.
     fn adopt_update(
@@ -71,12 +73,12 @@ pub(crate) trait Component {
     fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>>;
 
     /// Used on the client to query for an update cached in the current booted OS.
-    fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>>;
+    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>>;
 
     /// This is called in the update code if query_update() returned no metadata.
     /// It should return an error if the current booted system should expect some
     /// metadata for this component.
-    fn query_requires_update(&self, sysroot: &openat::Dir) -> Result<()>;
+    fn query_requires_update(&self, sysroot: &Dir) -> Result<()>;
 
     /// Used on the client to run an update.
     fn run_update(
@@ -144,24 +146,28 @@ pub(crate) fn write_update_metadata(
     component: &dyn Component,
     meta: &ContentMetadata,
 ) -> Result<()> {
-    let sysroot = openat::Dir::open(sysroot)?;
-    let dir = sysroot.sub_dir(BOOTUPD_UPDATES_DIR)?;
+    let sysroot = Dir::open_ambient_dir(sysroot, ambient_authority())?;
+    let dir = sysroot.open_dir(BOOTUPD_UPDATES_DIR)?;
     let name = component_update_data_name(component);
-    dir.write_file_with(name, 0o644, |w| -> Result<_> {
-        Ok(serde_json::to_writer(w, &meta)?)
-    })?;
+
+    dir.atomic_write_with_perms(
+        name,
+        serde_json::to_vec(&meta).context("Serializing metadata")?,
+        Permissions::from_mode(0o644),
+    )?;
+
     Ok(())
 }
 
 /// Given a component, return metadata on the available update (if any)
 #[context("Loading update for component {}", component.name())]
 pub(crate) fn get_component_update(
-    sysroot: &openat::Dir,
+    sysroot: &Dir,
     component: &dyn Component,
 ) -> Result<Option<ContentMetadata>> {
     let name = component_update_data_name(component);
     let path = Path::new(BOOTUPD_UPDATES_DIR).join(name);
-    if let Some(f) = sysroot.open_file_optional(&path)? {
+    if let Some(f) = sysroot.open_optional(&path)? {
         let mut f = std::io::BufReader::new(f);
         let u = serde_json::from_reader(&mut f)
             .with_context(|| format!("failed to parse {:?}", &path))?;
@@ -207,6 +213,8 @@ pub(crate) fn query_adopt_state() -> Result<Option<Adoptable>> {
 
 #[cfg(test)]
 mod tests {
+    use cap_std::fs::{DirBuilder, DirBuilderExt, Permissions, PermissionsExt};
+
     use super::*;
 
     #[test]
@@ -214,23 +222,28 @@ mod tests {
         let td = tempfile::tempdir()?;
         let tdp = td.path();
         let tdupdates = "usr/lib/bootupd/updates/EFI";
-        let tdir = openat::Dir::open(tdp)?;
+        let tdir = Dir::open_ambient_dir(tdp, ambient_authority())?;
 
-        tdir.ensure_dir_all(tdupdates, 0o755)?;
-        let efi = tdir.sub_dir(tdupdates)?;
-        efi.create_dir("BOOT", 0o755)?;
-        efi.create_dir("fedora", 0o755)?;
-        efi.create_dir("centos", 0o755)?;
+        let mut dir_builder = DirBuilder::new();
+        dir_builder.mode(0o755);
+        dir_builder.recursive(true);
 
-        efi.write_file_contents(
+        tdir.create_dir_with(tdupdates, &dir_builder)?;
+        let efi = tdir.open_dir(tdupdates)?;
+        efi.create_dir_with("BOOT", &dir_builder)?;
+        efi.create_dir_with("fedora", &dir_builder)?;
+        efi.create_dir_with("centos", &dir_builder)?;
+
+        efi.atomic_write_with_perms(
             format!("fedora/{}", crate::efi::SHIM),
-            0o644,
             "shim data".as_bytes(),
+            Permissions::from_mode(0o644),
         )?;
-        efi.write_file_contents(
+
+        efi.atomic_write_with_perms(
             format!("centos/{}", crate::efi::SHIM),
-            0o644,
             "shim data".as_bytes(),
+            Permissions::from_mode(0o644),
         )?;
 
         let all_components = crate::bootupd::get_components();
@@ -242,16 +255,17 @@ mod tests {
             if component.name() == "EFI" {
                 let x = component.get_efi_vendor(tdp);
                 assert_eq!(x.is_err(), true);
-                efi.remove_all("centos")?;
+                efi.remove_dir_all("centos")?;
                 assert_eq!(component.get_efi_vendor(tdp)?, Some("fedora".to_string()));
                 {
                     let td_vendor = "usr/lib/efi/shim/15.8-3/EFI/centos";
-                    tdir.ensure_dir_all(td_vendor, 0o755)?;
-                    let shim_dir = tdir.sub_dir(td_vendor)?;
-                    shim_dir.write_file_contents(
+                    tdir.create_dir_with(td_vendor, &dir_builder)?;
+                    let shim_dir = tdir.open_dir(td_vendor)?;
+
+                    shim_dir.atomic_write_with_perms(
                         crate::efi::SHIM,
-                        0o644,
                         "shim data".as_bytes(),
+                        Permissions::from_mode(0o644),
                     )?;
 
                     // usr/lib/efi wins and get 'centos'
@@ -268,8 +282,8 @@ mod tests {
                         component.get_efi_vendor(&td_efi)?,
                         Some("fedora".to_string())
                     );
-                    tdir.remove_all("usr/lib/efi")?;
-                    tdir.remove_all(tdupdates)?;
+                    tdir.remove_dir_all("usr/lib/efi")?;
+                    tdir.remove_dir_all(tdupdates)?;
                     let err = component.get_efi_vendor(&td_usr).unwrap_err();
                     assert_eq!(err.to_string(), "Failed to find valid target path");
                 }

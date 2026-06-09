@@ -21,18 +21,19 @@ use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedSt
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use cap_std_ext::dirext::CapStdExtDirExt;
 use clap::crate_version;
 use fn_error_context::context;
-use libc::mode_t;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
-use cap_std::fs::Dir;
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, Permissions, PermissionsExt};
 use cap_std_ext::cap_std;
 
 pub(crate) enum ConfigMode {
@@ -60,7 +61,8 @@ pub(crate) fn install(
     target_components: Option<&[String]>,
     auto_components: bool,
 ) -> Result<()> {
-    let source_root_dir = openat::Dir::open(source_root).context("Opening source root")?;
+    let source_root_dir =
+        Dir::open_ambient_dir(source_root, ambient_authority()).context("Opening source root")?;
     SavedState::ensure_not_present(dest_root)
         .context("failed to install, invalid re-install attempted")?;
 
@@ -175,7 +177,7 @@ pub(crate) fn install(
             }
         }
     }
-    let sysroot = &openat::Dir::open(dest_root)?;
+    let sysroot = &Dir::open_ambient_dir(dest_root, ambient_authority())?;
 
     #[cfg(any(
         target_arch = "x86_64",
@@ -339,7 +341,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     ))]
     {
         let grub2dir = &sysroot
-            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .open_dir(format!("boot/{GRUB2DIR}"))
             .context("Opening /boot/grub2")?;
         ensure_grub_permissions(grub2dir)?;
     }
@@ -391,7 +393,7 @@ pub(crate) fn adopt_and_update(
     ))]
     {
         let grub2dir = &sysroot
-            .sub_dir(format!("boot/{GRUB2DIR}"))
+            .open_dir(format!("boot/{GRUB2DIR}"))
             .context("Opening /boot/grub2")?;
         ensure_grub_permissions(grub2dir)?;
     }
@@ -457,7 +459,7 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
 pub(crate) fn status() -> Result<Status> {
     let mut ret: Status = Default::default();
     let mut known_components = get_components();
-    let sysroot = openat::Dir::open("/")?;
+    let sysroot = Dir::open_ambient_dir("/", ambient_authority())?;
     let state = SavedState::load_from_disk("/")?;
     if let Some(state) = state {
         for (name, ic) in state.installed.iter() {
@@ -592,7 +594,7 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
 }
 
 pub struct RootContext {
-    pub sysroot: openat::Dir,
+    pub sysroot: Dir,
     pub path: Utf8PathBuf,
 
     /// The block device backing the root filesystem.
@@ -603,7 +605,7 @@ pub struct RootContext {
 }
 
 impl RootContext {
-    fn new(sysroot: openat::Dir, path: &str, device: Device) -> Self {
+    fn new(sysroot: Dir, path: &str, device: Device) -> Self {
         Self {
             sysroot,
             path: Utf8Path::new(path).into(),
@@ -615,7 +617,7 @@ impl RootContext {
 /// Initialize parent devices to prepare the update
 fn prep_before_update() -> Result<RootContext> {
     let path = "/";
-    let sysroot = openat::Dir::open(path).context("Opening root dir")?;
+    let sysroot = Dir::open_ambient_dir(path, ambient_authority()).context("Opening root dir")?;
     let device = list_dev_current_root()?;
     Ok(RootContext::new(sysroot, path, device))
 }
@@ -741,7 +743,8 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
     ensure_writable_boot()?;
 
     let grub_config_dir = PathBuf::from("/boot/grub2");
-    let dirfd = openat::Dir::open(&grub_config_dir).context("Opening /boot/grub2")?;
+    let dirfd = Dir::open_ambient_dir(&grub_config_dir, ambient_authority())
+        .context("Opening /boot/grub2")?;
 
     // We mark the bootloader as BLS capable to disable the ostree-grub2 logic.
     // We can do that as we know that we are run after the bootloader has been
@@ -789,10 +792,10 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
 
             // Atomically replace the symlink
             dirfd
-                .local_rename(stripped_config, "grub.cfg")
+                .rename(stripped_config, &dirfd, "grub.cfg")
                 .context("Failed to replace symlink with current GRUB config")?;
 
-            fsfreeze_thaw_cycle(dirfd.open_file(".")?)?;
+            fsfreeze_thaw_cycle(dirfd.reopen_as_ownedfd()?)?;
 
             println!("GRUB config symlink successfully replaced with the current config");
         }
@@ -809,15 +812,10 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
 /// `### BEGIN /etc/grub.d/15_ostree ###` and `### END /etc/grub.d/15_ostree ###`.
 fn strip_grub_config_file(
     current_config_content: impl BufRead,
-    dirfd: &openat::Dir,
+    dirfd: &Dir,
     stripped_config_name: &str,
 ) -> Result<()> {
-    // mode = -rw------- (600)
-    let mut writer = BufWriter::new(
-        dirfd
-            .write_file(stripped_config_name, 0o600 as mode_t)
-            .context("Failed to open temporary GRUB config")?,
-    );
+    let mut writer = vec![];
 
     let mut skip = false;
     for line in current_config_content.lines() {
@@ -841,11 +839,10 @@ fn strip_grub_config_file(
             .context("Failed to write stripped GRUB config")?;
     }
 
-    writer
-        .into_inner()
-        .context("Failed to flush stripped GRUB config")?
-        .sync_data()
-        .context("Failed to sync stripped GRUB config")?;
+    // mode = -rw------- (600)
+    dirfd
+        .atomic_write_with_perms(stripped_config_name, writer, Permissions::from_mode(0o600))
+        .with_context(|| format!("Writing to {stripped_config_name}"))?;
 
     Ok(())
 }
@@ -867,8 +864,8 @@ mod tests {
     fn test_strip_grub_config_file() -> Result<()> {
         let root: &tempfile::TempDir = &tempfile::tempdir()?;
         let root_path = root.path();
-        let rootd = openat::Dir::open(root_path)?;
-        let stripped_config = root_path.join("stripped");
+        let rootd = Dir::open_ambient_dir(root_path, ambient_authority())?;
+        let stripped_config = "stripped";
         let content = r"
 ### BEGIN /etc/grub.d/10_linux ###
 
@@ -897,9 +894,9 @@ initrdefi /ostree/rhcos-bf3b382/initramfs.img
         strip_grub_config_file(
             BufReader::new(std::io::Cursor::new(content)),
             &rootd,
-            stripped_config.to_str().unwrap(),
+            stripped_config,
         )?;
-        let stripped_content = fs::read_to_string(stripped_config)?;
+        let stripped_content = rootd.read_to_string(stripped_config)?;
         let expected = r"
 ### BEGIN /etc/grub.d/10_linux ###
 

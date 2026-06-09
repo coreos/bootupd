@@ -33,6 +33,7 @@ fn ioctl_fithaw<Fd: AsFd>(fd: Fd) -> io::Result<()> {
 ///
 /// This function always call syncfs() first, then calls
 /// `ioctl(FIFREEZE)` and `ioctl(FITHAW)`, ignoring `EOPNOTSUPP` and `EPERM`
+#[fn_error_context::context("fsfreeze_thaw_cycle")]
 pub(crate) fn fsfreeze_thaw_cycle<Fd: AsFd>(fd: Fd) -> anyhow::Result<()> {
     rustix::fs::syncfs(&fd)?;
 

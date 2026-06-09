@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::Result;
 use bootc_internal_utils::CommandRunExt;
+use cap_std::fs::Dir;
 use fn_error_context::context;
 use rustix::fd::BorrowedFd;
 use serde::Deserialize;
@@ -24,7 +25,7 @@ pub(crate) struct Findmnt {
 }
 
 #[context("Inspecting filesystem {path:?}")]
-pub(crate) fn inspect_filesystem(root: &openat::Dir, path: &str) -> Result<Filesystem> {
+pub(crate) fn inspect_filesystem(root: &Dir, path: &str) -> Result<Filesystem> {
     let rootfd = unsafe { BorrowedFd::borrow_raw(root.as_raw_fd()) };
     // SAFETY: This is unsafe just for the pre_exec, when we port to cap-std we can use cap-std-ext
     let o: Findmnt = unsafe {

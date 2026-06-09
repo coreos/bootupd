@@ -12,11 +12,11 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use bootc_internal_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
+use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use openat_ext::OpenatDirExt;
 use os_release::OsRelease;
 use rustix::{fd::AsFd, fd::BorrowedFd, fs::StatVfsMountFlags};
 use walkdir::WalkDir;
@@ -190,12 +190,7 @@ impl Efi {
     }
 
     #[context("Updating EFI firmware variables")]
-    fn update_firmware(
-        &self,
-        device: &Device,
-        espdir: &openat::Dir,
-        vendordir: &str,
-    ) -> Result<()> {
+    fn update_firmware(&self, device: &Device, espdir: &Dir, vendordir: &str) -> Result<()> {
         if !is_efi_booted()? {
             log::debug!("Not booted via EFI, skipping firmware update");
             return Ok(());
@@ -216,7 +211,7 @@ impl Efi {
 
         // Check shim exists and return earlier if not
         let shim_path = format!("EFI/{vendordir}/{SHIM}");
-        if !espdir.exists(&shim_path)? {
+        if !espdir.exists(&shim_path) {
             anyhow::bail!("Failed to find {shim_path}");
         }
         let loader = format!("\\EFI\\{vendordir}\\{SHIM}");
@@ -336,28 +331,32 @@ impl Component for Efi {
 
     // Backup "/boot/efi/EFI/{vendor}/grub.cfg" to "/boot/efi/EFI/{vendor}/grub.cfg.bak"
     // Replace "/boot/efi/EFI/{vendor}/grub.cfg" with new static "grub.cfg"
-    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
-        let sysroot =
-            openat::Dir::open(sysroot_path).with_context(|| format!("Opening {sysroot_path}"))?;
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &Dir) -> Result<()> {
+        let sysroot = Dir::open_ambient_dir(sysroot_path, ambient_authority())
+            .with_context(|| format!("Opening {sysroot_path}"))?;
         let Some(vendor) = self.get_efi_vendor(&Path::new(sysroot_path))? else {
             anyhow::bail!("Failed to find efi vendor");
         };
 
         // destdir is /boot/efi/EFI
         let efidir = destdir
-            .sub_dir(&vendor)
+            .open_dir(&vendor)
             .with_context(|| format!("Opening EFI/{}", vendor))?;
 
-        if !efidir.exists(grubconfigs::GRUBCONFIG_BACKUP)? {
+        if !efidir.exists(grubconfigs::GRUBCONFIG_BACKUP) {
             println!("Creating a backup of the current GRUB config on EFI");
             efidir
-                .copy_file(grubconfigs::GRUBCONFIG, grubconfigs::GRUBCONFIG_BACKUP)
+                .copy(
+                    grubconfigs::GRUBCONFIG,
+                    &efidir,
+                    grubconfigs::GRUBCONFIG_BACKUP,
+                )
                 .context("Failed to backup GRUB config")?;
         }
 
         grubconfigs::install(&sysroot, None, Some(&vendor), true)?;
         // Synchronize the filesystem containing /boot/efi/EFI/{vendor} to disk.
-        fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+        fsfreeze_thaw_cycle(efidir.reopen_as_ownedfd()?)?;
 
         Ok(())
     }
@@ -385,7 +384,7 @@ impl Component for Efi {
         };
         let updated = rootcxt
             .sysroot
-            .sub_dir(&updated_path)
+            .open_dir(&updated_path)
             .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
 
@@ -394,7 +393,8 @@ impl Component for Efi {
             let destpath =
                 &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            let efidir = Dir::open_ambient_dir(&destpath.join("EFI"), ambient_authority())
+                .context("opening EFI dir")?;
             validate_esp_fstype(&efidir)?;
 
             // For adoption, we should only touch files that we know about.
@@ -417,7 +417,7 @@ impl Component for Efi {
             }
 
             // Do the sync before unmount
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
+            fsfreeze_thaw_cycle(efidir.reopen_as_ownedfd()?)?;
             drop(efidir);
             self.unmount().context("unmount after adopt")?;
         }
@@ -435,7 +435,7 @@ impl Component for Efi {
         device: Option<&Device>,
         update_firmware: bool,
     ) -> Result<InstalledContent> {
-        let src_dir = openat::Dir::open(src_root)
+        let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
             .with_context(|| format!("opening source directory {src_root}"))?;
         let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
@@ -462,7 +462,7 @@ impl Component for Efi {
             anyhow::bail!("No device specified and no mounted ESP found");
         };
 
-        let destd = &openat::Dir::open(&destpath)
+        let destd = &Dir::open_ambient_dir(&destpath, ambient_authority())
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
@@ -494,7 +494,7 @@ impl Component for Efi {
         };
 
         // Get filetree from efi path
-        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.sub_dir(efi_path)?)?;
+        let ft = crate::filetree::FileTree::new_from_dir(&src_dir.open_dir(efi_path)?)?;
         if update_firmware {
             if let Some(dev) = device {
                 if let Some(vendordir) =
@@ -534,7 +534,7 @@ impl Component for Efi {
 
         let updated = rootcxt
             .sysroot
-            .sub_dir(&updated_path)
+            .open_dir(&updated_path)
             .with_context(|| format!("opening update dir {}", updated_path.display()))?;
         let updatef = filetree::FileTree::new_from_dir(&updated).context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
@@ -546,14 +546,15 @@ impl Component for Efi {
         for esp in esp_devices {
             let destpath =
                 &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp.path()))?;
-            let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            let destdir = Dir::open_ambient_dir(&destpath.join("EFI"), ambient_authority())
+                .context("opening EFI dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
                 .context("applying filesystem changes")?;
 
             // Do the sync before unmount
-            fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
+            fsfreeze_thaw_cycle(destdir.reopen_as_ownedfd()?)?;
             drop(destdir);
             self.unmount().context("unmount after update")?;
         }
@@ -612,11 +613,11 @@ impl Component for Efi {
         Ok(Some(metadata))
     }
 
-    fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
+    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>> {
         get_component_update(sysroot, self)
     }
 
-    fn query_requires_update(&self, _sysroot: &openat::Dir) -> Result<()> {
+    fn query_requires_update(&self, _sysroot: &Dir) -> Result<()> {
         // Failed as expected if booted with EFI and no update metadata
         if is_efi_booted()? {
             anyhow::bail!("Failed to find EFI update metadata");
@@ -639,7 +640,7 @@ impl Component for Efi {
         for esp in esp_devices.iter() {
             let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp.path()))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI"))
+            let efidir = Dir::open_ambient_dir(&destpath.join("EFI"), ambient_authority())
                 .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
             let diff = currentf.relative_diff_to(&efidir)?;
 
@@ -696,7 +697,7 @@ impl Drop for Efi {
     }
 }
 
-fn validate_esp_fstype(dir: &openat::Dir) -> Result<()> {
+fn validate_esp_fstype(dir: &Dir) -> Result<()> {
     let dir = unsafe { BorrowedFd::borrow_raw(dir.as_raw_fd()) };
     let stat = rustix::fs::fstatfs(&dir)?;
     if stat.f_type != libc::MSDOS_SUPER_MAGIC {
@@ -904,7 +905,7 @@ fn transfer_ostree_boot_to_bootupd_updates(
         .args([&efisrc, &dest_efidir])
         .run_capture_stderr()?;
 
-    let efidir = openat::Dir::open(dest_efidir.as_std_path())
+    let efidir = Dir::open_ambient_dir(dest_efidir.as_std_path(), ambient_authority())
         .with_context(|| format!("Opening {}", dest_efidir))?;
 
     let files = crate::util::filenames(&efidir)?.into_iter().map(|mut f| {

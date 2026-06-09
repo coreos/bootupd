@@ -27,7 +27,8 @@ use camino::{Utf8Path, Utf8PathBuf};
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-use openat_ext::OpenatDirExt;
+use cap_std::fs::Dir;
+use cap_std_ext::dirext::CapStdExtDirExt;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -130,11 +131,11 @@ impl FileMetadata {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    pub(crate) fn new_from_path<P: openat::AsPath>(
-        dir: &openat::Dir,
+    pub(crate) fn new_from_path<P: AsRef<std::path::Path>>(
+        dir: &Dir,
         name: P,
     ) -> Result<FileMetadata> {
-        let mut r = dir.open_file(name)?;
+        let mut r = dir.open(name)?;
         let meta = r.metadata()?;
         let mut hasher =
             Hasher::new(MessageDigest::sha512()).expect("openssl sha512 hasher creation failed");
@@ -155,36 +156,30 @@ impl FileTree {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    fn unsorted_from_dir(dir: &openat::Dir) -> Result<HashMap<String, FileMetadata>> {
+    fn unsorted_from_dir(dir: &Dir) -> Result<HashMap<String, FileMetadata>> {
         let mut ret = HashMap::new();
-        for entry in dir.list_dir(".")? {
+        for entry in dir.entries_utf8()? {
             let entry = entry?;
-            let Some(name) = entry.file_name().to_str() else {
-                bail!("Invalid UTF-8 filename: {:?}", entry.file_name())
-            };
+            let name = entry.file_name().context("Getting file name")?;
             if name.starts_with(TMP_PREFIX) {
                 bail!("File {} contains our temporary prefix!", name);
             }
-            match dir.get_file_type(&entry)? {
-                openat::SimpleType::File => {
-                    let meta = FileMetadata::new_from_path(dir, name)?;
-                    let _ = ret.insert(name.to_string(), meta);
+            let file_type = entry.file_type()?;
+            if file_type.is_file() {
+                let meta = FileMetadata::new_from_path(dir, &name)?;
+                let _ = ret.insert(name.to_string(), meta);
+            } else if file_type.is_dir() {
+                let child = dir.open_dir(&name)?;
+                for (mut k, v) in FileTree::unsorted_from_dir(&child)?.drain() {
+                    k.reserve(name.len() + 1);
+                    k.insert(0, '/');
+                    k.insert_str(0, &name);
+                    let _ = ret.insert(k, v);
                 }
-                openat::SimpleType::Dir => {
-                    let child = dir.sub_dir(name)?;
-                    for (mut k, v) in FileTree::unsorted_from_dir(&child)?.drain() {
-                        k.reserve(name.len() + 1);
-                        k.insert(0, '/');
-                        k.insert_str(0, name);
-                        let _ = ret.insert(k, v);
-                    }
-                }
-                openat::SimpleType::Symlink => {
-                    bail!("Unsupported symbolic link {:?}", entry.file_name())
-                }
-                openat::SimpleType::Other => {
-                    bail!("Unsupported non-file/directory {:?}", entry.file_name())
-                }
+            } else if file_type.is_symlink() {
+                bail!("Unsupported symbolic link {:?}", entry.file_name())
+            } else {
+                bail!("Unsupported non-file/directory {:?}", entry.file_name())
             }
         }
         Ok(ret)
@@ -196,7 +191,7 @@ impl FileTree {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    pub(crate) fn new_from_dir(dir: &openat::Dir) -> Result<Self> {
+    pub(crate) fn new_from_dir(dir: &Dir) -> Result<Self> {
         let mut children = BTreeMap::new();
         for (k, mut v) in Self::unsorted_from_dir(dir)?.drain() {
             let k_path = get_dest_efi_path(Utf8Path::new(&k)).to_string();
@@ -275,26 +270,24 @@ impl FileTree {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    pub(crate) fn relative_diff_to(&self, dir: &openat::Dir) -> Result<FileTreeDiff> {
+    pub(crate) fn relative_diff_to(&self, dir: &Dir) -> Result<FileTreeDiff> {
         let mut removals = HashSet::new();
         let mut changes = HashSet::new();
 
         for (path, info) in self.children.iter() {
             assert!(!path.starts_with('/'));
 
-            if let Some(meta) = dir.metadata_optional(path)? {
-                match meta.simple_type() {
-                    openat::SimpleType::File => {
-                        let target_info = FileMetadata::new_from_path(dir, path)?;
-                        if info != &target_info {
-                            // Save the source path for changes
-                            changes.insert(info.source.as_ref().unwrap_or(path).clone());
-                        }
-                    }
-                    _ => {
-                        // If a file became a directory
+            if let Ok(meta) = dir.metadata(path) {
+                let file_type = meta.file_type();
+                if file_type.is_file() {
+                    let target_info = FileMetadata::new_from_path(dir, path)?;
+                    if info != &target_info {
+                        // Save the source path for changes
                         changes.insert(info.source.as_ref().unwrap_or(path).clone());
                     }
+                } else {
+                    // If a file became a directory
+                    changes.insert(info.source.as_ref().unwrap_or(path).clone());
                 }
             } else {
                 removals.insert(path.clone());
@@ -314,30 +307,24 @@ impl FileTree {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-fn cleanup_tmp(dir: &openat::Dir) -> Result<()> {
-    for entry in dir.list_dir(".")? {
+fn cleanup_tmp(dir: &Dir) -> Result<()> {
+    for entry in dir.entries_utf8()? {
         let entry = entry?;
-        let Some(name) = entry.file_name().to_str() else {
-            // Skip invalid UTF-8 for now, we will barf on it later though.
-            continue;
-        };
+        let name = entry.file_name().context("Getting file name")?;
 
-        match dir.get_file_type(&entry)? {
-            openat::SimpleType::Dir => {
-                if name.starts_with(TMP_PREFIX) {
-                    dir.remove_all(name)?;
-                    continue;
-                } else {
-                    let child = dir.sub_dir(name)?;
-                    cleanup_tmp(&child)?;
-                }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if name.starts_with(TMP_PREFIX) {
+                dir.remove_dir_all(name)?;
+                continue;
+            } else {
+                let child = dir.open_dir(name)?;
+                cleanup_tmp(&child)?;
             }
-            openat::SimpleType::File => {
-                if name.starts_with(TMP_PREFIX) {
-                    dir.remove_file(name)?;
-                }
+        } else if file_type.is_file() {
+            if name.starts_with(TMP_PREFIX) {
+                dir.remove_file(name)?;
             }
-            _ => {}
         }
     }
     Ok(())
@@ -360,7 +347,7 @@ pub(crate) struct ApplyUpdateOptions {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-pub(crate) fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
+pub(crate) fn copy_dir(root: &Dir, src: &str, dst: &str) -> Result<()> {
     copy_dir_with_args(root, src, dst, ["-a"])
 }
 
@@ -370,12 +357,7 @@ pub(crate) fn copy_dir(root: &openat::Dir, src: &str, dst: &str) -> Result<()> {
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-pub(crate) fn copy_dir_with_args<I, S>(
-    root: &openat::Dir,
-    src: &str,
-    dst: &str,
-    args: I,
-) -> Result<()>
+pub(crate) fn copy_dir_with_args<I, S>(root: &Dir, src: &str, dst: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -436,8 +418,8 @@ fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
     target_arch = "riscv64"
 ))]
 pub(crate) fn apply_diff(
-    srcdir: &openat::Dir,
-    destdir: &openat::Dir,
+    srcdir: &Dir,
+    destdir: &Dir,
     diff: &FileTreeDiff,
     opts: Option<&ApplyUpdateOptions>,
 ) -> Result<()> {
@@ -458,7 +440,7 @@ pub(crate) fn apply_diff(
                 path_tmp = Utf8Path::new(&first_dir_tmp).join(path.strip_prefix(&first_dir)?);
                 // copy to temp dir and remember
                 // skip copying if dir not existed in dest
-                if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
+                if !destdir.exists(&first_dir_tmp) && destdir.exists(first_dir.as_std_path()) {
                     copy_dir(destdir, first_dir.as_str(), &first_dir_tmp).with_context(|| {
                         format!("copy {first_dir} to {first_dir_tmp} before removing {pathstr}")
                     })?;
@@ -479,7 +461,7 @@ pub(crate) fn apply_diff(
         let (first_dir, first_dir_tmp) = get_first_dir(&path)?;
         let mut path_tmp = Utf8PathBuf::from(&first_dir_tmp);
         if first_dir != path {
-            if !destdir.exists(&first_dir_tmp)? && destdir.exists(first_dir.as_std_path())? {
+            if !destdir.exists(&first_dir_tmp) && destdir.exists(first_dir.as_std_path()) {
                 // copy to temp dir if not exists
                 copy_dir(destdir, first_dir.as_str(), &first_dir_tmp).with_context(|| {
                     format!("copy {first_dir} to {first_dir_tmp} before updating {pathstr}")
@@ -488,7 +470,11 @@ pub(crate) fn apply_diff(
             path_tmp = path_tmp.join(path.strip_prefix(&first_dir)?);
             // ensure new additions dir exists
             if let Some(parent) = path_tmp.parent() {
-                destdir.ensure_dir_all(parent.as_std_path(), DEFAULT_FILE_MODE)?;
+                use cap_std::fs::{DirBuilder, DirBuilderExt};
+
+                let mut dir_opts = DirBuilder::new();
+                dir_opts.recursive(true).mode(DEFAULT_FILE_MODE);
+                destdir.create_dir_with(parent.as_std_path(), &dir_opts)?;
             }
             // remove changed file before copying
             destdir
@@ -497,7 +483,7 @@ pub(crate) fn apply_diff(
         }
         updates.insert(first_dir, first_dir_tmp);
         srcdir
-            .copy_file_at(src_path.as_std_path(), destdir, path_tmp.as_std_path())
+            .copy(src_path.as_std_path(), destdir, path_tmp.as_std_path())
             .with_context(|| format!("copying {:?} to {:?}", src_path, path_tmp))?;
     }
 
@@ -505,43 +491,47 @@ pub(crate) fn apply_diff(
     for (dst, tmp) in updates.iter() {
         let dst = dst.as_std_path();
         log::trace!("doing local exchange for {} and {:?}", tmp, dst);
-        if destdir.exists(dst)? {
-            destdir
-                .local_exchange(tmp, dst)
+        if destdir.exists(dst) {
+            use rustix::fs::{renameat_with, RenameFlags};
+
+            renameat_with(&destdir, tmp, &destdir, dst, RenameFlags::EXCHANGE)
                 .with_context(|| format!("exchange for {} and {:?}", tmp, dst))?;
         } else {
             destdir
-                .local_rename(tmp, dst)
+                .rename(tmp, destdir, dst)
                 .with_context(|| format!("rename for {} and {:?}", tmp, dst))?;
         }
         crate::try_fail_point!("update::exchange");
     }
     // Ensure all of the updates & changes are written persistently to disk
     if !opts.skip_sync {
-        destdir.syncfs()?;
+        rustix::fs::syncfs(destdir.reopen_as_ownedfd()?)?;
     }
 
     // finally remove the temp dir
     for (_, tmp) in updates.iter() {
         log::trace!("cleanup: {}", tmp);
-        destdir.remove_all(tmp).context("clean up temp")?;
+        // [`remove_all`] from openat is essentially [`remove_all_optional`]
+        destdir.remove_all_optional(tmp).context("clean up temp")?;
     }
     // A second full filesystem sync to narrow any races rather than
     // waiting for writeback to kick in.
     if !opts.skip_sync {
-        fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
+        fsfreeze_thaw_cycle(destdir.reopen_as_ownedfd()?)?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use cap_std::ambient_authority;
+    use cap_std::fs::{DirBuilder, DirBuilderExt, Permissions, PermissionsExt};
+
     use super::*;
     use std::fs;
-    use std::io::Write;
     use std::path::Path;
 
-    fn run_diff(a: &openat::Dir, b: &openat::Dir) -> Result<FileTreeDiff> {
+    fn run_diff(a: &Dir, b: &Dir) -> Result<FileTreeDiff> {
         let ta = FileTree::new_from_dir(a)?;
         let tb = FileTree::new_from_dir(b)?;
         let diff = ta.diff(&tb)?;
@@ -564,9 +554,9 @@ mod tests {
         if !r.success() {
             bail!("failed to cp");
         };
-        let c = openat::Dir::open(&c)?;
-        let da = openat::Dir::open(a)?;
-        let db = openat::Dir::open(b)?;
+        let c = Dir::open_ambient_dir(&c, ambient_authority())?;
+        let da = Dir::open_ambient_dir(a, ambient_authority())?;
+        let db = Dir::open_ambient_dir(b, ambient_authority())?;
         let ta = FileTree::new_from_dir(&da)?;
         let tb = FileTree::new_from_dir(&db)?;
         let diff = ta.diff(&tb)?;
@@ -584,8 +574,8 @@ mod tests {
                 assert_eq!(n, diff.removals.len());
             }
             for f in diff.removals.iter() {
-                assert!(c.exists(f)?);
-                assert!(da.exists(f)?);
+                assert!(c.exists(f));
+                assert!(da.exists(f));
             }
         } else {
             assert_eq!(newdiff.count(), 0);
@@ -613,16 +603,21 @@ mod tests {
         let pb = p.join("b");
         std::fs::create_dir(&pa)?;
         std::fs::create_dir(&pb)?;
-        let a = openat::Dir::open(&pa)?;
-        let b = openat::Dir::open(&pb)?;
+        let a = Dir::open_ambient_dir(&pa, ambient_authority())?;
+        let b = Dir::open_ambient_dir(&pb, ambient_authority())?;
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 0);
-        a.create_dir("foo", 0o755)?;
+        let mut dir_builder = DirBuilder::new();
+        dir_builder.recursive(true).mode(0o755);
+        a.create_dir_with("foo", &dir_builder)?;
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 0);
         {
-            let mut bar = a.write_file("foo/bar", 0o644)?;
-            bar.write_all("foobarcontents".as_bytes())?;
+            a.atomic_write_with_perms(
+                "foo/bar",
+                "foobarcontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 1);
@@ -638,17 +633,23 @@ mod tests {
         let rdiff = ta.relative_diff_to(&b)?;
         assert_eq!(rdiff.removals.len(), cdiff.removals.len());
 
-        b.create_dir("foo", 0o755)?;
+        b.create_dir_with("foo", &dir_builder)?;
         {
-            let mut bar = b.write_file("foo/bar", 0o644)?;
-            bar.write_all("foobarcontents".as_bytes())?;
+            b.atomic_write_with_perms(
+                "foo/bar",
+                "foobarcontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 0);
         test_apply(&pa, &pb).context("testing apply 2")?;
         {
-            let mut bar2 = b.write_file("foo/bar", 0o644)?;
-            bar2.write_all("foobarcontents2".as_bytes())?;
+            b.atomic_write_with_perms(
+                "foo/bar",
+                "foobarcontents2".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 1);
@@ -682,8 +683,8 @@ mod tests {
         fs::write(b.join(&newsubp).join("newgrub.x64"), "newgrub data")?;
         fs::remove_file(b.join(relp).join("shim.x64"))?;
         {
-            let a = openat::Dir::open(&a)?;
-            let b = openat::Dir::open(&b)?;
+            let a = Dir::open_ambient_dir(&a, ambient_authority())?;
+            let b = Dir::open_ambient_dir(&b, ambient_authority())?;
             let ta = FileTree::new_from_dir(&a)?;
             let tb = FileTree::new_from_dir(&b)?;
             let diff = ta.diff(&tb)?;
@@ -713,8 +714,8 @@ mod tests {
             fs::write(c.join(foo).join("grub.x64"), "grub data 3")?;
             // addition: "bar/2.0/EFI/new/newfile"
             fs::write(c.join(bar).join("newfile"), "filedata")?;
-            let a = openat::Dir::open(&a.join("EFI"))?;
-            let c = openat::Dir::open(&c)?;
+            let a = Dir::open_ambient_dir(&a.join("EFI"), ambient_authority())?;
+            let c = Dir::open_ambient_dir(&c, ambient_authority())?;
             let ta = FileTree::new_from_dir(&a)?;
             let tc = FileTree::new_from_dir(&c)?;
             let diff = ta.diff(&tc)?;
@@ -774,26 +775,37 @@ mod tests {
         let pb = p.join(".btmp.b/b");
         std::fs::create_dir_all(&pa)?;
         std::fs::create_dir_all(&pb)?;
-        let dp = openat::Dir::open(p)?;
+        let dp = Dir::open_ambient_dir(p, ambient_authority())?;
         {
-            let mut buf = dp.write_file("a/foo", 0o644)?;
-            buf.write_all("foocontents".as_bytes())?;
-            let mut buf = dp.write_file("a/.btmp.foo", 0o644)?;
-            buf.write_all("foocontents".as_bytes())?;
-            let mut buf = dp.write_file(".btmp.b/foo", 0o644)?;
-            buf.write_all("foocontents".as_bytes())?;
+            dp.atomic_write_with_perms(
+                "a/foo",
+                "foocontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
+
+            dp.atomic_write_with_perms(
+                "a/.btmp.foo",
+                "foocontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
+
+            dp.atomic_write_with_perms(
+                ".btmp.b/foo",
+                "foocontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
-        assert!(dp.exists("a/.btmp.a")?);
-        assert!(dp.exists("a/foo")?);
-        assert!(dp.exists("a/.btmp.foo")?);
-        assert!(dp.exists("a/.btmp.a")?);
-        assert!(dp.exists(".btmp.b/b")?);
-        assert!(dp.exists(".btmp.b/foo")?);
+        assert!(dp.exists("a/.btmp.a"));
+        assert!(dp.exists("a/foo"));
+        assert!(dp.exists("a/.btmp.foo"));
+        assert!(dp.exists("a/.btmp.a"));
+        assert!(dp.exists(".btmp.b/b"));
+        assert!(dp.exists(".btmp.b/foo"));
         cleanup_tmp(&dp)?;
-        assert!(!dp.exists("a/.btmp.a")?);
-        assert!(dp.exists("a/foo")?);
-        assert!(!dp.exists("a/.btmp.foo")?);
-        assert!(!dp.exists(".btmp.b")?);
+        assert!(!dp.exists("a/.btmp.a"));
+        assert!(dp.exists("a/foo"));
+        assert!(!dp.exists("a/.btmp.foo"));
+        assert!(!dp.exists(".btmp.b"));
         Ok(())
     }
     // Waiting on https://github.com/rust-lang/rust/pull/125692
@@ -806,28 +818,47 @@ mod tests {
         let pb = p.join("b");
         std::fs::create_dir(&pa)?;
         std::fs::create_dir(&pb)?;
-        let a = openat::Dir::open(&pa)?;
-        let b = openat::Dir::open(&pb)?;
-        a.create_dir("foo", 0o755)?;
-        a.create_dir("bar", 0o755)?;
+        let a = Dir::open_ambient_dir(&pa, ambient_authority())?;
+        let b = Dir::open_ambient_dir(&pb, ambient_authority())?;
+
+        let mut dir_builder = DirBuilder::new();
+        dir_builder.recursive(true).mode(0o755);
+
+        a.create_dir_with("foo", &dir_builder)?;
+        a.create_dir_with("bar", &dir_builder)?;
+
         let foo = Path::new("foo/bar");
         let bar = Path::new("bar/foo");
         let testfile = "testfile";
         {
-            let mut buf = a.write_file(foo, 0o644)?;
-            buf.write_all("foocontents".as_bytes())?;
-            let mut buf = a.write_file(bar, 0o644)?;
-            buf.write_all("barcontents".as_bytes())?;
-            let mut buf = a.write_file(testfile, 0o644)?;
-            buf.write_all("testfilecontents".as_bytes())?;
+            a.atomic_write_with_perms(
+                foo,
+                "foocontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
+
+            a.atomic_write_with_perms(
+                bar,
+                "barcontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
+
+            a.atomic_write_with_perms(
+                testfile,
+                "testfilecontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
 
         let diff = run_diff(&a, &b)?;
         assert_eq!(diff.count(), 3);
-        b.create_dir("foo", 0o755)?;
+        b.create_dir_with("foo", &dir_builder)?;
         {
-            let mut buf = b.write_file(foo, 0o644)?;
-            buf.write_all("foocontents".as_bytes())?;
+            b.atomic_write_with_perms(
+                foo,
+                "foocontents".as_bytes(),
+                Permissions::from_mode(0o644),
+            )?;
         }
         let b_btime_foo = fs::metadata(pb.join(foo))?.created()?;
 
@@ -869,7 +900,7 @@ mod tests {
             assert_eq!(diff.count(), 1);
             assert_eq!(diff.removals.len(), 1);
             apply_diff(&a, &b, &diff, None).context("test removed files with relative_diff")?;
-            assert_eq!(b.exists(testfile)?, false);
+            assert_eq!(b.exists(testfile), false);
             // creation time is not changed for unchanged file
             let b_btime_foo_new = fs::metadata(pb.join(foo))?.created()?;
             assert_eq!(b_btime_foo_new, b_btime_foo);
@@ -879,8 +910,8 @@ mod tests {
             let diff = run_diff(&b, &a)?;
             assert_eq!(diff.count(), 2);
             apply_diff(&a, &b, &diff, None).context("test removed files")?;
-            assert_eq!(b.exists(testfile)?, true);
-            assert_eq!(b.exists(bar)?, false);
+            assert_eq!(b.exists(testfile), true);
+            assert_eq!(b.exists(bar), false);
             let diff = run_diff(&b, &a)?;
             assert_eq!(diff.count(), 0);
             // creation time is not changed for unchanged file

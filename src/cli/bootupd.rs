@@ -1,6 +1,7 @@
 use crate::bootupd::{self, ConfigMode};
 use anyhow::{Context, Result};
 use camino::Utf8Path;
+use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use clap::Parser;
@@ -123,7 +124,7 @@ impl DCommand {
         // Resolve devices: either discover backing devices from a filesystem path,
         // or convert explicitly specified device paths to Device objects.
         let devices = if let Some(ref fs_path) = opts.filesystem {
-            let dir = Dir::open_ambient_dir(fs_path, cap_std::ambient_authority())
+            let dir = Dir::open_ambient_dir(fs_path, ambient_authority())
                 .with_context(|| format!("Opening filesystem path {fs_path}"))?;
             let device = bootc_internal_blockdev::list_dev_by_dir(&dir)?;
             device.find_all_roots()?
