@@ -1,6 +1,6 @@
 #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 use crate::bios;
-use crate::bootloader::Bootloader;
+use crate::bootloader::{get_bootloader, Bootloader};
 use crate::component;
 use crate::component::{Component, ValidationResult};
 use crate::coreos;
@@ -19,6 +19,7 @@ use crate::freezethaw::fsfreeze_thaw_cycle;
 ))]
 use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR};
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
+use crate::util::running_in_container;
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -65,7 +66,7 @@ pub(crate) fn install(
 ) -> Result<()> {
     let source_root_dir =
         Dir::open_ambient_dir(source_root, ambient_authority()).context("Opening source root")?;
-    SavedState::ensure_not_present(dest_root)
+    SavedState::ensure_not_present(dest_root, bootloader)
         .context("failed to install, invalid re-install attempted")?;
 
     let all_components = get_components_impl(auto_components);
@@ -218,7 +219,7 @@ pub(crate) fn install(
     let mut state_guard =
         SavedState::unlocked(sysroot.try_clone()?).context("failed to acquire write lock")?;
     state_guard
-        .update_state(&state)
+        .update_state(&state, bootloader)
         .context("failed to update state")?;
 
     Ok(())
@@ -332,7 +333,9 @@ fn ensure_writable_boot() -> Result<()> {
 
 /// daemon implementation of component update
 pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdateResult> {
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let bootloader = get_bootloader()?;
+
+    let mut state = SavedState::load_from_disk("/", Some(bootloader))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let inst = if let Some(inst) = state.installed.get(name) {
         inst.clone()
@@ -374,7 +377,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     let mut state_guard =
         SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
     state_guard
-        .update_state(&state)
+        .update_state(&state, bootloader)
         .context("Failed to update state")?;
 
     let newinst = component
@@ -382,7 +385,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         .with_context(|| format!("Failed to update {}", component.name()))?;
     state.installed.insert(component.name().into(), newinst);
     pending_container.remove(component.name());
-    state_guard.update_state(&state)?;
+    state_guard.update_state(&state, bootloader)?;
 
     Ok(ComponentUpdateResult::Updated {
         previous: inst.meta,
@@ -397,8 +400,9 @@ pub(crate) fn adopt_and_update(
     rootcxt: &RootContext,
     with_static_config: bool,
 ) -> Result<Option<ContentMetadata>> {
+    let bootloader = get_bootloader()?;
     let sysroot = &rootcxt.sysroot;
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let mut state = SavedState::load_from_disk("/", Some(bootloader))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     if state.installed.contains_key(name) {
         anyhow::bail!("Component {} is already installed", name);
@@ -441,7 +445,7 @@ pub(crate) fn adopt_and_update(
 
             println!("Static GRUB configuration has been adopted successfully.");
         }
-        state_guard.update_state(&state)?;
+        state_guard.update_state(&state, bootloader)?;
         return Ok(Some(update));
     } else {
         // Nothing adopted, skip
@@ -468,7 +472,7 @@ fn list_dev_current_root() -> Result<Device> {
 
 /// daemon implementation of component validate
 pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
-    let state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let state = SavedState::load_from_disk("/", Some(get_bootloader()?))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
@@ -477,11 +481,20 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     component.validate(inst, &device)
 }
 
+/// Impl for bootupctl status
+/// This function assumes we're not running in a container
 pub(crate) fn status() -> Result<Status> {
     let mut ret: Status = Default::default();
     let mut known_components = get_components();
     let sysroot = Dir::open_ambient_dir("/", ambient_authority())?;
-    let state = SavedState::load_from_disk("/")?;
+
+    let bootloader = if running_in_container() {
+        None
+    } else {
+        Some(get_bootloader()?)
+    };
+
+    let state = SavedState::load_from_disk("/", bootloader)?;
     if let Some(state) = state {
         for (name, ic) in state.installed.iter() {
             log::trace!("Gathering status for installed component: {}", name);
