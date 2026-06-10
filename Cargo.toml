@@ -21,11 +21,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bootc-internal-blockdev = "1.15.2"
+bootc-internal-blockdev = "1.16.0"
 bootc-internal-utils = "1.15.2"
 cap-std-ext = "5.0.0"
 camino = "1.2.2"
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6", default-features = false, features = ["cargo", "derive", "std", "help", "usage", "suggestions"] }
 env_logger = "0.11"
 fail = { version = "0.5", features = ["failpoints"] }
@@ -38,7 +38,7 @@ log = "^0.4"
 cap-std = "4.0.2"
 openssl = "^0.10"
 os-release = "0.1.0"
-regex = "1.12.3"
+regex = "1.12.4"
 rpm-rs = { package = "rpm", version = "0.16.1", default-features = false, optional = true }
 rustix = { version = "1.1.4", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
