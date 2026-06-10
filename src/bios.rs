@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
-use openat_ext::OpenatDirExt;
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
+use cap_std_ext::dirext::CapStdExtDirExt;
 use std::io::prelude::*;
 use std::path::Path;
 use std::process::Command;
@@ -109,7 +111,7 @@ impl Component for Bios {
     ) -> Result<InstalledContent> {
         let device =
             device.ok_or_else(|| anyhow::anyhow!("BIOS component requires a target device"))?;
-        let src_dir = openat::Dir::open(src_root)
+        let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
             .with_context(|| format!("opening source directory {src_root}"))?;
         let Some(meta) = get_component_update(&src_dir, self)? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
@@ -151,11 +153,11 @@ impl Component for Bios {
     // - Backup "/boot/loader/grub.cfg" to "/boot/grub2/grub.cfg.bak"
     // - Remove symlink "/boot/grub2/grub.cfg"
     // - Replace "/boot/grub2/grub.cfg" symlink with new static "grub.cfg"
-    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
+    fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &Dir) -> Result<()> {
         let grub = "boot/grub2";
         // sysroot_path is /, destdir is Dir of /
         let grub_config_path = Utf8PathBuf::from(sysroot_path).join(grub);
-        let grub_config_dir = destdir.sub_dir(grub).context("Opening boot/grub2")?;
+        let grub_config_dir = destdir.open_dir(grub).context("Opening boot/grub2")?;
 
         let grub_config = grub_config_path.join(grubconfigs::GRUBCONFIG);
 
@@ -201,7 +203,7 @@ impl Component for Bios {
         }
 
         // Synchronize the filesystem containing /boot/grub2 to disk.
-        fsfreeze_thaw_cycle(grub_config_dir.open_file(".")?)?;
+        fsfreeze_thaw_cycle(grub_config_dir.reopen_as_ownedfd()?)?;
 
         Ok(())
     }
@@ -243,13 +245,13 @@ impl Component for Bios {
         }))
     }
 
-    fn query_update(&self, sysroot: &openat::Dir) -> Result<Option<ContentMetadata>> {
+    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>> {
         get_component_update(sysroot, self)
     }
 
-    fn query_requires_update(&self, sysroot: &openat::Dir) -> Result<()> {
+    fn query_requires_update(&self, sysroot: &Dir) -> Result<()> {
         // Failed as expected if booted with BIOS and no update metadata
-        if !sysroot.exists("sys/firmware/efi")? {
+        if !sysroot.exists("sys/firmware/efi") {
             anyhow::bail!("Failed to find BIOS update metadata");
         }
         Ok(())
