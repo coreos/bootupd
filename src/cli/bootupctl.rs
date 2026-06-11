@@ -1,5 +1,5 @@
 use crate::bootupd;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::LevelFilter;
 
@@ -214,20 +214,23 @@ fn ensure_running_in_systemd() -> Result<()> {
 
 /// If running in container, just print the available payloads
 fn run_status_in_container(json_format: bool) -> Result<()> {
-    let all_components = crate::bootupd::get_components();
-    if all_components.is_empty() {
-        return Ok(());
-    }
-    let avail: Vec<_> = all_components.keys().cloned().collect();
+    let sysroot = openat::Dir::open("/").context("opening sysroot directory /")?;
+
+    let avail: Vec<_> = crate::bootupd::get_available_components(&sysroot)?
+        .into_keys()
+        .collect();
+
     if json_format {
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
-        let output: serde_json::Value = serde_json::json!({
+        let output = serde_json::json!({
             "components": avail
         });
         serde_json::to_writer(&mut stdout, &output)?;
     } else {
-        println!("Available components: {}", avail.join(" "));
+        if !avail.is_empty() {
+            println!("Available components: {}", avail.join(" "));
+        }
     }
     Ok(())
 }
