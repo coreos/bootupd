@@ -105,9 +105,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d0538d8f5fd1b42686f46d2142926697dc2b477d509e59f67ae45431910225"
+checksum = "0ff5f8fa65ae4922663b235d07ad05414acd3f8adaf545bd64b51eae13e78d15"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -126,9 +126,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-mount"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6337532b11e0dd6c0d977d9c412e7941ed2a36e8696e20aec68b1df18acb76b1"
+checksum = "1a78fcb30aaa1426f5f4ef2fdaa2d70c2de6fa15d1455476a37f302f6ca85a21"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
@@ -144,9 +144,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-utils"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43485d96deefc93e89f2d2f45687e7bbaa82951f12e06273a15146e7af48333f"
+checksum = "803979e3a06d4604719a39281086d2d9dab9af6af930255652296c13e73e4ddd"
 dependencies = [
  "anstream",
  "anyhow",
@@ -156,7 +156,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "shlex",
+ "shlex 2.0.1",
  "tempfile",
  "tokio",
  "tracing",
@@ -284,7 +284,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a0dd1ca384932ff3641c8718a02769f1698e7563dc6974ffd03346116310423"
 dependencies = [
  "find-msvc-tools",
- "shlex",
+ "shlex 1.3.0",
 ]
 
 [[package]]
@@ -1355,6 +1355,12 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-hook-registry"
