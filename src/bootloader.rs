@@ -2,8 +2,6 @@ use anyhow::Result;
 use fn_error_context::context;
 use std::{fmt::Display, sync::OnceLock};
 
-use crate::efi::get_loader_info;
-
 #[derive(Debug, Default, Copy, Clone, clap::ValueEnum, PartialEq, Eq)]
 pub enum Bootloader {
     #[default]
@@ -48,8 +46,17 @@ impl Bootloader {
     }
 }
 
+#[cfg(any(target_arch = "powerpc64", target_arch = "s390x"))]
 #[context("Getting bootloader")]
 pub(crate) fn get_bootloader() -> Result<Bootloader> {
+    Ok(Bootloader::Grub)
+}
+
+#[cfg(not(any(target_arch = "powerpc64", target_arch = "s390x")))]
+#[context("Getting bootloader")]
+pub(crate) fn get_bootloader() -> Result<Bootloader> {
+    use crate::efi::get_loader_info;
+
     static BOOTLOADER: OnceLock<Bootloader> = OnceLock::new();
 
     if let Some(bootloader) = BOOTLOADER.get() {

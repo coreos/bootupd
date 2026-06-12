@@ -119,6 +119,12 @@ impl DCommand {
 
     /// Runner for `install` verb.
     pub(crate) fn run_install(opts: InstallOpts) -> Result<()> {
+        if opts.bootloader != Bootloader::Grub
+            && cfg!(any(target_arch = "powerpc64", target_arch = "s390x"))
+        {
+            anyhow::bail!("Only Grub is supported for powerpc64 and s390x");
+        }
+
         let configmode = if opts.write_uuid {
             ConfigMode::WithUUID
         } else if opts.with_static_configs {

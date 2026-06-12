@@ -2,7 +2,6 @@
 
 use crate::bootloader::Bootloader;
 use crate::bootupd::list_dev_current_root;
-use crate::efi::Efi;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::SavedState;
 use crate::util::SignalTerminationGuard;
@@ -133,7 +132,24 @@ impl SavedState {
                     }
                 }
 
+                #[cfg(any(target_arch = "powerpc64", target_arch = "s390x"))]
                 Bootloader::GrubCC => {
+                    let arch = if cfg!(target_arch = "powerpc64") {
+                        "powerpc64"
+                    } else {
+                        "s390x"
+                    };
+
+                    anyhow::bail!("Only Grub is supported for {arch}");
+                }
+
+                #[cfg(any(
+                    target_arch = "x86_64",
+                    target_arch = "aarch64",
+                    target_arch = "riscv64"
+                ))]
+                Bootloader::GrubCC => {
+                    use crate::efi::Efi;
                     let efi = Efi::default();
 
                     let device = get_parent_device(&root)?;
@@ -202,7 +218,42 @@ pub(crate) struct StateLockGuard {
 }
 
 impl StateLockGuard {
+    fn write_grub_statefile(&self, state: &SavedState) -> Result<()> {
+        let subdir = self.sysroot.open_dir(SavedState::STATEFILE_DIR)?;
+
+        subdir
+            .atomic_write_with_perms(
+                SavedState::STATEFILE_NAME,
+                serde_json::to_vec(state).context("Serializing state")?,
+                Permissions::from_mode(0o644),
+            )
+            .context("Writing state file")?;
+
+        return Ok(());
+    }
+
+    #[cfg(any(target_arch = "powerpc64", target_arch = "s390x"))]
+    #[context("Updating state")]
+    pub(crate) fn update_state(
+        &mut self,
+        state: &SavedState,
+        bootloader: Bootloader,
+    ) -> Result<()> {
+        let arch = if cfg!(target_arch = "powerpc64") {
+            "powerpc64"
+        } else {
+            "s390x"
+        };
+
+        if bootloader != Bootloader::Grub {
+            anyhow::anyhow!("Found bootloader: {bootloader}. Only Grub is supported for {arch}");
+        }
+
+        self.write_grub_statefile(state)
+    }
+
     /// Atomically replace the on-disk state with a new version.
+    #[cfg(not(any(target_arch = "powerpc64", target_arch = "s390x")))]
     #[context("Updating state")]
     pub(crate) fn update_state(
         &mut self,
@@ -210,18 +261,10 @@ impl StateLockGuard {
         bootloader: Bootloader,
     ) -> Result<()> {
         if bootloader == Bootloader::Grub {
-            let subdir = self.sysroot.open_dir(SavedState::STATEFILE_DIR)?;
-
-            subdir
-                .atomic_write_with_perms(
-                    SavedState::STATEFILE_NAME,
-                    serde_json::to_vec(state).context("Serializing state")?,
-                    Permissions::from_mode(0o644),
-                )
-                .context("Writing state file")?;
-
-            return Ok(());
+            return self.write_grub_statefile(state);
         }
+
+        use crate::efi::Efi;
 
         let device = get_parent_device(&self.sysroot)?;
         let all_esps = device
