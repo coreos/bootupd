@@ -71,14 +71,14 @@ pub(crate) trait Component {
     /// this is an `rpm-ostree compose tree` for example.  For a dual-partition
     /// style updater, this would be run as part of a postprocessing step
     /// while the filesystem for the partition is mounted.
-    fn generate_update_metadata(
-        &self,
-        sysroot: &str,
-        bootloader: Bootloader,
-    ) -> Result<Option<ContentMetadata>>;
+    fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>>;
 
     /// Used on the client to query for an update cached in the current booted OS.
-    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>>;
+    fn query_update(
+        &self,
+        sysroot: &Dir,
+        bootloader: Bootloader,
+    ) -> Result<Option<ContentMetadata>>;
 
     /// This is called in the update code if query_update() returned no metadata.
     /// It should return an error if the current booted system should expect some
@@ -167,21 +167,37 @@ pub(crate) fn write_update_metadata(
 }
 
 /// Given a component, return metadata on the available update (if any)
+//
+/// If bootloader is Some, all metadata not pertaining to the specified bootloader
+/// is filtered
+///
+/// If bootloader is None, no filtering is performed
 #[context("Loading update for component {}", component.name())]
 pub(crate) fn get_component_update(
     sysroot: &Dir,
     component: &dyn Component,
+    bootloader: Option<Bootloader>,
 ) -> Result<Option<ContentMetadata>> {
     let name = component_update_data_name(component);
-    let path = Path::new(BOOTUPD_UPDATES_DIR).join(name);
-    if let Some(f) = sysroot.open_optional(&path)? {
-        let mut f = std::io::BufReader::new(f);
-        let u = serde_json::from_reader(&mut f)
-            .with_context(|| format!("failed to parse {:?}", &path))?;
-        Ok(Some(u))
-    } else {
-        Ok(None)
-    }
+    let path = Path::new(BOOTUPD_UPDATES_DIR).join(&name);
+
+    let Some(f) = sysroot.open_optional(&path)? else {
+        return Ok(None);
+    };
+
+    let mut f = std::io::BufReader::new(f);
+    let mut u =
+        serde_json::from_reader(&mut f).with_context(|| format!("failed to parse {:?}", &path))?;
+
+    let Some(bootloader) = bootloader else {
+        return Ok(Some(u));
+    };
+
+    // We store metadata of all bootloaders present in the image
+    // So here, we will now filter out the bootloaders
+    u.filter_bootloader(bootloader);
+
+    Ok(Some(u))
 }
 
 #[context("Querying adoptable state")]

@@ -19,7 +19,6 @@ use crate::freezethaw::fsfreeze_thaw_cycle;
 ))]
 use crate::grubconfigs::{ensure_grub_permissions, GRUB2DIR};
 use crate::model::{ComponentStatus, ComponentUpdatable, ContentMetadata, SavedState, Status};
-use crate::util::running_in_container;
 use crate::{ostreeutil, util};
 use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -54,6 +53,7 @@ impl ConfigMode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
@@ -105,18 +105,21 @@ pub(crate) fn install(
             continue;
         }
 
-        // skip components that don't have an update metadata
-        if component.query_update(&source_root_dir)?.is_none() {
+        if !component.is_bootloader_supported(bootloader) {
             println!(
-                "Skip installing component {} without update metadata",
+                "Skip installing component {} as it does not support bootloader {bootloader}",
                 component.name()
             );
             continue;
         }
 
-        if !component.is_bootloader_supported(bootloader) {
+        // skip components that don't have an update metadata
+        if component
+            .query_update(&source_root_dir, bootloader)?
+            .is_none()
+        {
             println!(
-                "Skip installing component {} as it does not support bootloader {bootloader}",
+                "Skip installing component {} without update metadata",
                 component.name()
             );
             continue;
@@ -283,22 +286,15 @@ pub(crate) fn get_components() -> Components {
     get_components_impl(false)
 }
 
-pub(crate) fn generate_update_metadata(sysroot_path: &str, bootloader: Bootloader) -> Result<()> {
+pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
     // create bootupd update dir which will save component metadata files for both components
     let updates_dir = Path::new(sysroot_path).join(crate::model::BOOTUPD_UPDATES_DIR);
+
     std::fs::create_dir_all(&updates_dir)
         .with_context(|| format!("Failed to create updates dir {:?}", &updates_dir))?;
+
     for component in get_components().values() {
-        if !component.is_bootloader_supported(bootloader) {
-            println!(
-                "Bootloader {bootloader} not supported for {}. Skipping metadata generation",
-                component.name(),
-            );
-
-            continue;
-        }
-
-        if let Some(v) = component.generate_update_metadata(sysroot_path, bootloader)? {
+        if let Some(v) = component.generate_update_metadata(sysroot_path)? {
             println!(
                 "Generated update layout for {}: {}",
                 component.name(),
@@ -343,7 +339,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         anyhow::bail!("Component {} is not installed", name);
     };
     let sysroot = &rootcxt.sysroot;
-    let update = component.query_update(sysroot)?;
+    let update = component.query_update(sysroot, bootloader)?;
     let update = match update.as_ref() {
         Some(p) => match inst.meta.can_upgrade_to(p) {
             std::cmp::Ordering::Less => p, // current < available -> upgrade
@@ -364,10 +360,12 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         target_arch = "riscv64"
     ))]
     {
-        let grub2dir = &sysroot
-            .open_dir(format!("boot/{GRUB2DIR}"))
-            .context("Opening /boot/grub2")?;
-        ensure_grub_permissions(grub2dir)?;
+        if bootloader == Bootloader::Grub {
+            let grub2dir = &sysroot
+                .open_dir(format!("boot/{GRUB2DIR}"))
+                .context("Opening /boot/grub2")?;
+            ensure_grub_permissions(grub2dir)?;
+        }
     }
 
     let mut pending_container = state.pending.take().unwrap_or_default();
@@ -417,13 +415,15 @@ pub(crate) fn adopt_and_update(
         target_arch = "riscv64"
     ))]
     {
-        let grub2dir = &sysroot
-            .open_dir(format!("boot/{GRUB2DIR}"))
-            .context("Opening /boot/grub2")?;
-        ensure_grub_permissions(grub2dir)?;
+        if bootloader == Bootloader::Grub {
+            let grub2dir = &sysroot
+                .open_dir(format!("boot/{GRUB2DIR}"))
+                .context("Opening /boot/grub2")?;
+            ensure_grub_permissions(grub2dir)?;
+        }
     }
 
-    let Some(update) = component.query_update(sysroot)? else {
+    let Some(update) = component.query_update(sysroot, bootloader)? else {
         anyhow::bail!("Component {} has no available update", name);
     };
 
@@ -486,7 +486,7 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
 pub(crate) fn status() -> Result<Status> {
     let mut ret: Status = Default::default();
     let mut known_components = get_components();
-    let sysroot = Dir::open_ambient_dir("/", ambient_authority())?;
+    let root = Dir::open_ambient_dir("/", ambient_authority())?;
 
     let bootloader = get_bootloader()?;
     let state = SavedState::load_from_disk("/", Some(bootloader))?;
@@ -499,7 +499,7 @@ pub(crate) fn status() -> Result<Status> {
                 .ok_or_else(|| anyhow!("Unknown component installed: {}", name))?;
             let component = component.as_ref();
             let interrupted = state.pending.as_ref().and_then(|p| p.get(name.as_str()));
-            let update = component.query_update(&sysroot)?;
+            let update = component.query_update(&root, bootloader)?;
             let updatable = ComponentUpdatable::from_metadata(&ic.meta, update.as_ref());
             let adopted_from = ic.adopted_from.clone();
             ret.components.insert(
@@ -538,7 +538,7 @@ pub(crate) fn status() -> Result<Status> {
         if let Some(adopt_ver) = component::query_adopt_state()? {
             let component = component::new_from_name(&name)?;
             // Skip if the update metadata could not be found
-            if component.query_update(&sysroot)?.is_none() {
+            if component.query_update(&root, bootloader)?.is_none() {
                 continue;
             };
             ret.adoptable.insert(name.to_string(), adopt_ver);

@@ -24,7 +24,7 @@ use widestring::U16CString;
 
 use bootc_internal_blockdev::Device;
 
-use crate::bootloader::Bootloader;
+use crate::bootloader::{get_bootloader, Bootloader};
 use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
@@ -449,7 +449,7 @@ impl Component for Efi {
     ) -> Result<InstalledContent> {
         let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
             .with_context(|| format!("opening source directory {src_root}"))?;
-        let Some(meta) = get_component_update(&src_dir, self)? else {
+        let Some(meta) = get_component_update(&src_dir, self, Some(bootloader))? else {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
@@ -533,7 +533,9 @@ impl Component for Efi {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
         let sysroot_dir = &rootcxt.sysroot;
-        let updatemeta = self.query_update(sysroot_dir)?.expect("update available");
+        let updatemeta = self
+            .query_update(sysroot_dir, get_bootloader()?)?
+            .expect("update available");
         let updated_path = {
             let efilib_path = rootcxt.path.join(EFILIB);
             if efilib_path.exists()
@@ -580,11 +582,7 @@ impl Component for Efi {
         })
     }
 
-    fn generate_update_metadata(
-        &self,
-        sysroot: &str,
-        bootloader: Bootloader,
-    ) -> Result<Option<ContentMetadata>> {
+    fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>> {
         let sysroot_path = Utf8Path::new(sysroot);
         let sysroot_dir = Dir::open_ambient_dir(sysroot_path, cap_std::ambient_authority())?;
 
@@ -596,7 +594,7 @@ impl Component for Efi {
         // have them in /usr/lib/ostree-boot, which we move to /usr/lib/bootupd/updates/EFI
         let metadata = if sysroot_path.join(EFILIB).exists() {
             println!("Generating metadata from {EFILIB}");
-            generate_meta_from_usr_efi(sysroot_path, bootloader)?
+            generate_meta_from_usr_efi(sysroot_path)?
         } else {
             match &ostreeboot {
                 Some(..) => {
@@ -630,8 +628,12 @@ impl Component for Efi {
         Ok(Some(metadata))
     }
 
-    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>> {
-        get_component_update(sysroot, self)
+    fn query_update(
+        &self,
+        sysroot: &Dir,
+        bootloader: Bootloader,
+    ) -> Result<Option<ContentMetadata>> {
+        get_component_update(sysroot, self, Some(bootloader))
     }
 
     fn query_requires_update(&self, _sysroot: &Dir) -> Result<()> {
@@ -826,12 +828,11 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
 }
 
 #[context("Generating metadata from usr/lib/efi")]
-fn generate_meta_from_usr_efi(
-    sysroot_path: &Utf8Path,
-    bootloader: Bootloader,
-) -> Result<ContentMetadata> {
-    let Some(efi_components) = get_efi_component_from_usr(sysroot_path, EFILIB, Some(bootloader))?
-    else {
+fn generate_meta_from_usr_efi(sysroot_path: &Utf8Path) -> Result<ContentMetadata> {
+    // We DO NOT want to filter while generating metadata
+    // We want to have metadata for multiple bootloaders
+    // Later on, while installing, we'll filter out the stuff we don't need
+    let Some(efi_components) = get_efi_component_from_usr(sysroot_path, EFILIB, None)? else {
         anyhow::bail!("Failed to find EFI components");
     };
 

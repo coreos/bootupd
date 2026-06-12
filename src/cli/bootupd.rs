@@ -96,12 +96,6 @@ pub struct GenerateOpts {
     /// Physical root mountpoint
     #[clap(value_parser)]
     sysroot: Option<String>,
-
-    /// The bootloader to generate metadata for
-    //
-    // We have a default to not break older systems
-    #[clap(long, default_value_t = Bootloader::Grub)]
-    bootloader: Bootloader,
 }
 
 impl DCommand {
@@ -119,8 +113,7 @@ impl DCommand {
         if sysroot != "/" {
             anyhow::bail!("Using a non-default sysroot is not supported: {}", sysroot);
         }
-        bootupd::generate_update_metadata(sysroot, opts.bootloader)
-            .context("generating metadata failed")?;
+        bootupd::generate_update_metadata(sysroot).context("generating metadata failed")?;
         Ok(())
     }
 
