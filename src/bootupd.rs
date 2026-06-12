@@ -216,8 +216,8 @@ pub(crate) fn install(
     // Unmount the ESP, etc.
     drop(target_components);
 
-    let mut state_guard =
-        SavedState::unlocked(sysroot.try_clone()?).context("failed to acquire write lock")?;
+    let mut state_guard = SavedState::unlocked(dest_root.into(), sysroot.try_clone()?)
+        .context("failed to acquire write lock")?;
     state_guard
         .update_state(&state, bootloader)
         .context("failed to update state")?;
@@ -374,8 +374,8 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
     let interrupted = pending_container.get(component.name()).cloned();
     pending_container.insert(component.name().into(), update.clone());
     let sysroot = sysroot.try_clone()?;
-    let mut state_guard =
-        SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
+    let mut state_guard = SavedState::acquire_write_lock(rootcxt.path.clone(), sysroot)
+        .context("Failed to acquire write lock")?;
     state_guard
         .update_state(&state, bootloader)
         .context("Failed to update state")?;
@@ -428,8 +428,8 @@ pub(crate) fn adopt_and_update(
     };
 
     let sysroot = sysroot.try_clone()?;
-    let mut state_guard =
-        SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
+    let mut state_guard = SavedState::acquire_write_lock(rootcxt.path.clone(), sysroot)
+        .context("Failed to acquire write lock")?;
 
     let inst = component
         .adopt_update(&rootcxt, &update, with_static_config)
@@ -458,7 +458,7 @@ pub(crate) fn adopt_and_update(
 /// then falling back to `/sysroot`. This avoids issues with virtual
 /// filesystems like composefs that are mounted on `/`.
 #[context("Finding block device from boot or sysroot")]
-fn list_dev_current_root() -> Result<Device> {
+pub(crate) fn list_dev_current_root() -> Result<Device> {
     let auth = cap_std::ambient_authority();
     for path in ["/boot", "/sysroot"] {
         if let Ok(dir) = Dir::open_ambient_dir(path, auth) {
@@ -488,13 +488,9 @@ pub(crate) fn status() -> Result<Status> {
     let mut known_components = get_components();
     let sysroot = Dir::open_ambient_dir("/", ambient_authority())?;
 
-    let bootloader = if running_in_container() {
-        None
-    } else {
-        Some(get_bootloader()?)
-    };
+    let bootloader = get_bootloader()?;
+    let state = SavedState::load_from_disk("/", Some(bootloader))?;
 
-    let state = SavedState::load_from_disk("/", bootloader)?;
     if let Some(state) = state {
         for (name, ic) in state.installed.iter() {
             log::trace!("Gathering status for installed component: {}", name);
