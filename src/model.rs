@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::bootloader::Bootloader;
 use crate::packagesystem::*;
 
 /// The directory where updates are stored
@@ -31,6 +32,28 @@ impl ContentMetadata {
             compare_package_slices(self_versions, target_versions)
         } else {
             compare_package_versions(&self.version, &target.version)
+        }
+    }
+
+    pub(crate) fn filter_bootloader(&mut self, bootloader: Bootloader) {
+        let to_remove = Bootloader::iter()
+            .filter(|b| *b != bootloader)
+            .map(|b| b.efi_component_name())
+            .collect::<Vec<_>>();
+
+        // Version is of type "<bootloader-name>-<rpm_evr>,<bootloader-name>-<rpm_evr>"
+        self.version = self
+            .version
+            .split(",")
+            .filter(|v| {
+                // Keep everything that is NOT in to_remove
+                !to_remove.iter().any(|b| v.starts_with(b))
+            })
+            .collect::<Vec<&str>>()
+            .join(",");
+
+        if let Some(versions) = &mut self.versions {
+            versions.retain(|v| !to_remove.contains(&v.name.as_str()));
         }
     }
 }

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
 
-use crate::{bootupd::RootContext, model::*};
+use crate::{bootloader::Bootloader, bootupd::RootContext, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -63,6 +63,7 @@ pub(crate) trait Component {
         dest_root: &str,
         device: Option<&Device>,
         update_firmware: bool,
+        bootloader: Bootloader,
     ) -> Result<InstalledContent>;
 
     /// Implementation of `bootupd generate-update-metadata` for a given component.
@@ -73,7 +74,11 @@ pub(crate) trait Component {
     fn generate_update_metadata(&self, sysroot: &str) -> Result<Option<ContentMetadata>>;
 
     /// Used on the client to query for an update cached in the current booted OS.
-    fn query_update(&self, sysroot: &Dir) -> Result<Option<ContentMetadata>>;
+    fn query_update(
+        &self,
+        sysroot: &Dir,
+        bootloader: Bootloader,
+    ) -> Result<Option<ContentMetadata>>;
 
     /// This is called in the update code if query_update() returned no metadata.
     /// It should return an error if the current booted system should expect some
@@ -92,6 +97,8 @@ pub(crate) trait Component {
 
     /// Locating efi vendor dir
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
+
+    fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool;
 }
 
 /// Given a component name, create an implementation.
@@ -160,21 +167,37 @@ pub(crate) fn write_update_metadata(
 }
 
 /// Given a component, return metadata on the available update (if any)
+//
+/// If bootloader is Some, all metadata not pertaining to the specified bootloader
+/// is filtered
+///
+/// If bootloader is None, no filtering is performed
 #[context("Loading update for component {}", component.name())]
 pub(crate) fn get_component_update(
     sysroot: &Dir,
     component: &dyn Component,
+    bootloader: Option<Bootloader>,
 ) -> Result<Option<ContentMetadata>> {
     let name = component_update_data_name(component);
-    let path = Path::new(BOOTUPD_UPDATES_DIR).join(name);
-    if let Some(f) = sysroot.open_optional(&path)? {
-        let mut f = std::io::BufReader::new(f);
-        let u = serde_json::from_reader(&mut f)
-            .with_context(|| format!("failed to parse {:?}", &path))?;
-        Ok(Some(u))
-    } else {
-        Ok(None)
-    }
+    let path = Path::new(BOOTUPD_UPDATES_DIR).join(&name);
+
+    let Some(f) = sysroot.open_optional(&path)? else {
+        return Ok(None);
+    };
+
+    let mut f = std::io::BufReader::new(f);
+    let mut u =
+        serde_json::from_reader(&mut f).with_context(|| format!("failed to parse {:?}", &path))?;
+
+    let Some(bootloader) = bootloader else {
+        return Ok(Some(u));
+    };
+
+    // We store metadata of all bootloaders present in the image
+    // So here, we will now filter out the bootloaders
+    u.filter_bootloader(bootloader);
+
+    Ok(Some(u))
 }
 
 #[context("Querying adoptable state")]

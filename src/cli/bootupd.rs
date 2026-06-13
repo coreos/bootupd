@@ -1,3 +1,4 @@
+use crate::bootloader::Bootloader;
 use crate::bootupd::{self, ConfigMode};
 use anyhow::{Context, Result};
 use camino::Utf8Path;
@@ -83,6 +84,11 @@ pub struct InstallOpts {
     /// then only enable installation to the ESP.
     #[clap(long)]
     auto: bool,
+
+    /// The bootloader to use
+    /// Defaults to Grub
+    #[clap(long, default_value_t = Bootloader::Grub)]
+    bootloader: Bootloader,
 }
 
 #[derive(Debug, Parser)]
@@ -113,6 +119,12 @@ impl DCommand {
 
     /// Runner for `install` verb.
     pub(crate) fn run_install(opts: InstallOpts) -> Result<()> {
+        if opts.bootloader != Bootloader::Grub
+            && cfg!(any(target_arch = "powerpc64", target_arch = "s390x"))
+        {
+            anyhow::bail!("Only Grub is supported for powerpc64 and s390x");
+        }
+
         let configmode = if opts.write_uuid {
             ConfigMode::WithUUID
         } else if opts.with_static_configs {
@@ -143,6 +155,7 @@ impl DCommand {
             opts.update_firmware,
             opts.components.as_deref(),
             opts.auto,
+            opts.bootloader,
         )
         .context("boot data installation failed")?;
         Ok(())

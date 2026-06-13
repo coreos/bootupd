@@ -1,5 +1,6 @@
 #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 use crate::bios;
+use crate::bootloader::{get_bootloader, Bootloader};
 use crate::component;
 use crate::component::{Component, ValidationResult};
 use crate::coreos;
@@ -52,6 +53,7 @@ impl ConfigMode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
@@ -60,10 +62,11 @@ pub(crate) fn install(
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
+    bootloader: Bootloader,
 ) -> Result<()> {
     let source_root_dir =
         Dir::open_ambient_dir(source_root, ambient_authority()).context("Opening source root")?;
-    SavedState::ensure_not_present(dest_root)
+    SavedState::ensure_not_present(dest_root, bootloader)
         .context("failed to install, invalid re-install attempted")?;
 
     let all_components = get_components_impl(auto_components);
@@ -102,8 +105,19 @@ pub(crate) fn install(
             continue;
         }
 
+        if !component.is_bootloader_supported(bootloader) {
+            println!(
+                "Skip installing component {} as it does not support bootloader {bootloader}",
+                component.name()
+            );
+            continue;
+        }
+
         // skip components that don't have an update metadata
-        if component.query_update(&source_root_dir)?.is_none() {
+        if component
+            .query_update(&source_root_dir, bootloader)?
+            .is_none()
+        {
             println!(
                 "Skip installing component {} without update metadata",
                 component.name()
@@ -148,7 +162,7 @@ pub(crate) fn install(
         for device in &devices_to_install {
             let device_desc = device.map_or("(auto)".to_string(), |d| d.path());
             let meta = component
-                .install(source_root, dest_root, *device, update_firmware)
+                .install(source_root, dest_root, *device, update_firmware, bootloader)
                 .with_context(|| {
                     format!(
                         "installing component {} to device {}",
@@ -185,28 +199,30 @@ pub(crate) fn install(
         target_arch = "powerpc64",
         target_arch = "riscv64"
     ))]
-    match configs.enabled_with_uuid() {
-        Some(uuid) => {
-            let meta = get_static_config_meta()?;
-            state.static_configs = Some(meta);
-            crate::grubconfigs::install(
-                sysroot,
-                Some(&source_root_dir),
-                installed_efi_vendor.as_deref(),
-                uuid,
-            )?;
+    if bootloader == Bootloader::Grub {
+        match configs.enabled_with_uuid() {
+            Some(uuid) => {
+                let meta = get_static_config_meta()?;
+                state.static_configs = Some(meta);
+                crate::grubconfigs::install(
+                    sysroot,
+                    Some(&source_root_dir),
+                    installed_efi_vendor.as_deref(),
+                    uuid,
+                )?;
+            }
             // On other architectures, assume that there's nothing to do.
+            None => {}
         }
-        None => {}
     }
 
     // Unmount the ESP, etc.
     drop(target_components);
 
-    let mut state_guard =
-        SavedState::unlocked(sysroot.try_clone()?).context("failed to acquire write lock")?;
+    let mut state_guard = SavedState::unlocked(dest_root.into(), sysroot.try_clone()?)
+        .context("failed to acquire write lock")?;
     state_guard
-        .update_state(&state)
+        .update_state(&state, bootloader)
         .context("failed to update state")?;
 
     Ok(())
@@ -273,8 +289,10 @@ pub(crate) fn get_components() -> Components {
 pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
     // create bootupd update dir which will save component metadata files for both components
     let updates_dir = Path::new(sysroot_path).join(crate::model::BOOTUPD_UPDATES_DIR);
+
     std::fs::create_dir_all(&updates_dir)
         .with_context(|| format!("Failed to create updates dir {:?}", &updates_dir))?;
+
     for component in get_components().values() {
         if let Some(v) = component.generate_update_metadata(sysroot_path)? {
             println!(
@@ -311,7 +329,9 @@ fn ensure_writable_boot() -> Result<()> {
 
 /// daemon implementation of component update
 pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdateResult> {
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let bootloader = get_bootloader()?;
+
+    let mut state = SavedState::load_from_disk("/", Some(bootloader))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let inst = if let Some(inst) = state.installed.get(name) {
         inst.clone()
@@ -319,7 +339,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         anyhow::bail!("Component {} is not installed", name);
     };
     let sysroot = &rootcxt.sysroot;
-    let update = component.query_update(sysroot)?;
+    let update = component.query_update(sysroot, bootloader)?;
     let update = match update.as_ref() {
         Some(p) => match inst.meta.can_upgrade_to(p) {
             std::cmp::Ordering::Less => p, // current < available -> upgrade
@@ -340,20 +360,22 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         target_arch = "riscv64"
     ))]
     {
-        let grub2dir = &sysroot
-            .open_dir(format!("boot/{GRUB2DIR}"))
-            .context("Opening /boot/grub2")?;
-        ensure_grub_permissions(grub2dir)?;
+        if bootloader == Bootloader::Grub {
+            let grub2dir = &sysroot
+                .open_dir(format!("boot/{GRUB2DIR}"))
+                .context("Opening /boot/grub2")?;
+            ensure_grub_permissions(grub2dir)?;
+        }
     }
 
     let mut pending_container = state.pending.take().unwrap_or_default();
     let interrupted = pending_container.get(component.name()).cloned();
     pending_container.insert(component.name().into(), update.clone());
     let sysroot = sysroot.try_clone()?;
-    let mut state_guard =
-        SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
+    let mut state_guard = SavedState::acquire_write_lock(rootcxt.path.clone(), sysroot)
+        .context("Failed to acquire write lock")?;
     state_guard
-        .update_state(&state)
+        .update_state(&state, bootloader)
         .context("Failed to update state")?;
 
     let newinst = component
@@ -361,7 +383,7 @@ pub(crate) fn update(name: &str, rootcxt: &RootContext) -> Result<ComponentUpdat
         .with_context(|| format!("Failed to update {}", component.name()))?;
     state.installed.insert(component.name().into(), newinst);
     pending_container.remove(component.name());
-    state_guard.update_state(&state)?;
+    state_guard.update_state(&state, bootloader)?;
 
     Ok(ComponentUpdateResult::Updated {
         previous: inst.meta,
@@ -376,8 +398,9 @@ pub(crate) fn adopt_and_update(
     rootcxt: &RootContext,
     with_static_config: bool,
 ) -> Result<Option<ContentMetadata>> {
+    let bootloader = get_bootloader()?;
     let sysroot = &rootcxt.sysroot;
-    let mut state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let mut state = SavedState::load_from_disk("/", Some(bootloader))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     if state.installed.contains_key(name) {
         anyhow::bail!("Component {} is already installed", name);
@@ -392,19 +415,21 @@ pub(crate) fn adopt_and_update(
         target_arch = "riscv64"
     ))]
     {
-        let grub2dir = &sysroot
-            .open_dir(format!("boot/{GRUB2DIR}"))
-            .context("Opening /boot/grub2")?;
-        ensure_grub_permissions(grub2dir)?;
+        if bootloader == Bootloader::Grub {
+            let grub2dir = &sysroot
+                .open_dir(format!("boot/{GRUB2DIR}"))
+                .context("Opening /boot/grub2")?;
+            ensure_grub_permissions(grub2dir)?;
+        }
     }
 
-    let Some(update) = component.query_update(sysroot)? else {
+    let Some(update) = component.query_update(sysroot, bootloader)? else {
         anyhow::bail!("Component {} has no available update", name);
     };
 
     let sysroot = sysroot.try_clone()?;
-    let mut state_guard =
-        SavedState::acquire_write_lock(sysroot).context("Failed to acquire write lock")?;
+    let mut state_guard = SavedState::acquire_write_lock(rootcxt.path.clone(), sysroot)
+        .context("Failed to acquire write lock")?;
 
     let inst = component
         .adopt_update(&rootcxt, &update, with_static_config)
@@ -420,7 +445,7 @@ pub(crate) fn adopt_and_update(
 
             println!("Static GRUB configuration has been adopted successfully.");
         }
-        state_guard.update_state(&state)?;
+        state_guard.update_state(&state, bootloader)?;
         return Ok(Some(update));
     } else {
         // Nothing adopted, skip
@@ -433,7 +458,7 @@ pub(crate) fn adopt_and_update(
 /// then falling back to `/sysroot`. This avoids issues with virtual
 /// filesystems like composefs that are mounted on `/`.
 #[context("Finding block device from boot or sysroot")]
-fn list_dev_current_root() -> Result<Device> {
+pub(crate) fn list_dev_current_root() -> Result<Device> {
     let auth = cap_std::ambient_authority();
     for path in ["/boot", "/sysroot"] {
         if let Ok(dir) = Dir::open_ambient_dir(path, auth) {
@@ -447,7 +472,7 @@ fn list_dev_current_root() -> Result<Device> {
 
 /// daemon implementation of component validate
 pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
-    let state = SavedState::load_from_disk("/")?.unwrap_or_default();
+    let state = SavedState::load_from_disk("/", Some(get_bootloader()?))?.unwrap_or_default();
     let component = component::new_from_name(name)?;
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
@@ -456,11 +481,16 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     component.validate(inst, &device)
 }
 
+/// Impl for bootupctl status
+/// This function assumes we're not running in a container
 pub(crate) fn status() -> Result<Status> {
     let mut ret: Status = Default::default();
     let mut known_components = get_components();
-    let sysroot = Dir::open_ambient_dir("/", ambient_authority())?;
-    let state = SavedState::load_from_disk("/")?;
+    let root = Dir::open_ambient_dir("/", ambient_authority())?;
+
+    let bootloader = get_bootloader()?;
+    let state = SavedState::load_from_disk("/", Some(bootloader))?;
+
     if let Some(state) = state {
         for (name, ic) in state.installed.iter() {
             log::trace!("Gathering status for installed component: {}", name);
@@ -469,7 +499,7 @@ pub(crate) fn status() -> Result<Status> {
                 .ok_or_else(|| anyhow!("Unknown component installed: {}", name))?;
             let component = component.as_ref();
             let interrupted = state.pending.as_ref().and_then(|p| p.get(name.as_str()));
-            let update = component.query_update(&sysroot)?;
+            let update = component.query_update(&root, bootloader)?;
             let updatable = ComponentUpdatable::from_metadata(&ic.meta, update.as_ref());
             let adopted_from = ic.adopted_from.clone();
             ret.components.insert(
@@ -508,7 +538,7 @@ pub(crate) fn status() -> Result<Status> {
         if let Some(adopt_ver) = component::query_adopt_state()? {
             let component = component::new_from_name(&name)?;
             // Skip if the update metadata could not be found
-            if component.query_update(&sysroot)?.is_none() {
+            if component.query_update(&root, bootloader)?.is_none() {
                 continue;
             };
             ret.adoptable.insert(name.to_string(), adopt_ver);

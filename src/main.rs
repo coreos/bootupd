@@ -19,6 +19,7 @@ Refs:
 mod backend;
 #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
 mod bios;
+mod bootloader;
 mod bootupd;
 mod cli;
 mod component;
