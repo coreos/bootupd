@@ -177,7 +177,7 @@ pub(crate) fn compare_package_slices(a: &[Module], b: &[Module]) -> Ordering {
     for (pkg_a, pkg_b) in a.iter().zip(b.iter()) {
         // Compare only versions - names are already normalized via canonical_name()
         // in Ord so sort order is consistent across distros.
-        match pkg_a.rpm_evr().cmp(&pkg_b.rpm_evr()) {
+        match pkg_a.cmp(pkg_b) {
             Ordering::Less => return Ordering::Less,
             Ordering::Greater => has_greater = true,
             Ordering::Equal => {}
