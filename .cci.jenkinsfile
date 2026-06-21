@@ -17,7 +17,7 @@ parallel build: {
       }
       stage("Unit tests") {
         shwrap("""
-          dnf install -y grub2-tools-minimal
+          dnf install -y grub2-tools
           cargo test --features rpm
           cargo test
         """)
