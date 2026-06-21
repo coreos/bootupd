@@ -29,7 +29,6 @@ fn normalize_package_name(name: &str) -> &str {
                 Some(c) if c.is_ascii_digit() || !c.is_ascii_alphabetic() => return canonical,
                 _ => {}
             }
-
         }
     }
     name
@@ -38,14 +37,14 @@ fn normalize_package_name(name: &str) -> &str {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Module {
     pub(crate) name: String,
-    pub (crate) rpm_evr: String,
+    pub(crate) rpm_evr: String,
 }
 
 impl Module {
     pub(crate) fn rpm_evr(&self) -> Version {
         Version::from(&self.rpm_evr)
     }
-    
+
     fn canonical_name(&self) -> &str {
         normalize_package_name(&self.name)
     }
@@ -96,19 +95,15 @@ fn parse_manifest(data: &[u8]) -> Result<ContentMetadata> {
         .last()
         .expect("pkgs is non-empty");
 
-    let version = pkgs
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(",");
+    let version = pkgs.keys().cloned().collect::<Vec<_>>().join(",");
 
     let mut modules: Vec<Module> = pkgs.keys().map(|s| parse_evr(s)).collect();
     modules.sort_unstable();
     modules.dedup();
 
-    Ok(ContentMetadata { 
-        timestamp: *largest_timestamp, 
-        version, 
+    Ok(ContentMetadata {
+        timestamp: *largest_timestamp,
+        version,
         versions: Some(modules),
     })
 }
@@ -246,7 +241,8 @@ mod tests {
 
     #[test]
     fn test_parse_manifest() {
-        let data = b"grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 shim-x64-15.6-2.x86_64,1657222566 ";
+        let data =
+            b"grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 shim-x64-15.6-2.x86_64,1657222566 ";
         let parsed = parse_manifest(data).unwrap();
         assert_eq!(
             parsed.version,
@@ -283,34 +279,60 @@ mod tests {
     fn test_compare_cross_distro() {
         // grub2-efi-x64 (Fedora) vs grub (Arch) - that same version
         let fedora = vec![
-            Module { name: "grub2-efi-x64".into(), rpm_evr: "1:2.12-28.fc42".into() },
-            Module { name: "shim-x64".into(), rpm_evr: "15.8-3".into() },
+            Module {
+                name: "grub2-efi-x64".into(),
+                rpm_evr: "1:2.12-28.fc42".into(),
+            },
+            Module {
+                name: "shim-x64".into(),
+                rpm_evr: "15.8-3".into(),
+            },
         ];
         let arch = vec![
-            Module { name: "grub".into(), rpm_evr: "1:2.12-28.fc42".into() },
-            Module { name: "shim-signed".into(), rpm_evr: "15.8-3".into() },
+            Module {
+                name: "grub".into(),
+                rpm_evr: "1:2.12-28.fc42".into(),
+            },
+            Module {
+                name: "shim-signed".into(),
+                rpm_evr: "15.8-3".into(),
+            },
         ];
         assert_eq!(compare_package_slices(&fedora, &arch), Ordering::Equal);
 
         // grub2-tools (fedora) vs Arch (grub)
-        let rhel = vec![
-            Module { name: "grub2-tools".into(), rpm_evr: "1:2.06-86.el9".into() },
-        ];
-        let arch_newer = vec![
-            Module { name: "grub".into(), rpm_evr: "1:2.12-28.fc42".into() },
-        ];
+        let rhel = vec![Module {
+            name: "grub2-tools".into(),
+            rpm_evr: "1:2.06-86.el9".into(),
+        }];
+        let arch_newer = vec![Module {
+            name: "grub".into(),
+            rpm_evr: "1:2.12-28.fc42".into(),
+        }];
         assert_eq!(compare_package_slices(&rhel, &arch_newer), Ordering::Less);
     }
 
     #[test]
     fn test_compare_package_slices() {
         let a = vec![
-            Module { name: "grub2".into(), rpm_evr: "1:2.12-21.fc41".into() },
-            Module { name: "shim".into(), rpm_evr: "15.8-3".into() },
+            Module {
+                name: "grub2".into(),
+                rpm_evr: "1:2.12-21.fc41".into(),
+            },
+            Module {
+                name: "shim".into(),
+                rpm_evr: "15.8-3".into(),
+            },
         ];
         let b = vec![
-            Module { name: "grub2".into(), rpm_evr: "1:2.12-28.fc41".into() },
-            Module { name: "shim".into(), rpm_evr: "15.8-3".into() },
+            Module {
+                name: "grub2".into(),
+                rpm_evr: "1:2.12-28.fc41".into(),
+            },
+            Module {
+                name: "shim".into(),
+                rpm_evr: "15.8-3".into(),
+            },
         ];
         assert_eq!(compare_package_slices(&a, &b), Ordering::Less);
         assert_eq!(compare_package_slices(&b, &a), Ordering::Greater);
