@@ -29,11 +29,12 @@ use bootc_internal_blockdev::Device;
 
 use crate::bootloader::{get_bootloader, Bootloader};
 use crate::bootupd::RootContext;
+use crate::component::*;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
+use crate::packagesystem::{query_files, Module};
 use crate::util::{self, get_metadata_timestamp};
-use crate::{component::*, packagesystem::*};
 use crate::{filetree, grubconfigs};
 
 /// Well-known paths to the ESP that may have been mounted external to us.

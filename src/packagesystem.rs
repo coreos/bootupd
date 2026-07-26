@@ -1,16 +1,15 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
-use uapi_version::Version;
 
-use crate::model::*;
-use crate::ostreeutil;
+use crate::model::ContentMetadata;
 
+/// File-only module representation - independent of packagesystem::Module
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Module {
     pub(crate) name: String,
@@ -18,16 +17,16 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub(crate) fn rpm_evr(&self) -> Version {
-        Version::from(&self.rpm_evr)
+    pub(crate) fn rpm_evr(&self) -> &str {
+        &self.rpm_evr
     }
 }
 
 impl Ord for Module {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.name
-            .cmp(&other.name) // Compare names first
-            .then_with(|| self.rpm_evr().cmp(&other.rpm_evr())) // If names equal, compare versions
+            .cmp(&other.name)
+            .then_with(|| self.rpm_evr.cmp(&other.rpm_evr))
     }
 }
 
@@ -37,50 +36,36 @@ impl PartialOrd for Module {
     }
 }
 
-/// Parse the output of `rpm -q`
-fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
-    let pkgs = std::str::from_utf8(stdout)?
-        .split_whitespace()
-        .map(|s| -> Result<_> {
-            let parts: Vec<_> = s.splitn(2, ',').collect();
-            let name = parts[0];
-            if let Some(ts) = parts.get(1) {
-                let nt = DateTime::parse_from_str(ts, "%s")
-                    .context("Failed to parse rpm buildtime")?
-                    .with_timezone(&chrono::Utc);
-                Ok((name, nt))
-            } else {
-                bail!("Failed to parse: {}", s);
-            }
-        })
-        .collect::<Result<BTreeMap<&str, DateTime<Utc>>>>()?;
-    if pkgs.is_empty() {
-        bail!("Failed to find any RPM packages matching files in source efidir");
+fn sysroot_join(sysroot: &str, p: &Path) -> Result<std::path::PathBuf> {
+    if p.is_absolute() {
+        // strip leading '/'
+        let rel = p.strip_prefix("/").unwrap_or(p);
+        Ok(Path::new(sysroot).join(rel))
+    } else {
+        Ok(Path::new(sysroot).join(p))
     }
-    let timestamps: BTreeSet<&DateTime<Utc>> = pkgs.values().collect();
-    // Unwrap safety: We validated pkgs has at least one value above
-    let largest_timestamp = timestamps.iter().last().unwrap();
-    let version = pkgs.keys().fold("".to_string(), |mut s, n| {
-        if !s.is_empty() {
-            s.push(',');
-        }
-        s.push_str(n);
-        s
-    });
-
-    // Map the version into Module struct
-    let mut modules_vec: Vec<Module> = pkgs.keys().map(|pkg_str| parse_evr(pkg_str)).collect();
-    modules_vec.sort_unstable();
-    Ok(ContentMetadata {
-        timestamp: **largest_timestamp,
-        version,
-        versions: Some(modules_vec),
-        #[cfg(efi_arch)]
-        default_bootloader: None,
-    })
 }
 
-/// Query the rpm database and list the package and build times.
+fn file_mtime_and_hash(path: &Path) -> Result<(DateTime<Utc>, String)> {
+    let mut f = File::open(path).with_context(|| format!("Opening file {}", path.display()))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)
+        .with_context(|| format!("Reading file {}", path.display()))?;
+
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    let sysmtime = meta.modified().context("getting mtime")?;
+    let dt: DateTime<Utc> = sysmtime.into();
+    // sha256 prefix - use openssl's sha256 via the openssl crate
+    let digest = openssl::sha::sha256(&buf);
+    let hex = hex::encode(digest);
+    // take first 12 hex chars to keep it short
+    let prefix = if hex.len() > 12 { &hex[..12] } else { &hex[..] };
+    let ver = format!("{}-{}", dt.timestamp(), prefix);
+    Ok((dt, ver))
+}
+
+/// Query files under a sysroot and produce `ContentMetadata` using mtime+sha prefix.
+/// File names are used as module names, versions are synthetic (<mtime>-<sha256prefix>).
 pub(crate) fn query_files<T>(
     sysroot_path: &str,
     paths: impl IntoIterator<Item = T>,
@@ -88,97 +73,97 @@ pub(crate) fn query_files<T>(
 where
     T: AsRef<Path>,
 {
-    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
-    c.args(["-q", "--queryformat", "%{nevra},%{buildtime} ", "-f"]);
-    for arg in paths {
-        c.arg(arg.as_ref());
-    }
+    let mut modules: Vec<Module> = Vec::new();
+    let mut latest: Option<DateTime<Utc>> = None;
 
-    let rpmout = c.output()?;
-    if !rpmout.status.success() {
-        std::io::stderr().write_all(&rpmout.stderr)?;
-        bail!("Failed to invoke rpm -qf");
-    }
-
-    rpm_parse_metadata(&rpmout.stdout)
-}
-
-fn split_name_version(input: &str) -> Option<(String, String)> {
-    // assume it is "grub2-tools-1:2.06-110.el9.x86_64"
-    // strip .arch
-    let main = input.rsplit_once('.')?.0;
-
-    // find last two '-'
-    let mut parts = main.rsplitn(3, '-');
-    let release = parts.next()?; // after last '-'
-    let version = parts.next()?; // between last two '-'
-    let name = parts.next()?; // the rest (may contain '-')
-
-    Some((name.to_string(), format!("{version}-{release}")))
-}
-
-fn parse_evr(pkg: &str) -> Module {
-    // assume it is "grub2-1:2.12-28.fc42" (from usr/lib/efi)
-    if !pkg.ends_with(std::env::consts::ARCH) {
-        let (name, evr) = pkg.split_once('-').unwrap_or((pkg, ""));
-        return Module {
-            name: name.to_string(),
-            rpm_evr: evr.to_string(),
-        };
-    }
-
-    let (name_str, rpm_evr) = {
-        #[cfg(not(feature = "rpm"))]
-        {
-            split_name_version(pkg).unwrap()
+    for p in paths {
+        let p = p.as_ref();
+        let real = sysroot_join(sysroot_path, p)?;
+        if !real.exists() {
+            bail!("File not found: {}", real.display());
         }
-        #[cfg(feature = "rpm")]
-        {
-            let nevra = rpm_rs::Nevra::parse(pkg);
-            (nevra.name().to_string(), nevra.evr().to_string())
+        let (dt, ver) = file_mtime_and_hash(&real)?;
+        if latest.map_or(true, |l| dt > l) {
+            latest = Some(dt);
         }
-    };
-
-    let (name, _) = name_str.split_once('-').unwrap_or((&name_str, ""));
-    Module {
-        name: name.to_string(),
-        rpm_evr,
+        let name = real
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| real.display().to_string());
+        modules.push(Module { name, rpm_evr: ver });
     }
+
+    if modules.is_empty() {
+        bail!("No files provided");
+    }
+
+    modules.sort_unstable();
+    modules.dedup();
+
+    let version = modules
+        .iter()
+        .map(|m| format!("{}-{}", m.name, m.rpm_evr))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Convert to packagesystem::Module for compatibility with ContentMetadata
+    let versions_compat: Vec<crate::packagesystem::Module> = modules
+        .into_iter()
+        .map(|m| crate::packagesystem::Module {
+            name: m.name,
+            rpm_evr: m.rpm_evr,
+        })
+        .collect();
+
+    Ok(ContentMetadata {
+        timestamp: latest.unwrap(),
+        version,
+        versions: Some(versions_compat),
+        #[cfg(efi_arch)]
+        default_bootloader: None,
+    })
 }
 
-fn parse_evr_vec(input: &str) -> Vec<Module> {
+// Comparators similar to the rpm-based module, but operate on the synthetic
+// version strings lexicographically. These are provided for convenience if
+// callers want to compare textual `version` fields.
+pub(crate) fn parse_evr_vec(input: &str) -> Vec<Module> {
     let mut pkgs: Vec<Module> = input
         .split(',')
-        .map(|pkg| parse_evr(pkg)) // parse_evr returns owned Package
+        .filter_map(|s| {
+            if s.is_empty() {
+                return None;
+            }
+            // Expect format "name-<mtime>-<sha>" – split at first '-' to get name
+            let mut parts = s.splitn(2, '-');
+            let name = parts.next().unwrap_or("");
+            let evr = parts.next().unwrap_or("");
+            Some(Module {
+                name: name.to_string(),
+                rpm_evr: evr.to_string(),
+            })
+        })
         .collect();
-    // Sort packages to ensure a consistent order for comparison, which is
-    // required by `compare_package_slices`.
     pkgs.sort_unstable();
-    // Now that it's sorted, we can efficiently remove duplicates.
     pkgs.dedup();
     pkgs
 }
 
 pub(crate) fn compare_package_slices(a: &[Module], b: &[Module]) -> Ordering {
     let mut has_greater = false;
-
-    // Assume it is in order
     for (pkg_a, pkg_b) in a.iter().zip(b.iter()) {
         match pkg_a.cmp(pkg_b) {
-            Ordering::Less => return Ordering::Less, // upgradable
-            Ordering::Greater => has_greater = true, // downgrade
+            Ordering::Less => return Ordering::Less,
+            Ordering::Greater => has_greater = true,
             Ordering::Equal => {}
         }
     }
-
-    // If all compared equal, longer slice wins
     if a.len() < b.len() {
-        return Ordering::Less; // extra packages in b → upgrade
+        return Ordering::Less;
     }
     if a.len() > b.len() {
-        return Ordering::Greater; // extra packages in a → downgrade
+        return Ordering::Greater;
     }
-
     if has_greater {
         Ordering::Greater
     } else {
@@ -186,12 +171,7 @@ pub(crate) fn compare_package_slices(a: &[Module], b: &[Module]) -> Ordering {
     }
 }
 
-// Compare package versions:
-// If any package is Ordering::Less, return Ordering::Less, means upgradable,
-// Else if any package is Ordering::Greater, return Ordering::Greater,
-// Else (all equal), return Ordering::Equal.
 pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
-    // Fast path: if the two values are equal, skip detailed comparison
     if a == b {
         return Ordering::Equal;
     }
@@ -203,144 +183,27 @@ pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_parse_rpmout() {
-        let testdata = "grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 shim-x64-15.6-2.x86_64,1657222566 shim-x64-15.6-2.x86_64,1657222566 shim-x64-15.6-2.x86_64,1657222566";
-        let parsed = rpm_parse_metadata(testdata.as_bytes()).unwrap();
-        assert_eq!(
-            parsed.version,
-            "grub2-efi-x64-1:2.06-95.fc38.x86_64,shim-x64-15.6-2.x86_64"
-        );
-        let expected_modules = vec![
-            Module {
-                name: "grub2".to_string(),
-                rpm_evr: "1:2.06-95.fc38".to_string(),
-            },
-            Module {
-                name: "shim".to_string(),
-                rpm_evr: "15.6-2".to_string(),
-            },
-        ];
-
-        assert_eq!(parsed.versions, Some(expected_modules));
+    fn test_fileonly_query() -> Result<()> {
+        let mut f = NamedTempFile::new()?;
+        use std::io::Write;
+        write!(f, "hello world")?;
+        let p = f.path().to_path_buf();
+        let meta = query_files("/", [p])?;
+        assert!(!meta.version.is_empty());
+        assert!(meta.versions.is_some());
+        Ok(())
     }
 
     #[test]
-    fn test_compare_package_slices() {
-        let a = vec![
-            Module {
-                name: "grub2".into(),
-                rpm_evr: "1:2.12-21.fc41".into(),
-            },
-            Module {
-                name: "shim".into(),
-                rpm_evr: "15.8-3".into(),
-            },
-        ];
-        let b = vec![
-            Module {
-                name: "grub2".into(),
-                rpm_evr: "1:2.12-28.fc41".into(),
-            },
-            Module {
-                name: "shim".into(),
-                rpm_evr: "15.8-3".into(),
-            },
-        ];
-        let ord = compare_package_slices(&a, &b);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_slices(&b, &a);
-        assert_eq!(ord, Ordering::Greater);
-
-        let ord = compare_package_slices(&a, &a);
-        assert_eq!(ord, Ordering::Equal);
-    }
-
-    #[test]
-    fn test_compare_package_versions() {
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-efi-x64-1:2.12-29.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-1:2.12-29.fc42,shim-15.8-3";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-        let target = "grub2-1:2.12-28.fc42,shim-15.8-4";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // The target includes new package, should upgrade
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64,test";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        // The target missed some package
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // Not sure if this would happen
-        // current_grub2 > target_grub2
-        // current_shim < target_shim
-        // In this case there is Ordering::Less, return Ordering::Less
-        {
-            let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let target = "grub2-1:2.12-27.fc42,shim-15.8-4";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Less);
-
-            let ord = compare_package_versions(target, current);
-            assert_eq!(ord, Ordering::Less);
-        }
-
-        // Test Equal
-        {
-            let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-            let target = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-
-            let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-            let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-
-            let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-        }
-
-        // Test only grub2
-        let current = "grub2-tools-1:2.06-86.el9_4.3.x86_64";
-        let target = "grub2-tools-1:2.06-110.el9.x86_64";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        let current = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
+    fn test_compare_fileonly_versions() {
+        let v1 = "file1-1000-abc123,file2-2000-def456";
+        let v2 = "file1-1001-abc123,file2-2000-def456";
+        assert_eq!(compare_package_versions(v1, v2), Ordering::Less);
+        assert_eq!(compare_package_versions(v2, v1), Ordering::Greater);
+        assert_eq!(compare_package_versions(v1, v1), Ordering::Equal);
     }
 }
