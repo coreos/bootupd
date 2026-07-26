@@ -53,19 +53,25 @@ fn file_mtime_and_hash(path: &Path) -> Result<(DateTime<Utc>, String)> {
         .with_context(|| format!("Reading file {}", path.display()))?;
 
     let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
-    let sysmtime = meta.modified().context("getting mtime")?;
-    let dt: DateTime<Utc> = sysmtime.into();
+    let sysmtime = meta
+        .modified()
+        .or_else(|_| meta.created())
+        .unwrap_or_else(|_| std::time::SystemTime::now());
+
+    let dt = match sysmtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(duration) => chrono::DateTime::<Utc>::from(std::time::UNIX_EPOCH + duration),
+        Err(_) => chrono::Utc::now(),
+    };
     // sha256 prefix - use openssl's sha256 via the openssl crate
     let digest = openssl::sha::sha256(&buf);
     let hex = hex::encode(digest);
     // take first 12 hex chars to keep it short
     let prefix = if hex.len() > 12 { &hex[..12] } else { &hex[..] };
-    let ver = format!("{}-{}", dt.timestamp(), prefix);
-    Ok((dt, ver))
+    Ok((dt, prefix.to_string()))
 }
 
-/// Query files under a sysroot and produce `ContentMetadata` using mtime+sha prefix.
-/// File names are used as module names, versions are synthetic (<mtime>-<sha256prefix>).
+/// Query files under a sysroot and produce `ContentMetadata` using file content hash.
+/// File names are used as module names; versions are synthetic hashes.
 pub(crate) fn query_files<T>(
     sysroot_path: &str,
     paths: impl IntoIterator<Item = T>,
@@ -134,10 +140,11 @@ pub(crate) fn parse_evr_vec(input: &str) -> Vec<Module> {
             if s.is_empty() {
                 return None;
             }
-            // Expect format "name-<mtime>-<sha>" – split at first '-' to get name
-            let mut parts = s.splitn(2, '-');
-            let name = parts.next().unwrap_or("");
-            let evr = parts.next().unwrap_or("");
+            // Expect format "name-<sha>" – split at the last '-' to preserve names with hyphens.
+            let (name, evr) = match s.rsplit_once('-') {
+                Some((name, evr)) => (name, evr),
+                None => (s, ""),
+            };
             Some(Module {
                 name: name.to_string(),
                 rpm_evr: evr.to_string(),
