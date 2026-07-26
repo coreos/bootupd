@@ -101,6 +101,36 @@ impl ContentMetadata {
             versions.retain(|v| !to_remove.contains(&v.name.as_str()));
         }
     }
+
+    /// Retain only EFI bootloader-related components (for display of installed state).
+    ///
+    /// This removes payload-only EFI components (for example packages that install
+    /// auxiliary EFI payloads) so that `Installed:` reflects only the real bootloaders
+    /// (e.g. `grub2`, `grub-cc`) and `shim`.
+    #[cfg(efi_arch)]
+    pub(crate) fn retain_only_bootloader_components(&mut self, bootloader: Bootloader) {
+        let allowed = vec![bootloader.efi_component_name(), "shim"];
+
+        // Filter `versions` list if present.
+        if let Some(versions) = &mut self.versions {
+            versions.retain(|v| allowed.contains(&v.name.as_str()));
+            // Rebuild `version` string from remaining modules
+            self.version = versions
+                .iter()
+                .map(|m| format!("{}-{}", m.name, m.rpm_evr))
+                .collect::<Vec<_>>()
+                .join(",");
+            return;
+        }
+
+        // Fallback: operate on the textual `version` field
+        let parts: Vec<&str> = self.version.split(',').collect();
+        let kept: Vec<&str> = parts
+            .into_iter()
+            .filter(|p| allowed.iter().any(|a| p.starts_with(a)))
+            .collect();
+        self.version = kept.join(",");
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

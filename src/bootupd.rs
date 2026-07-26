@@ -600,12 +600,18 @@ pub(crate) fn status() -> Result<Status> {
             let component = component.as_ref();
             let interrupted = state.pending.as_ref().and_then(|p| p.get(name.as_str()));
             let update = component.query_update(&root, bootloader)?;
-            let updatable = ComponentUpdatable::from_metadata(&ic.meta, update.as_ref());
+            // Make a copy of installed metadata and trim non-bootloader EFI payloads
+            let mut installed_meta = ic.meta.clone();
+            if name == "EFI" {
+                #[cfg(efi_arch)]
+                installed_meta.retain_only_bootloader_components(bootloader);
+            }
+            let updatable = ComponentUpdatable::from_metadata(&installed_meta, update.as_ref());
             let adopted_from = ic.adopted_from.clone();
             ret.components.insert(
                 name.to_string(),
                 ComponentStatus {
-                    installed: ic.meta.clone(),
+                    installed: installed_meta,
                     interrupted: interrupted.cloned(),
                     update,
                     updatable,
