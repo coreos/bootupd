@@ -45,6 +45,7 @@ mod model;
 mod model_legacy;
 mod ostreeutil;
 mod packagesystem;
+mod packagesystem_fileonly;
 mod sha512string;
 mod util;
 

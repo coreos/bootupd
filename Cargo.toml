@@ -65,3 +65,4 @@ tag-message = "bootupd {{version}}"
 [features]
 default = []
 rpm = ["rpm-rs"]
+package-system-fileonly = []

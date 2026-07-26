@@ -1,0 +1,58 @@
+// EXAMPLE: How to switch bios.rs to use packagesystem_fileonly
+// 
+// Current implementation (lines 18, 156):
+//
+//   Line 18:  use crate::packagesystem;
+//   Line 156: let meta = packagesystem::query_files(sysroot_path, [&grub_install])?;
+//
+// To use file-only backend, change:
+//
+//   Line 18:  use crate::packagesystem_fileonly as packagesystem;
+// OR
+//   Line 18:  use crate::packagesystem_fileonly;
+//   Line 156: let meta = packagesystem_fileonly::query_files(sysroot_path, [&grub_install])?;
+//
+// Both approaches are compatible because packagesystem_fileonly::query_files()
+// returns the same ContentMetadata type.
+
+// ============================================================================
+// MINIMAL DIFF FOR bios.rs:
+// ============================================================================
+
+// OLD (lines 15-20):
+/*
+use bootc_internal_blockdev::Device;
+
+use crate::bootloader::Bootloader;
+use crate::bootupd::RootContext;
+use crate::component::*;
+use crate::freezethaw::fsfreeze_thaw_cycle;
+use crate::grubconfigs;
+use crate::model::*;
+use crate::packagesystem;
+*/
+
+// NEW - option 1: Alias import
+use bootc_internal_blockdev::Device;
+
+use crate::bootloader::Bootloader;
+use crate::bootupd::RootContext;
+use crate::component::*;
+use crate::freezethaw::fsfreeze_thaw_cycle;
+use crate::grubconfigs;
+use crate::model::*;
+use crate::packagesystem_fileonly as packagesystem;  // <-- CHANGED
+
+// This makes all calls to packagesystem::function() delegate to packagesystem_fileonly.
+// No other changes needed!
+
+// ============================================================================
+// Verification: The function signature remains identical
+// ============================================================================
+//
+// OLD:  let meta = packagesystem::query_files(sysroot_path, [&grub_install])?;
+// NEW:  let meta = packagesystem::query_files(sysroot_path, [&grub_install])?;
+//
+// ^ Same call! Works because both modules have:
+//   pub fn query_files<T>(sysroot_path: &str, paths: impl IntoIterator<Item = T>) 
+//       -> Result<ContentMetadata>
