@@ -47,6 +47,9 @@ fn sysroot_join(sysroot: &str, p: &Path) -> Result<std::path::PathBuf> {
 }
 
 fn file_mtime_and_hash(path: &Path) -> Result<(DateTime<Utc>, String)> {
+    // Use file metadata timestamp as the file-only update timestamp.
+    // This is intentionally not package build-time, but the filesystem
+    // time associated with the file content.
     let mut f = File::open(path).with_context(|| format!("Opening file {}", path.display()))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)

@@ -18,7 +18,10 @@ pub(crate) const BOOTUPD_UPDATES_DIR: &str = "usr/lib/bootupd/updates";
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ContentMetadata {
-    /// The timestamp, which is used to determine update availability
+    /// The timestamp used to determine update availability.
+    ///
+    /// For file-only metadata this is derived from file metadata
+    /// (mtime/ctime fallback), not from package build-time.
     pub(crate) timestamp: DateTime<Utc>,
     /// Human readable version number, like ostree it is not ever parsed, just displayed
     pub(crate) version: String,
@@ -31,8 +34,23 @@ pub(crate) struct ContentMetadata {
 }
 
 impl ContentMetadata {
+    fn is_file_only_metadata(versions: &[Module]) -> bool {
+        versions.iter().all(|version| {
+            let evr = version.rpm_evr.as_str();
+            evr.len() == 12 && evr.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    }
+
     pub(crate) fn can_upgrade_to(&self, target: &Self) -> Ordering {
         if let (Some(self_versions), Some(target_versions)) = (&self.versions, &target.versions) {
+            if Self::is_file_only_metadata(self_versions)
+                && Self::is_file_only_metadata(target_versions)
+            {
+                let ordering = self.timestamp.cmp(&target.timestamp);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
             compare_package_slices(self_versions, target_versions)
         } else {
             compare_package_versions(&self.version, &target.version)
@@ -282,5 +300,35 @@ mod test {
         );
         assert_eq!(efi.installed.versions, None);
         Ok(())
+    }
+
+    #[test]
+    fn test_file_only_metadata_uses_timestamp() {
+        let old = ContentMetadata {
+            timestamp: chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            version: "grub2-install-aaaaaaaaaaaa".to_string(),
+            versions: Some(vec![Module {
+                name: "grub2-install".to_string(),
+                rpm_evr: "aaaaaaaaaaaa".to_string(),
+            }]),
+            #[cfg(efi_arch)]
+            default_bootloader: None,
+        };
+        let new = ContentMetadata {
+            timestamp: chrono::DateTime::parse_from_rfc3339("2024-02-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            version: "grub2-install-bbbbbbbbbbbb".to_string(),
+            versions: Some(vec![Module {
+                name: "grub2-install".to_string(),
+                rpm_evr: "bbbbbbbbbbbb".to_string(),
+            }]),
+            #[cfg(efi_arch)]
+            default_bootloader: None,
+        };
+        assert_eq!(old.can_upgrade_to(&new), Ordering::Less);
+        assert_eq!(new.can_upgrade_to(&old), Ordering::Greater);
     }
 }
