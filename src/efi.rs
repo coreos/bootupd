@@ -533,8 +533,8 @@ impl Component for Efi {
             )
         })?;
 
-        let efi_path = if let Some(efi_components) = efi_comps {
-            for efi in efi_components {
+        let efi_path = if efi_comps.is_some() {
+            for efi in efi_comps.as_ref().unwrap() {
                 filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
             }
             EFILIB
@@ -549,18 +549,29 @@ impl Component for Efi {
 
         // Now that we have multiple bootloaders (all named grubx64.efi/grubaa64.efi
         // due to that name being baked into the shim), we can't blindly use the key
-        // "fedora/grubx64.efi" to refer to the installed bootloader, hence we ask for
-        // any extra bootloaders to be not included in the FileTree
-        let dirs_to_skip = Bootloader::iter()
-            .filter(|b| *b != bootloader)
-            .map(|b| b.efi_component_name())
-            .collect::<Vec<_>>();
-
-        // Get filetree from efi path
-        let ft = crate::filetree::FileTree::new_from_dir(
-            &src_dir.open_dir(efi_path)?,
-            Some(dirs_to_skip),
-        )?;
+        // "fedora/grubx64.efi" to refer to the installed bootloader.  Build the filetree
+        // from the specific components we intend to install so payload-only EFI trees
+        // like test_bootupd_payload are excluded.
+        let ft = if let Some(efi_components) = efi_comps.as_ref() {
+            let mut ft = crate::filetree::FileTree {
+                children: std::collections::BTreeMap::new(),
+            };
+            for efi in efi_components {
+                let component_dir = src_dir.open_dir(efi.path.as_str())?;
+                let sub_ft = crate::filetree::FileTree::new_from_dir(&component_dir, None)?;
+                ft.children.extend(sub_ft.children);
+            }
+            ft
+        } else {
+            let dirs_to_skip = Bootloader::iter()
+                .filter(|b| *b != bootloader)
+                .map(|b| b.efi_component_name())
+                .collect::<Vec<_>>();
+            crate::filetree::FileTree::new_from_dir(
+                &src_dir.open_dir(efi_path)?,
+                Some(dirs_to_skip),
+            )?
+        };
 
         if update_firmware {
             if let Some(dev) = device {
