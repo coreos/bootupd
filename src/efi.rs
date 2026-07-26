@@ -485,8 +485,20 @@ impl Component for Efi {
     ) -> Result<InstalledContent> {
         let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
             .with_context(|| format!("opening source directory {src_root}"))?;
-        let Some(meta) = self.get_component_update(&src_dir, Some(bootloader))? else {
-            anyhow::bail!("No update metadata for component {} found", self.name());
+        let src_path = Utf8Path::new(src_root);
+        let efi_comps = if src_path.join(EFILIB).exists() {
+            get_efi_component_from_usr(src_path, EFILIB, Some(bootloader))?
+        } else {
+            None
+        };
+
+        let meta = if let Some(ref efi_components) = efi_comps {
+            generate_meta_from_efi_components(efi_components)?
+        } else {
+            let Some(meta) = self.get_component_update(&src_dir, Some(bootloader))? else {
+                anyhow::bail!("No update metadata for component {} found", self.name());
+            };
+            meta
         };
         log::debug!("Found metadata {}", meta.version);
 
@@ -514,12 +526,6 @@ impl Component for Efi {
             .with_context(|| format!("opening dest dir {}", destpath.display()))?;
         validate_esp_fstype(destd)?;
 
-        let src_path = Utf8Path::new(src_root);
-        let efi_comps = if src_path.join(EFILIB).exists() {
-            get_efi_component_from_usr(src_path, EFILIB, Some(bootloader))?
-        } else {
-            None
-        };
         let dest = destpath.to_str().with_context(|| {
             format!(
                 "Include invalid UTF-8 characters in dest {}",
@@ -915,6 +921,27 @@ fn generate_meta_from_usr_efi(sysroot_path: &Utf8Path) -> Result<ContentMetadata
     Ok(meta)
 }
 
+fn generate_meta_from_efi_components(efi_components: &[EFIComponent]) -> Result<ContentMetadata> {
+    let mut packages = Vec::new();
+    let mut modules_vec: Vec<Module> = vec![];
+    for efi in efi_components {
+        packages.push(format!("{}-{}", efi.name, efi.version));
+        modules_vec.push(Module {
+            name: efi.name.clone(),
+            rpm_evr: efi.version.clone(),
+        });
+    }
+    modules_vec.sort_unstable();
+
+    Ok(ContentMetadata {
+        timestamp: get_metadata_timestamp()?,
+        version: packages.join(","),
+        versions: Some(modules_vec),
+        #[cfg(efi_arch)]
+        default_bootloader: None,
+    })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EFIComponent {
     pub name: String,
@@ -968,15 +995,15 @@ fn get_efi_component_from_usr<'a>(
         return Ok(Some(components));
     };
 
-    // Remove all EFI Components not associated with the bootloader
-    let to_remove = Bootloader::iter()
-        .filter(|b| *b != bootloader)
-        .map(|b| b.efi_component_name())
-        .collect::<Vec<_>>();
+    let allowed_components = match bootloader {
+        Bootloader::Grub | Bootloader::GrubCC => vec![bootloader.efi_component_name(), "shim"],
+        #[cfg(efi_arch)]
+        Bootloader::Systemd => vec![bootloader.efi_component_name()],
+    };
 
     let efi_comps = components
         .into_iter()
-        .filter(|comp| !to_remove.contains(&comp.name.as_str()))
+        .filter(|comp| allowed_components.contains(&comp.name.as_str()))
         .collect::<Vec<_>>();
 
     Ok(Some(efi_comps))
@@ -1168,6 +1195,12 @@ Boot0003* test";
         std::fs::File::create(efi_path.join("shim/16.1-5/EFI/fedora/shim.efi"))?;
         std::fs::File::create(efi_path.join("shim/16.1-5/EFI/fedora/shimx64.efi"))?;
 
+        // non-bootloader EFI payload component that should not be installed by default
+        std::fs::create_dir_all(efi_path.join("test_bootupd_payload/1.0/EFI/fedora"))?;
+        std::fs::File::create(
+            efi_path.join("test_bootupd_payload/1.0/EFI/fedora/test-bootupd.efi"),
+        )?;
+
         let utf8_tpath =
             Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
 
@@ -1190,6 +1223,11 @@ Boot0003* test";
                     name: "shim".to_string(),
                     version: "16.1-5".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/shim/16.1-5/EFI"),
+                },
+                EFIComponent {
+                    name: "test_bootupd_payload".to_string(),
+                    version: "1.0".to_string(),
+                    path: Utf8PathBuf::from("usr/lib/efi/test_bootupd_payload/1.0/EFI"),
                 },
             ])
         );
