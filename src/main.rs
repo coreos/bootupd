@@ -49,6 +49,7 @@ mod packagesystem;
 mod secureboot;
 mod sha512string;
 mod util;
+mod varlink;
 
 use clap::crate_name;
 
