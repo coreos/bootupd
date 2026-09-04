@@ -26,25 +26,33 @@ jobs:
           - ubuntu-24.04-arm
         grubcc:
           - 0
-          - 1
+        stream:
+          - 9
+          - 10
+        include:
+          # grubcc=1 uses Fedora (Dockerfile.bls), no stream variants needed
+          - runner: ubuntu-24.04
+            grubcc: 1
+          - runner: ubuntu-24.04-arm
+            grubcc: 1
 
     runs-on: [ "${{ matrix.runner }}" ]
 
     steps:
       - name: Setup env
         run: |
-          IMG_NAME=localhost/bootupd-grubcc-${{ matrix.grubcc }}
-          echo "IMG_NAME=${IMG_NAME}" >> $GITHUB_ENV
-
           if [[ "${{ matrix.grubcc }}" == "1" ]]; then
-            # we only have grub-cc in feodra (for now)
+            # grubcc=1 uses Fedora (no stream variants)
+            IMG_NAME=localhost/bootupd-grubcc-1
             OS_ID="fedora"
           else
+            IMG_NAME=localhost/bootupd-grubcc-0-stream${{ matrix.stream }}
             OS_ID="centos"
           fi
 
-          echo "OS_ID=${OS_ID}" >> $GITHUB_ENV
-      
+          echo "IMG_NAME=${IMG_NAME}" >> "$GITHUB_ENV"
+          echo "OS_ID=${OS_ID}" >> "$GITHUB_ENV"
+
       - name: Get a newer podman for heredoc support (from debian testing)
         run: |
           set -eux
@@ -70,12 +78,12 @@ jobs:
 
       - name: build with grubcc=${{ matrix.grubcc }}
         run: |
-          dockerfile=Dockerfile
-          build_args=()
-
           if [[ "${{ matrix.grubcc }}" == "1" ]]; then
             dockerfile=Dockerfile.bls
             build_args=(--build-arg "grubcc=${{ matrix.grubcc }}")
+          else
+            dockerfile=Dockerfile
+            build_args=(--build-arg "base=quay.io/centos-bootc/centos-bootc:stream${{ matrix.stream }}")
           fi
 
           sudo podman build "${build_args[@]}" . -t "$IMG_NAME"  -f "$dockerfile"
