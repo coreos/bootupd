@@ -136,8 +136,20 @@ impl SavedState {
                 }
 
                 #[cfg(efi_arch)]
-                Bootloader::GrubCC | Bootloader::Systemd => {
-                    use crate::efi::Efi;
+                b @ Bootloader::GrubCC | b @ Bootloader::Systemd => {
+                    use crate::efi::{is_efi_booted, Efi};
+
+                    // Using just `cfg(efi_arch)` is insufficient here, as if the binary's
+                    // built on x86, but the target system is only BIOS, then we WILL enter
+                    // this branch which is less than ideal
+
+                    if !is_efi_booted()? {
+                        log::debug!(
+                            "Testing saved state for {b}, but system is not EFI booted. Skipping"
+                        );
+                        return Ok(None);
+                    }
+
                     let efi = Efi::default();
 
                     let device = get_parent_device(&root)?;

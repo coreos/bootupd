@@ -83,6 +83,7 @@ fn is_mount_point(path: &Path) -> Result<bool> {
 }
 
 /// Return `true` if the system is booted via EFI
+#[context("Checking if system is EFI booted")]
 pub(crate) fn is_efi_booted() -> Result<bool> {
     Path::new("/sys/firmware/efi")
         .try_exists()
