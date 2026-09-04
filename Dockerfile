@@ -1,6 +1,7 @@
-# Build from the current git into a c9s-bootc container image.
-# Use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:41 to target
-# Fedora or another base image instead.
+# Build from the current git into a centos-bootc container image.
+# Use e.g. --build-arg=base=quay.io/centos-bootc/centos-bootc:stream10
+# for CentOS Stream 10, or
+# --build-arg=base=quay.io/fedora/fedora-bootc:41 to target Fedora.
 #
 ARG base=quay.io/centos-bootc/centos-bootc:stream9
 
@@ -26,8 +27,11 @@ COPY --from=build /out/ /
 # Install bootc from copr
 RUN <<EORUN
 set -xeuo pipefail
+source /etc/os-release
 dnf -y install dnf-plugins-core
-dnf -y copr enable rhcontainerbot/bootc centos-stream-9-x86_64
+if [ "$ID" = "centos" ]; then
+  dnf -y copr enable rhcontainerbot/bootc centos-stream-${VERSION_ID}-$(uname -m)
+fi
 dnf -y install bootc
 dnf clean all
 rm -rf /var/log
