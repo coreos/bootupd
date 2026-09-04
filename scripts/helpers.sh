@@ -3,6 +3,8 @@
 create_mount_device_bios() {
     set +e
 
+    mkdir -p /var/mnt
+
     umount -R /var/mnt
     losetup -j /var/test-img.img | cut -d: -f1 | xargs -r losetup -d
 
@@ -22,11 +24,11 @@ EOF
 
     cat sfdisk-buf | sfdisk --wipe=always /var/test-img.img
 
-    mkdir -p /var/mnt
-
     # Also update kernel partition tables
     loopdev=$(losetup --find --show --partscan /var/test-img.img)
     sleep 1
+
+    # mkfs.vfat "${loopdev}p3"
 
     mkfs.ext4 "${loopdev}p3"
     mount "${loopdev}p3" /var/mnt

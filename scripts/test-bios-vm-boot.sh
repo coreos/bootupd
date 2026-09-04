@@ -4,14 +4,17 @@
 # https://github.com/bootc-dev/bootc/pull/2314
 # which will let us use bootc install to-disk creating a BIOS partition
 
-set -ux
-set +e
+cd "$(dirname "$0")"
+
+set -eux
 
 IMAGE=$1
 DISK_IMAGE=/var/test-img.img
 TIMEOUT=300
 
 ./test-bios-bootc-install.sh "$IMAGE"
+
+set +e
 
 umount -R /var/mnt 2>/dev/null || true
 losetup -j "$DISK_IMAGE" | cut -d: -f1 | xargs -r losetup -d
