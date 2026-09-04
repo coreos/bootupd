@@ -8,7 +8,7 @@ set -ux
 set +e
 
 IMAGE=$1
-DISK_IMAGE=test-img.img
+DISK_IMAGE=/var/test-img.img
 TIMEOUT=300
 
 ./test-bios-bootc-install.sh "$IMAGE"

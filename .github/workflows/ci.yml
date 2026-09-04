@@ -48,18 +48,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Configure Podman
-        shell: bash
-        run: |
-          podman --version
-          mkdir -p ~/.config/containers
-          echo '{"defaultAction":"SCMP_ACT_ALLOW"}' > ~/.config/containers/seccomp.json
-          printf '[containers]\napparmor_profile = "unconfined"\nseccomp_profile = "%s/.config/containers/seccomp.json"\n' "$HOME" > ~/.config/containers/containers.conf
-          USER_NAME=$(id -un)
-          grep -q "^${USER_NAME}:" /etc/subuid || echo "${USER_NAME}:100000:65536" | sudo tee -a /etc/subuid
-          grep -q "^${USER_NAME}:" /etc/subgid || echo "${USER_NAME}:100000:65536" | sudo tee -a /etc/subgid
-          podman info --format '{{.Store.GraphRoot}}'
-
       - name: Setup env
         run: |
           IMG_NAME=localhost/bootupd-grubcc-${{ matrix.grubcc }}

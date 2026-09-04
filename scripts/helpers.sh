@@ -8,7 +8,7 @@ create_mount_device_bios() {
 
     set -e
 
-    rm -rfv test-img.img
+    rm -rfv /var/test-img.img
 
     cat <<-EOF > sfdisk-buf
 label: gpt
@@ -18,14 +18,14 @@ size=1Gib, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
            type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="root"
 EOF
 
-    truncate -s10G test-img.img
+    truncate -s10G /var/test-img.img
 
-    cat sfdisk-buf | sfdisk --wipe=always test-img.img
+    cat sfdisk-buf | sfdisk --wipe=always /var/test-img.img
 
     mkdir -p /var/mnt
 
     # Also update kernel partition tables
-    loopdev=$(losetup --find --show --partscan test-img.img)
+    loopdev=$(losetup --find --show --partscan /var/test-img.img)
     sleep 1
 
     mkfs.ext4 "${loopdev}p3"
