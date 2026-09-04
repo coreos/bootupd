@@ -1,36 +1,50 @@
 #!/bin/bash
 
-# TODO(Johan-Liebert1): We can replace this entire thing with bcvk once we have
-# https://github.com/bootc-dev/bootc/pull/2314
-# which will let us use bootc install to-disk creating a BIOS partition
-
-set -ux
-set +e
+set -eux
 
 IMAGE=$1
-DISK_IMAGE=test-img.img
+BACKEND=$2
+DISK_IMAGE=/var/test-img.img
 TIMEOUT=300
 
-./test-bios-bootc-install.sh "$IMAGE"
+./test-uefi-bootc-install.sh "$IMAGE" "$BACKEND"
+
+set +e
 
 umount -R /var/mnt 2>/dev/null || true
 losetup -j "$DISK_IMAGE" | cut -d: -f1 | xargs -r losetup -d
 
 set -e
 
-SERIAL_LOG=$(mktemp /tmp/qemu-serial-XXXXXX.log)
-trap 'cat "$SERIAL_LOG"' EXIT
+# Find OVMF firmware
+OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
+if [ ! -f "$OVMF_CODE" ]; then
+    OVMF_CODE=/usr/share/OVMF/OVMF_CODE.fd
+fi
 
-echo "Booting '$DISK_IMAGE' with QEMU (BIOS mode, timeout=${TIMEOUT}s)..."
+OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
+if [ ! -f "$OVMF_VARS_TEMPLATE" ]; then
+    OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS.fd
+fi
+
+OVMF_VARS=$(mktemp /tmp/ovmf-vars-XXXXXX.fd)
+cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS"
+
+SERIAL_LOG=$(mktemp /tmp/qemu-serial-XXXXXX.log)
+trap 'cat "$SERIAL_LOG"; rm -f "$OVMF_VARS"' EXIT
+
+echo "Booting '$DISK_IMAGE' with QEMU (UEFI mode, timeout=${TIMEOUT}s)..."
 echo "Serial log: $SERIAL_LOG"
 
 qemu-system-x86_64 \
-    -machine pc \
+    -machine q35 \
     -cpu host \
     -enable-kvm \
     -m 2048 \
     -nographic \
     -serial file:"$SERIAL_LOG" \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file="$OVMF_VARS" \
     -drive file="$DISK_IMAGE",format=raw,if=virtio \
     -boot c \
     -no-reboot &
@@ -46,7 +60,7 @@ while [ "$elapsed" -lt "$TIMEOUT" ]; do
         break
     fi
 
-    if grep -qiE 'login:|welcome to|reached target.*multi-user' "$SERIAL_LOG" 2>/dev/null; then
+    if grep -qiE 'login:|reached target.*multi-user' "$SERIAL_LOG" 2>/dev/null; then
         boot_ok=1
         break
     fi
@@ -61,10 +75,10 @@ if kill -0 "$QEMU_PID" 2>/dev/null; then
     wait "$QEMU_PID" 2>/dev/null || true
 fi
 
-cat "$SERIAL_LOG"
+rm -f "$DISK_IMAGE"
 
 if [ "$boot_ok" -eq 1 ]; then
-    echo "PASS: VM booted successfully (detected in ${elapsed}s)."
+    echo "PASS: VM booted successfully in UEFI mode (detected in ${elapsed}s)."
     exit 0
 else
     echo "FAIL: VM did not boot within ${TIMEOUT}s."

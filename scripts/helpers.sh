@@ -38,3 +38,22 @@ EOF
     mount "${loopdev}p2" /var/mnt/boot
 }
 
+run_bootupctl_bios() {
+    set +eu
+
+    IMG_NAME=$1
+
+    DEVICE=$(losetup -j /var/test-img.img | cut -d: -f1)
+
+    # Skip IMG_NAME
+    local bootloader=("${@:2}")
+
+    podman run --rm --net=host --privileged --pid=host \
+      --privileged \
+      --security-opt label=type:unconfined_t \
+      --env RUST_LOG=trace \
+      -v /dev:/dev \
+      -v /var/mnt:/var/mnt \
+      "$IMG_NAME" \
+      bootupctl backend install "${bootloader[@]}" --write-uuid --device "$DEVICE" --component BIOS /var/mnt -vvvv
+}
