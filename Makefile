@@ -5,6 +5,7 @@ RELEASE ?= 1
 CONTAINER_RUNTIME ?= podman
 IMAGE_PREFIX ?=
 IMAGE_NAME ?= bootupd-build
+PACKAGESYSTEM ?= rpm
 
 ifeq ($(RELEASE),1)
         PROFILE ?= release
@@ -21,13 +22,19 @@ endif
 .PHONY: all
 all:
 	cargo build ${CARGO_ARGS}
-	ln -srf target/${PROFILE}/bootupd target/${PROFILE}/bootupctl
+	cd target/${PROFILE} && ln -sf bootupd bootupctl
 
 .PHONY: install
-install:
+install: query-file-$(PACKAGESYSTEM)
 	mkdir -p "${DESTDIR}$(PREFIX)/bin" "${DESTDIR}$(LIBEXECDIR)"
 	install -D -t "${DESTDIR}$(LIBEXECDIR)" target/${PROFILE}/bootupd
-	ln -srf ${DESTDIR}$(LIBEXECDIR)/bootupd ${DESTDIR}$(PREFIX)/bin/bootupctl
+	cd "${DESTDIR}$(PREFIX)/bin" && ln -sf ../libexec/bootupd bootupctl
+
+.PHONY: query-file-$(PACKAGESYSTEM)
+query-file-$(PACKAGESYSTEM):
+	install -D -m 755 \
+		"packagesystem/query-file-owner-$(PACKAGESYSTEM)" \
+		"${DESTDIR}$(PREFIX)/lib/bootupd/packagesystem/query-file-owner"
 
 .PHONY: install-grub-static
 install-grub-static:
