@@ -55,11 +55,11 @@ bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
 
 if [[ -d /usr/lib/efi ]]; then
-    assert_file_has_content_literal out.txt '  Installed: grub2-1:'
+    assert_file_has_content_literal out.txt '  Installed: grub2 1:'
     assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
     assert_not_file_has_content out.txt '  Installed:.*'"${TARGET_GRUB_EVR}"
     assert_file_has_content out.txt 'Update: Available:.*'"${TARGET_GRUB_EVR}"
-    assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload-1.0'
+    assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload 1.0'
 else
     assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
     assert_not_file_has_content out.txt '  Installed:.*test_bootupd_payload'
@@ -84,7 +84,7 @@ assert_file_has_content err.txt "error: .*synthetic failpoint"
 
 bootupctl update -vvv | tee out.txt
 assert_file_has_content out.txt "Previous EFI: .*"
-assert_file_has_content out.txt "Updated EFI: .*${TARGET_GRUB_EVR}.*,test_bootupd_payload-1.0"
+assert_file_has_content out.txt "Updated EFI: .*${TARGET_GRUB_EVR}.*test_bootupd_payload 1.0"
 
 assert_file_has_content ${tmpefimount}/EFI/fedora/test-bootupd.efi test-payload
 
@@ -110,7 +110,7 @@ bootupctl adopt-and-update | tee out.txt
 assert_file_has_content out.txt "Adopted and updated: BIOS: .*"
 assert_file_has_content out.txt "Adopted and updated: EFI: .*"
 if bootupctl validate 2>err.txt; then
-  fatal "unexpectedly passed validation"
+    fatal "unexpectedly passed validation"
 fi
 
 tap_finish

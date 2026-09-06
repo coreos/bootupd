@@ -31,7 +31,8 @@ use crate::bootupd::RootContext;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
-use crate::util::{self, get_metadata_timestamp};
+use crate::util;
+use crate::util::get_metadata_timestamp;
 use crate::{component::*, packagesystem::*};
 use crate::{filetree, grubconfigs};
 
@@ -902,10 +903,10 @@ fn generate_meta_from_usr_efi(sysroot_path: &Utf8Path) -> Result<ContentMetadata
     let mut packages = Vec::new();
     let mut modules_vec: Vec<Module> = vec![];
     for efi in efi_components {
-        packages.push(format!("{}-{}", efi.name, efi.version));
+        packages.push(format!("{} {}", efi.name, efi.version));
         modules_vec.push(Module {
             name: efi.name,
-            rpm_evr: efi.version,
+            evr: efi.version,
         });
     }
     modules_vec.sort_unstable();

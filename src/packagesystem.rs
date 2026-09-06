@@ -1,25 +1,28 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
 use uapi_version::Version;
 
 use crate::model::*;
-use crate::ostreeutil;
+use crate::util::get_metadata_timestamp;
+use log::debug;
+
+pub(crate) const QUERY_FILE_OWNER_SCRIPT: &str = "usr/lib/bootupd/packagesystem/query-file-owner";
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Module {
     pub(crate) name: String,
-    pub(crate) rpm_evr: String,
+
+    #[serde(alias = "rpm_evr")]
+    pub(crate) evr: String,
 }
 
 impl Module {
-    pub(crate) fn rpm_evr(&self) -> Version {
-        Version::from(&self.rpm_evr)
+    pub(crate) fn evr(&self) -> Version {
+        Version::from(&self.evr)
     }
 }
 
@@ -27,7 +30,7 @@ impl Ord for Module {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.name
             .cmp(&other.name) // Compare names first
-            .then_with(|| self.rpm_evr().cmp(&other.rpm_evr())) // If names equal, compare versions
+            .then_with(|| self.evr().cmp(&other.evr())) // If names equal, compare versions
     }
 }
 
@@ -37,42 +40,44 @@ impl PartialOrd for Module {
     }
 }
 
-/// Parse the output of `rpm -q`
-fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
-    let pkgs = std::str::from_utf8(stdout)?
-        .split_whitespace()
-        .map(|s| -> Result<_> {
-            let parts: Vec<_> = s.splitn(2, ',').collect();
-            let name = parts[0];
-            if let Some(ts) = parts.get(1) {
-                let nt = DateTime::parse_from_str(ts, "%s")
-                    .context("Failed to parse rpm buildtime")?
-                    .with_timezone(&chrono::Utc);
-                Ok((name, nt))
-            } else {
-                bail!("Failed to parse: {}", s);
-            }
-        })
-        .collect::<Result<BTreeMap<&str, DateTime<Utc>>>>()?;
-    if pkgs.is_empty() {
-        bail!("Failed to find any RPM packages matching files in source efidir");
-    }
-    let timestamps: BTreeSet<&DateTime<Utc>> = pkgs.values().collect();
-    // Unwrap safety: We validated pkgs has at least one value above
-    let largest_timestamp = timestamps.iter().last().unwrap();
-    let version = pkgs.keys().fold("".to_string(), |mut s, n| {
-        if !s.is_empty() {
-            s.push(',');
-        }
-        s.push_str(n);
-        s
-    });
+/// Parse the output of the `query-file-owner` script.
+///
+/// Each line contains one package with two space-separated values: NAME and VERSION.
+/// The format depends on the package manager (rpm, dpkg, pacman, etc.):
+fn parse_package_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
+    let output =
+        std::str::from_utf8(stdout).context("Failed to decode package metadata output as UTF-8")?;
 
-    // Map the version into Module struct
-    let mut modules_vec: Vec<Module> = pkgs.keys().map(|pkg_str| parse_evr(pkg_str)).collect();
-    modules_vec.sort_unstable();
+    debug!("Package metadata output: {:?}", output);
+
+    let mut packages = BTreeSet::new();
+
+    for line in output.lines() {
+        let package = line.trim();
+
+        if package.is_empty() {
+            continue;
+        }
+
+        packages.insert(package);
+    }
+
+    if packages.is_empty() {
+        bail!("Failed to find any packages matching files");
+    }
+
+    let version = packages.iter().copied().collect::<Vec<_>>().join(",");
+
+    let modules_vec: Vec<_> = packages
+        .iter()
+        .map(|pkg| {
+            parse_module(pkg)
+                .with_context(|| format!("Failed to parse package metadata for package: '{pkg}'"))
+        })
+        .collect::<Result<_>>()?;
+
     Ok(ContentMetadata {
-        timestamp: **largest_timestamp,
+        timestamp: get_metadata_timestamp()?,
         version,
         versions: Some(modules_vec),
         #[cfg(efi_arch)]
@@ -80,7 +85,7 @@ fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
     })
 }
 
-/// Query the rpm database and list the package and build times.
+/// Query the package owner of the given files using `query-file-owner`.
 pub(crate) fn query_files<T>(
     sysroot_path: &str,
     paths: impl IntoIterator<Item = T>,
@@ -88,76 +93,72 @@ pub(crate) fn query_files<T>(
 where
     T: AsRef<Path>,
 {
-    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
-    c.args(["-q", "--queryformat", "%{nevra},%{buildtime} ", "-f"]);
-    for arg in paths {
-        c.arg(arg.as_ref());
+    //Combine with sysroot
+    let query_files_script_path = Path::new(sysroot_path).join(QUERY_FILE_OWNER_SCRIPT);
+    if !query_files_script_path.exists() {
+        bail!(
+            "Query file owner script not found at {:?}",
+            query_files_script_path
+        );
     }
 
-    let rpmout = c.output()?;
-    if !rpmout.status.success() {
-        std::io::stderr().write_all(&rpmout.stderr)?;
-        bail!("Failed to invoke rpm -qf");
+    let mut cmd = std::process::Command::new(query_files_script_path);
+    for path in paths {
+        cmd.arg(path.as_ref());
+    }
+    let output = cmd.output().context("Failed to invoke query-file-owner")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("query-file-owner failed: {}", stderr.trim());
     }
 
-    rpm_parse_metadata(&rpmout.stdout)
+    parse_package_metadata(&output.stdout)
 }
 
-#[cfg(not(feature = "rpm"))]
-fn split_name_version(input: &str) -> Option<(String, String)> {
-    // assume it is "grub2-tools-1:2.06-110.el9.x86_64"
-    // strip .arch
-    let main = input.rsplit_once('.')?.0;
-
-    // find last two '-'
-    let mut parts = main.rsplitn(3, '-');
-    let release = parts.next()?; // after last '-'
-    let version = parts.next()?; // between last two '-'
-    let name = parts.next()?; // the rest (may contain '-')
-
-    Some((name.to_string(), format!("{version}-{release}")))
-}
-
-fn parse_evr(pkg: &str) -> Module {
-    // assume it is "grub2-1:2.12-28.fc42" (from usr/lib/efi)
-    if !pkg.ends_with(std::env::consts::ARCH) {
-        let (name, evr) = pkg.split_once('-').unwrap_or((pkg, ""));
-        return Module {
+fn parse_module(pkg: &str) -> Result<Module> {
+    // New format: "NAME VERSION"
+    if let Some((name, evr)) = pkg.split_once(' ') {
+        return Ok(Module {
             name: name.to_string(),
-            rpm_evr: evr.to_string(),
-        };
+            evr: evr.to_string(),
+        });
     }
 
-    let (name_str, rpm_evr) = {
-        #[cfg(not(feature = "rpm"))]
-        {
-            split_name_version(pkg).unwrap()
-        }
-        #[cfg(feature = "rpm")]
-        {
-            let nevra = rpm_version::Nevra::parse(pkg);
-            (nevra.name().to_string(), nevra.evr().to_string())
-        }
-    };
+    // Legacy RPM format: "NAME-EVR.ARCH"
+    let pkg = pkg.rsplit_once('.').map(|(pkg, _arch)| pkg).unwrap_or(pkg);
 
-    let (name, _) = name_str.split_once('-').unwrap_or((&name_str, ""));
-    Module {
-        name: name.to_string(),
-        rpm_evr,
-    }
+    let (separator, _) = pkg
+        .char_indices()
+        .filter(|(_, c)| *c == '-')
+        .find_map(|(idx, _)| {
+            let evr = &pkg[idx + 1..];
+
+            if evr.starts_with(|c: char| c.is_ascii_digit()) {
+                Some((idx, evr))
+            } else {
+                None
+            }
+        })
+        .with_context(|| format!("Invalid legacy package metadata: {pkg:?}"))?;
+
+    Ok(Module {
+        name: pkg[..separator].to_string(),
+        evr: pkg[separator + 1..].to_string(),
+    })
 }
 
-fn parse_evr_vec(input: &str) -> Vec<Module> {
+fn parse_module_vec(input: &str) -> Result<Vec<Module>> {
     let mut pkgs: Vec<Module> = input
         .split(',')
-        .map(|pkg| parse_evr(pkg)) // parse_evr returns owned Package
-        .collect();
+        .map(|pkg| parse_module(pkg)) // parse_module returns owned Module
+        .collect::<Result<Vec<_>>>()?;
     // Sort packages to ensure a consistent order for comparison, which is
     // required by `compare_package_slices`.
     pkgs.sort_unstable();
     // Now that it's sorted, we can efficiently remove duplicates.
     pkgs.dedup();
-    pkgs
+    Ok(pkgs)
 }
 
 pub(crate) fn compare_package_slices(a: &[Module], b: &[Module]) -> Ordering {
@@ -196,8 +197,8 @@ pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
     if a == b {
         return Ordering::Equal;
     }
-    let pkg_a = parse_evr_vec(a);
-    let pkg_b = parse_evr_vec(b);
+    let pkg_a = parse_module_vec(a).unwrap_or_default();
+    let pkg_b = parse_module_vec(b).unwrap_or_default();
     compare_package_slices(&pkg_a, &pkg_b)
 }
 
@@ -206,21 +207,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_rpmout() {
-        let testdata = "grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 grub2-efi-x64-1:2.06-95.fc38.x86_64,1681321788 shim-x64-15.6-2.x86_64,1657222566 shim-x64-15.6-2.x86_64,1657222566 shim-x64-15.6-2.x86_64,1657222566";
-        let parsed = rpm_parse_metadata(testdata.as_bytes()).unwrap();
+    fn test_parse_package_metadata() {
+        let testdata = "\
+            grub2-efi-x64 1:2.06-95.fc38
+            grub2-efi-x64 1:2.06-95.fc38
+            shim-x64 15.6-2
+            shim-x64 15.6-2
+            shim-x64 15.6-2
+        ";
+
+        let parsed = parse_package_metadata(testdata.as_bytes()).unwrap();
+
         assert_eq!(
             parsed.version,
-            "grub2-efi-x64-1:2.06-95.fc38.x86_64,shim-x64-15.6-2.x86_64"
+            "grub2-efi-x64 1:2.06-95.fc38,shim-x64 15.6-2"
         );
+
         let expected_modules = vec![
             Module {
-                name: "grub2".to_string(),
-                rpm_evr: "1:2.06-95.fc38".to_string(),
+                name: "grub2-efi-x64".to_string(),
+                evr: "1:2.06-95.fc38".to_string(),
             },
             Module {
-                name: "shim".to_string(),
-                rpm_evr: "15.6-2".to_string(),
+                name: "shim-x64".to_string(),
+                evr: "15.6-2".to_string(),
             },
         ];
 
@@ -232,21 +242,21 @@ mod tests {
         let a = vec![
             Module {
                 name: "grub2".into(),
-                rpm_evr: "1:2.12-21.fc41".into(),
+                evr: "1:2.12-21.fc41".into(),
             },
             Module {
                 name: "shim".into(),
-                rpm_evr: "15.8-3".into(),
+                evr: "15.8-3".into(),
             },
         ];
         let b = vec![
             Module {
                 name: "grub2".into(),
-                rpm_evr: "1:2.12-28.fc41".into(),
+                evr: "1:2.12-28.fc41".into(),
             },
             Module {
                 name: "shim".into(),
-                rpm_evr: "15.8-3".into(),
+                evr: "15.8-3".into(),
             },
         ];
         let ord = compare_package_slices(&a, &b);
@@ -260,34 +270,51 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_legacy_and_new_metadata() {
+        let legacy = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,\
+         grub2-efi-x64-1:2.12-21.fc41.x86_64,\
+         shim-ia32-15.8-3.x86_64,\
+         shim-x64-15.8-3.x86_64";
+
+        let new = "grub2-efi-ia32 1:2.12-28.fc41,\
+         grub2-efi-x64 1:2.12-28.fc41,\
+         shim-ia32 15.8-3,\
+         shim-x64 15.8-3";
+
+        assert_eq!(compare_package_versions(legacy, new), Ordering::Less);
+    }
+
+    #[test]
+    fn test_compare_legacy_and_new_equal_metadata() {
+        let legacy = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
+
+        let new = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
+
+        assert_eq!(compare_package_versions(legacy, new), Ordering::Equal);
+    }
+    #[test]
     fn test_compare_package_versions() {
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-efi-x64-1:2.12-29.fc42.x86_64,shim-x64-15.8-3.x86_64";
+        // Test 1: Same packages, different versions
+        let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
+        let target = "grub2-efi-x64 1:2.12-29.fc42,shim-x64 15.8-3";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less); // current < target
 
         let ord = compare_package_versions(target, current);
         assert_eq!(ord, Ordering::Greater);
 
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-1:2.12-29.fc42,shim-15.8-3";
+        // Test 2: Different package names but same version comparison logic
+        let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
+        let target = "grub2 1:2.12-28.fc42,shim 15.8-4";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less); // current < target
 
         let ord = compare_package_versions(target, current);
         assert_eq!(ord, Ordering::Greater);
 
-        let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-        let target = "grub2-1:2.12-28.fc42,shim-15.8-4";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // The target includes new package, should upgrade
-        let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64,test";
+        // Test 3: Target includes new package, should upgrade
+        let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
+        let target = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3,test 1.0";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
@@ -295,13 +322,10 @@ mod tests {
         let ord = compare_package_versions(target, current);
         assert_eq!(ord, Ordering::Greater);
 
-        // Not sure if this would happen
-        // current_grub2 > target_grub2
-        // current_shim < target_shim
-        // In this case there is Ordering::Less, return Ordering::Less
+        // Test 4: Mixed comparison (different ordering)
         {
-            let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let target = "grub2-1:2.12-27.fc42,shim-15.8-4";
+            let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
+            let target = "grub2 1:2.12-27.fc42,shim 15.8-4";
             let ord = compare_package_versions(current, target);
             assert_eq!(ord, Ordering::Less);
 
@@ -309,35 +333,31 @@ mod tests {
             assert_eq!(ord, Ordering::Less);
         }
 
-        // Test Equal
+        // Test 5: Equal versions
         {
-            let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-            let target = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
+            let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
+            let target = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
             let ord = compare_package_versions(current, target);
             assert_eq!(ord, Ordering::Equal);
 
-            let current = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-            let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-
-            let current = "grub2-1:2.12-28.fc42,shim-15.8-3";
-            let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
+            let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
+            let target = "grub2 1:2.12-28.fc42,shim 15.8-3";
             let ord = compare_package_versions(current, target);
             assert_eq!(ord, Ordering::Equal);
         }
 
-        // Test only grub2
-        let current = "grub2-tools-1:2.06-86.el9_4.3.x86_64";
-        let target = "grub2-tools-1:2.06-110.el9.x86_64";
+        // Test 6: Single package comparison
+        let current = "grub2-tools 1:2.06-86.el9_4.3";
+        let target = "grub2-tools 1:2.06-110.el9";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 
         let ord = compare_package_versions(target, current);
         assert_eq!(ord, Ordering::Greater);
 
-        let current = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64";
-        let target = "grub2-1:2.12-28.fc42,shim-15.8-3";
+        // Test 7: Multiple packages with different names
+        let current = "grub2-efi-ia32 1:2.12-21.fc41,grub2-efi-x64 1:2.12-21.fc41,shim-ia32 15.8-3,shim-x64 15.8-3";
+        let target = "grub2-efi-ia32 1:2.12-28.fc42,grub2-efi-x64 1:2.12-28.fc42,shim-ia32 15.8-3,shim-x64 15.8-3";
         let ord = compare_package_versions(current, target);
         assert_eq!(ord, Ordering::Less);
 

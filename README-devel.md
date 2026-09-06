@@ -21,13 +21,31 @@ There's a reference [Dockerfile](Dockerfile) that builds on [CentOS Stream bootc
 
 ## Integrating bootupd into a distribution/OS
 
-Today, bootupd only really works on systems that use RPMs and ostree.
-(Which usually means rpm-ostree, but not strictly necessarily)
+Today, bootupd only really works on systems that use ostree.
 
 Many bootupd developers (and current CI flows) target Fedora CoreOS
 and derivatives, so it can be used as a "reference" for integration.
 
-There's two parts to integration:
+There's three parts to integration:
+
+### Modifying query-file-owner
+
+This script provides package ownership detection for `packagesystem.rs`, there are already done scripts for the package systems in `packagesystem/query-file-owner-*`,
+in the file filesystem there's only one script for one package system in `usr/lib/bootupd/packagesystem/query-file-owner` in the sysroot.
+
+Now you need to modify this file to work with your package manager, ex. `dpkg/pacman/apk/rpm`
+
+You can test it like this:
+`query-file-owner [FILE] [FILE...]`
+
+- Make sure it returns a list of packages info and it should look like this:
+  `grub2-efi-x64 1:2.06-95.fc38
+  shim-x64 15.6-2` (one package per line)
+
+  So, the output of package looks like this:
+  `NAME VERSION`
+
+- You can use already done query-file-owner using for ex.: `make install-all PACKAGESYSTEM=rpm` the supported package systems are: `dpkg`, `rpm`, `pacman` and `apk`
 
 ### Generating an update payload
 

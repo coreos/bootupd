@@ -17,7 +17,6 @@ parallel build: {
       }
       stage("Unit tests") {
         shwrap("""
-          cargo test --features rpm
           cargo test
         """)
       }

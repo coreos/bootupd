@@ -54,6 +54,7 @@ Conflicts:      bootc < 1.14.1
 %{_bindir}/bootupctl
 %{_libexecdir}/bootupd
 %{_prefix}/lib/bootupd/grub2-static/
+%{_prefix}/lib/bootupd/packagesystem/query-file-owner
 %{_unitdir}/bootloader-update.service
 
 %prep

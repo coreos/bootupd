@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+# Script to detect package ownership of a file in a Linux system.
+# Required environment setup for consistent output
+export LC_ALL=C
+export LANG=C
+
+# Usage: ./query-file-owner [FILE] [FILE...]
+if [ "$#" -eq 0 ]; then
+    echo "Usage: $0 [FILE] [FILE...]"
+    exit 1
+fi
+
+for FILE in "$@"; do
+    # Use your package manager to find the package that owns the file
+    # Package Manager should return two space-separated values: NAME and VERSION
+    ABS_FILE=$(realpath "$FILE" 2>/dev/null || echo "$FILE")
+
+    APK_OUTPUT=$(apk info -W "$ABS_FILE")
+    APK_STATUS=$?
+
+    if [ "$APK_STATUS" -ne 0 ]; then
+        exit "$APK_STATUS"
+    fi
+
+    printf '%s\n' "$APK_OUTPUT" |
+        sed 's/.*is owned by //' |
+        awk -F'-' '{
+            # Build version from the end
+            ver = $(NF-1) "-" $NF;
+            name = $1;
+            for(i=2; i<NF-1; i++) name = name "-" $i;
+            print name " " ver
+        }'
+done
+    

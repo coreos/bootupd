@@ -211,11 +211,11 @@ mod test {
             versions: Some(vec![
                 Module {
                     name: "grub2".into(),
-                    rpm_evr: "1:2.12-21.fc41".into(),
+                    evr: "1:2.12-21.fc41".into(),
                 },
                 Module {
                     name: "shim".into(),
-                    rpm_evr: "15.8-3".into(),
+                    evr: "15.8-3".into(),
                 },
             ]),
             #[cfg(efi_arch)]
@@ -227,11 +227,11 @@ mod test {
             versions: Some(vec![
                 Module {
                     name: "grub2".into(),
-                    rpm_evr: "1:2.12-28.fc41".into(),
+                    evr: "1:2.12-28.fc41".into(),
                 },
                 Module {
                     name: "shim".into(),
-                    rpm_evr: "15.8-3".into(),
+                    evr: "15.8-3".into(),
                 },
             ]),
             #[cfg(efi_arch)]
@@ -263,11 +263,11 @@ mod test {
             Some(vec![
                 Module {
                     name: "grub2".into(),
-                    rpm_evr: "1:2.12-41.fc44".into(),
+                    evr: "1:2.12-41.fc44".into(),
                 },
                 Module {
                     name: "shim".into(),
-                    rpm_evr: "15.8-4".into(),
+                    evr: "15.8-4".into(),
                 },
             ])
         );
