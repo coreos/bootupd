@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.16.10"
+version = "1.16.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd516789b3f7657d780a56f22fba9b20510d7389d8cbef6a0ec07d94b064df93"
+checksum = "31258ae6d536b27ce73befea5ac48fda4ac1c58e4ac995e3614df93fa61379ad"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
