@@ -20,7 +20,7 @@ podman run --rm --net=host --pid=host \
   -v /dev:/dev \
   -v /var/mnt:/var/mnt \
   "$IMAGE" \
-    bootc install to-filesystem --bootloader=none --karg console=ttyS0,115500n --skip-fetch-check \
+    bootc install to-filesystem --bootloader=none --karg console=ttyS0,115200n --skip-fetch-check \
     --acknowledge-destructive --disable-selinux /var/mnt
 
 # Make sure the mount is actually writable

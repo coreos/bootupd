@@ -9,14 +9,17 @@ cd "$(dirname "$0")"
 set -eux
 
 IMAGE=$1
-DISK_IMAGE=/var/test-img.img
-TIMEOUT=300
+
+. ./helpers.sh
 
 ./test-bios-bootc-install.sh "$IMAGE"
 
+if mount | grep -qF /var/mnt; then
+    umount -R /var/mnt
+fi
+
 set +e
 
-umount -R /var/mnt 2>/dev/null || true
 losetup -j "$DISK_IMAGE" | cut -d: -f1 | xargs -r losetup -d
 
 set -e
@@ -24,7 +27,7 @@ set -e
 SERIAL_LOG=$(mktemp /tmp/qemu-serial-XXXXXX.log)
 trap 'cat "$SERIAL_LOG"' EXIT
 
-echo "Booting '$DISK_IMAGE' with QEMU (BIOS mode, timeout=${TIMEOUT}s)..."
+echo "Booting '$DISK_IMAGE' with QEMU (BIOS mode, timeout=${BOOT_TIMEOUT}s)..."
 echo "Serial log: $SERIAL_LOG"
 
 qemu-system-x86_64 \
@@ -32,7 +35,7 @@ qemu-system-x86_64 \
     -cpu host \
     -enable-kvm \
     -m 2048 \
-    -nographic \
+    -display none \
     -serial file:"$SERIAL_LOG" \
     -drive file="$DISK_IMAGE",format=raw,if=virtio \
     -boot c \
@@ -43,7 +46,7 @@ QEMU_PID=$!
 boot_ok=0
 elapsed=0
 
-while [ "$elapsed" -lt "$TIMEOUT" ]; do
+while [ "$elapsed" -lt "$BOOT_TIMEOUT" ]; do
     if ! kill -0 "$QEMU_PID" 2>/dev/null; then
         echo "QEMU exited prematurely after ${elapsed}s."
         break
@@ -64,12 +67,12 @@ if kill -0 "$QEMU_PID" 2>/dev/null; then
     wait "$QEMU_PID" 2>/dev/null || true
 fi
 
-cat "$SERIAL_LOG"
+rm -rf "$DISK_IMAGE"
 
 if [ "$boot_ok" -eq 1 ]; then
     echo "PASS: VM booted successfully (detected in ${elapsed}s)."
     exit 0
 else
-    echo "FAIL: VM did not boot within ${TIMEOUT}s."
+    echo "FAIL: VM did not boot within ${BOOT_TIMEOUT}s."
     exit 1
 fi

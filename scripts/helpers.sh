@@ -1,16 +1,20 @@
 #!/bin/bash
 
+export DISK_IMAGE=/var/test-img.img
+export BOOT_TIMEOUT=600
+
 create_mount_device_bios() {
-    set +e
+    set -e
 
     mkdir -p /var/mnt
 
-    umount -R /var/mnt
-    losetup -j /var/test-img.img | cut -d: -f1 | xargs -r losetup -d
+    if mount | grep -qF /var/mnt; then
+        umount -R /var/mnt
+    fi
 
-    set -e
+    losetup -j "$DISK_IMAGE" | cut -d: -f1 | xargs -r losetup -d
 
-    rm -rfv /var/test-img.img
+    rm -rfv "$DISK_IMAGE"
 
     cat <<-EOF > sfdisk-buf
 label: gpt
@@ -20,15 +24,13 @@ size=1Gib, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
            type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="root"
 EOF
 
-    truncate -s10G /var/test-img.img
+    truncate -s10G "$DISK_IMAGE"
 
-    cat sfdisk-buf | sfdisk --wipe=always /var/test-img.img
+    cat sfdisk-buf | sfdisk --wipe=always "$DISK_IMAGE"
 
     # Also update kernel partition tables
-    loopdev=$(losetup --find --show --partscan /var/test-img.img)
+    loopdev=$(losetup --find --show --partscan "$DISK_IMAGE")
     sleep 1
-
-    # mkfs.vfat "${loopdev}p3"
 
     mkfs.ext4 "${loopdev}p3"
     mount "${loopdev}p3" /var/mnt
@@ -45,12 +47,12 @@ run_bootupctl_bios() {
 
     IMG_NAME=$1
 
-    DEVICE=$(losetup -j /var/test-img.img | cut -d: -f1)
+    DEVICE=$(losetup -j "$DISK_IMAGE" | cut -d: -f1)
 
     # Skip IMG_NAME
     local bootloader=("${@:2}")
 
-    podman run --rm --net=host --privileged --pid=host \
+    podman run --rm --net=host --pid=host \
       --privileged \
       --security-opt label=type:unconfined_t \
       --env RUST_LOG=trace \

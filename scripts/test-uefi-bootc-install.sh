@@ -4,6 +4,8 @@ cd "$(dirname "$0")"
 
 set -eux
 
+. ./helpers.sh
+
 IMAGE=$1
 BACKEND=$2
 
@@ -13,7 +15,7 @@ if [[ "$BACKEND" == "composefs" ]]; then
     composefs=(--composefs-backend)
 fi
 
-truncate -s10G /var/disk.img
+truncate -s10G "$DISK_IMAGE"
 
 # We don't have bootupd support for GrubCC and SystemdBoot
 # in bootc yet
@@ -23,6 +25,8 @@ podman run --rm --net=host --pid=host \
   --env RUST_LOG=debug \
   --env BOOTC_BOOTLOADER_DEBUG=1 \
   -v /dev:/dev \
+  -v "$DISK_IMAGE":"$DISK_IMAGE" \
   "$IMAGE" \
-    bootc install to-filesystem "${composefs[@]}" --karg console=ttyS0,115200n8 --skip-fetch-check \
-    --generic-image --disable-selinux /var/test-img.img
+    bootc install to-disk --filesystem=ext4 --wipe \
+    "${composefs[@]}" --karg console=ttyS0,115200n8 \
+    --generic-image --via-loopback --disable-selinux "$DISK_IMAGE"

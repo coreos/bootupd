@@ -50,7 +50,7 @@ mount "${loopdev}p1" $ESP
 
 
 # Test installing the bootloader
-podman run --rm --net=host --privileged --pid=host \
+podman run --rm --net=host --pid=host \
   --privileged \
   --security-opt label=type:unconfined_t \
   --env RUST_LOG=trace \
