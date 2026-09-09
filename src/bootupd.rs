@@ -55,26 +55,16 @@ impl ConfigMode {
 }
 
 pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMode) -> Result<()> {
-    // SavedState needs to be per component
-    // Consider this scenario:
-    // - Grub installed (statefile in /sysroot/boot)
-    // - Re-install attempted with GrubCC
-    //
-    // So we can't just check statefile based on the determined bootloader
-    // We need to check all cases
-    for b in Bootloader::iter() {
-        SavedState::ensure_not_present(&opts.dest_root, b)
-            .context("failed to install, invalid re-install attempted")?;
+    let all_components = get_components_impl(opts.auto);
+
+    if all_components.is_empty() {
+        println!("No components available for this platform.");
+        return Ok(());
     }
 
     let source_root_dir = Dir::open_ambient_dir(&opts.src_root, ambient_authority())
         .context("Opening source root")?;
 
-    let all_components = get_components_impl(opts.auto);
-    if all_components.is_empty() {
-        println!("No components available for this platform.");
-        return Ok(());
-    }
     let target_components = if let Some(target_components) = &opts.components {
         // Checked by CLI parser
         assert!(!opts.auto);
@@ -92,6 +82,36 @@ pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMod
 
     if target_components.is_empty() && !opts.auto {
         anyhow::bail!("No components specified");
+    }
+
+    log::debug!(
+        "Auto: {}, Target components: {:?}",
+        opts.auto,
+        target_components
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+    );
+
+    let has_efi_component = target_components
+        .iter()
+        .any(|c| c.component_type() == ComponentType::Efi);
+
+    // SavedState needs to be per component
+    // Consider this scenario:
+    // - Grub installed (statefile in /sysroot/boot)
+    // - Re-install attempted with GrubCC
+    //
+    // So we can't just check statefile based on the determined bootloader
+    // We need to check all cases
+    for b in Bootloader::iter() {
+        if !has_efi_component && b != Bootloader::Grub {
+            log::debug!("Skipping bootloader {b} as there's no EFI component");
+            continue;
+        }
+
+        SavedState::ensure_not_present(&opts.dest_root, b)
+            .context("failed to install, invalid re-install attempted")?;
     }
 
     #[cfg(efi_arch)]

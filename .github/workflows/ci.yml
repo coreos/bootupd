@@ -39,6 +39,23 @@ jobs:
     runs-on: [ "${{ matrix.runner }}" ]
 
     steps:
+      - name: Install QEMU and OVMF for VM boot tests
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          sudo apt install -y qemu-utils qemu-kvm ovmf
+
+      - name: Enable unprivileged /dev/kvm access
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
       - name: Setup env
         run: |
           if [[ "${{ matrix.grubcc }}" == "1" ]]; then
@@ -161,3 +178,16 @@ jobs:
           set -xeuo pipefail
           sudo ./scripts/test-bootloader.sh "$IMG_NAME" "grub-cc"
           sudo ./scripts/test-bootloader.sh "$IMG_NAME" "systemd"
+
+      - name: Test BIOS installs and VM boot
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
+        run: |
+          set -xeuo pipefail
+          sudo ./scripts/test-bios-vm-boot.sh "$IMG_NAME"
+
+      - name: Test UEFI installs and VM boot
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
+        run: |
+          set -xeuo pipefail
+          sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "ostree"
+          sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "composefs"
