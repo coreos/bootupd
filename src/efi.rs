@@ -931,6 +931,9 @@ pub struct EFIComponent {
 
 /// Get EFIComponents from e.g. usr/lib/efi, like "usr/lib/efi/<name>/<version>/EFI"
 /// Filter the components by Bootloader, if Bootloader is None, no filtering is performed
+///
+/// Errors if a Bootloader is requested but no component provides it, so that
+/// a missing payload fails here rather than silently producing a half-installed ESP.
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
@@ -966,13 +969,15 @@ fn get_efi_component_from_usr<'a>(
         })
         .collect();
 
-    if components.len() == 0 {
-        return Ok(None);
-    }
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
     let Some(bootloader) = bootloader else {
-        return Ok(Some(components));
+        // Unfiltered discovery: an empty result is how callers learn that the
+        // new layout is not in use, so that they can fall back to the legacy
+        // update directory. A filtered request cannot fall back that way --
+        // the legacy directory is copied wholesale, with no way to honour a
+        // bootloader selection -- so it goes on to the check below instead.
+        return Ok((!components.is_empty()).then_some(components));
     };
 
     // Remove all EFI Components not associated with the bootloader
@@ -981,10 +986,31 @@ fn get_efi_component_from_usr<'a>(
         .map(|b| b.efi_component_name())
         .collect::<Vec<_>>();
 
+    let found = if components.is_empty() {
+        "none".to_string()
+    } else {
+        components
+            .iter()
+            .map(|comp| comp.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
     let efi_comps = components
         .into_iter()
         .filter(|comp| !to_remove.contains(&comp.name.as_str()))
         .collect::<Vec<_>>();
+
+    // Components that belong to no bootloader such as shim are never
+    // filtered out, so a non-empty efi_comps therefore does not mean
+    // the requested bootloader was found. Check explicitly.
+    let wanted = bootloader.efi_component_name();
+    if !efi_comps.iter().any(|comp| comp.name == wanted) {
+        anyhow::bail!(
+            "Bootloader '{bootloader}' was requested, but no '{wanted}' component was found \
+             in {usr_path}; expected {usr_path}/{wanted}/<version>/EFI (found: {found})"
+        );
+    }
 
     Ok(Some(efi_comps))
 }
@@ -1237,11 +1263,58 @@ Boot0003* test";
             ])
         );
 
-        // Test with empty directory - should return None
+        // Test with filtering for Systemd while no systemd-boot component exists - should
+        // error rather than quietly returning shim on its own, which would install a first
+        // stage with no second stage behind it.
+        let err = get_efi_component_from_usr(utf8_tpath, EFILIB, Some(Bootloader::Systemd))
+            .expect_err("missing systemd-boot component should be an error");
+        let err = err.to_string();
+        assert!(
+            err.contains("no 'systemd-boot' component")
+                && err.contains("found: grub-cc, grub2, shim"),
+            "unexpected error: {err}"
+        );
+
+        // systemd-boot structure. Note the binary is named grubx64.efi: that is the second
+        // stage filename baked into shim.
+        std::fs::create_dir_all(efi_path.join("systemd-boot/261.2-4.fc45/EFI/fedora"))?;
+        std::fs::File::create(efi_path.join("systemd-boot/261.2-4.fc45/EFI/fedora/grubx64.efi"))?;
+
+        // Test with filtering for Systemd - should only return shim and systemd-boot
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB, Some(Bootloader::Systemd))?;
+        assert_eq!(
+            efi_comps,
+            Some(vec![
+                EFIComponent {
+                    name: "shim".to_string(),
+                    version: "16.1-5".to_string(),
+                    path: Utf8PathBuf::from("usr/lib/efi/shim/16.1-5/EFI"),
+                },
+                EFIComponent {
+                    name: "systemd-boot".to_string(),
+                    version: "261.2-4.fc45".to_string(),
+                    path: Utf8PathBuf::from("usr/lib/efi/systemd-boot/261.2-4.fc45/EFI"),
+                },
+            ])
+        );
+
+        // Test with empty directory - unfiltered discovery returns None, which is
+        // how the caller learns to fall back to the legacy update directory.
         std::fs::remove_dir_all(&efi_path)?;
         std::fs::create_dir_all(&efi_path)?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB, None)?;
         assert_eq!(efi_comps, None);
+
+        // ...but a request for a specific bootloader still errors, rather than
+        // falling back to a directory that is copied wholesale and so cannot
+        // honour the request.
+        let err = get_efi_component_from_usr(utf8_tpath, EFILIB, Some(Bootloader::Systemd))
+            .expect_err("missing systemd-boot component should be an error");
+        let err = err.to_string();
+        assert!(
+            err.contains("no 'systemd-boot' component") && err.contains("found: none"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 
