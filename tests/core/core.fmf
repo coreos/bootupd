@@ -1,0 +1,7 @@
+summary: Run bootupd --version
+tag:
+  - smoke
+test: |
+  set -xeuo pipefail
+  source /tmp/bootupd_bin_dir
+  "${BOOTUPD_BIN_DIR}/bootupd" --version

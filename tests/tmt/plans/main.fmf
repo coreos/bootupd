@@ -1,0 +1,17 @@
+prepare:
+  - name: Set bootupd path for a source build
+    when: use_built_from_src is defined and use_built_from_src == true
+    how: shell
+    script: |
+      set -xeuo pipefail
+      bootupd_bin=$(find "$(dirname "${TMT_TREE}")" -type f -path '*/target/release/bootupd' -print -quit)
+      test -n "${bootupd_bin}"
+      printf 'BOOTUPD_BIN_DIR=%s\n' "$(dirname "${bootupd_bin}")" > /tmp/bootupd_bin_dir
+  - name: Install bootupd package
+    when: use_built_from_src is not defined or use_built_from_src == false
+    how: install
+    package: bootupd
+  - name: Set bootupd path for the installed package
+    when: use_built_from_src is not defined or use_built_from_src == false
+    how: shell
+    script: printf 'BOOTUPD_BIN_DIR=/usr/libexec\n' > /tmp/bootupd_bin_dir
