@@ -1,0 +1,20 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Script to detect package ownership of a file in a Linux system.
+# Required environment setup for consistent output
+export LC_ALL=C
+export LANG=C
+
+# Usage: ./query-file-owner [FILE] [FILE...]
+if [ "$#" -eq 0 ]; then
+    echo "Usage: $0 [FILE] [FILE...]"
+    exit 1
+fi
+
+for FILE in "$@"; do
+    # Use your package manager to find the package that owns the file
+    # Package Manager should return two space-separated values: NAME and VERSION
+    pacman -Q "$(pacman -Qoq "$FILE")"
+done
+    

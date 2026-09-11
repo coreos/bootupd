@@ -8,7 +8,7 @@ edition = "2021"
 rust-version = "1.90.0"
 homepage = "https://github.com/coreos/bootupd"
 
-include = ["src", "LICENSE", "Makefile", "systemd", "build.rs"]
+include = ["src", "LICENSE", "Makefile", "systemd", "build.rs", "packagesystem"]
 
 # See https://github.com/coreos/cargo-vendor-filterer
 [package.metadata.vendor-filter]
@@ -37,7 +37,6 @@ log = "^0.4"
 cap-std = "4.0.2"
 openssl = "^0.10"
 os-release = "0.1.0"
-rpm-version = { version = "0.5.0", default-features = false, optional = true }
 rustix = { version = "1.1.4", features = ["process", "fs"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
@@ -64,4 +63,4 @@ tag-message = "bootupd {{version}}"
 
 [features]
 default = []
-rpm = ["rpm-version"]
+rpm = []
