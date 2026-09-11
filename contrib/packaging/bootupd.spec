@@ -55,6 +55,8 @@ Conflicts:      bootc < 1.14.1
 %{_libexecdir}/bootupd
 %{_prefix}/lib/bootupd/grub2-static/
 %{_unitdir}/bootloader-update.service
+%{_unitdir}/bootupd-varlink.socket
+%{_unitdir}/bootupd-varlink.service
 
 %prep
 %autosetup -n %{crate}-%{version} -p1 -a1

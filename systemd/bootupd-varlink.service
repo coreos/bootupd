@@ -1,0 +1,17 @@
+[Unit]
+Description=Bootupd Varlink Service
+Documentation=https://github.com/coreos/bootupd
+# Interface only implemented on EFI systems
+ConditionPathExists=/sys/firmware/efi
+
+[Service]
+Type=simple
+# It doesn't make sense to sync ESP updates in "Live" environments.
+# https://github.com/coreos/fedora-coreos-tracker/issues/2136
+ExecCondition=/bin/bash -c '[[ ! $(findmnt -n -o FSTYPE /sysroot) =~ ^(erofs|squashfs)$ ]]'
+ExecStart=/usr/libexec/bootupd varlink
+# Keep this stuff in sync with SYSTEMD_ARGS_BOOTUPD in general
+PrivateNetwork=yes
+ProtectHome=yes
+KillMode=mixed
+MountFlags=slave

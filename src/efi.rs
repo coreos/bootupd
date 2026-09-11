@@ -105,7 +105,7 @@ const ESP_MOUNT_FLAGS: MountFlags =
 const ESP_MOUNT_DATA: &std::ffi::CStr = c"fmask=0177,dmask=0077";
 
 /// Mount the ESP from the provided device into a temporary directory.
-fn mount_esp(device: &str) -> Result<TempMount> {
+pub(crate) fn mount_esp(device: &str) -> Result<TempMount> {
     TempMount::mount_dev(device, "vfat", ESP_MOUNT_FLAGS, Some(ESP_MOUNT_DATA))
 }
 

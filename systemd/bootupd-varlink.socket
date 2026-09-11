@@ -1,0 +1,12 @@
+[Unit]
+Description=Bootupd Varlink Socket
+Documentation=https://github.com/coreos/bootupd
+# Interface only implemented on EFI systems
+ConditionPathExists=/sys/firmware/efi
+
+[Socket]
+ListenStream=/run/bootupd/org.coreos.bootupd1
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

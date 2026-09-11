@@ -45,6 +45,8 @@ tempfile = "^3.26"
 uapi-version = "0.4.0"
 walkdir = "2.3.2"
 signal-hook-registry = "1.4.8"
+zlink = { version = "0.7.0", default-features = false, features = ["smol", "service", "tracing"] }
+smol = "2.0.2"
 
 # EFI-only dependencies
 [target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))'.dependencies]
