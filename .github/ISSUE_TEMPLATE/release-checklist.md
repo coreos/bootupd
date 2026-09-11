@@ -30,7 +30,7 @@ This guide requires:
 
 - Prepare local branch+commit
   - [ ] `git checkout -b release`
-  - [ ] Bump the version number in `Cargo.toml`.  Usually you just want to bump the patch.
+  - [ ] Bump the version number in `Cargo.toml` and `bootupd.spec`.  Usually you just want to bump the patch.
   - [ ] Run `cargo build` to ensure `Cargo.lock` would be updated
   - [ ] Commit changes `git commit -a -m 'Release x.y.z'`; include some useful brief changelog.
 

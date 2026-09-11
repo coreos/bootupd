@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "bootupd"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "bootc-internal-blockdev",
