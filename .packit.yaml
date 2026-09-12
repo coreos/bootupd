@@ -1,0 +1,36 @@
+---
+upstream_package_name: bootupd
+upstream_tag_template: v{version}
+
+downstream_package_name: rust-bootupd
+specfile_path: contrib/packaging/bootupd.spec
+
+srpm_build_deps:
+  - cargo
+  - git
+  - libzstd-devel
+  - openssl-devel
+  - zstd
+
+actions:
+  create-archive:
+    - bash -c 'cargo install cargo-vendor-filterer'
+    - bash -c 'cargo xtask spec'
+    - bash -c 'cp target/bootupd* contrib/packaging/'
+    - bash -c 'ls -1 target/bootupd-*.crate'
+  fix-spec-file:
+    - bash -c 'cat contrib/packaging/bootupd.spec'
+
+jobs:
+  - job: copr_build
+    trigger: pull_request
+    targets:
+      - fedora-rawhide-x86_64
+      - centos-stream-10-x86_64
+
+  - job: tests
+    trigger: pull_request
+    targets:
+      - fedora-rawhide-x86_64
+      - centos-stream-10-x86_64
+    tmt_plan: /tests/tmt/plans/smoke
