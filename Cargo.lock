@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.16.10"
+version = "1.16.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd516789b3f7657d780a56f22fba9b20510d7389d8cbef6a0ec07d94b064df93"
+checksum = "768dd09c41fdc24f96d97bfce13582fb36fca36c94ca7adac6ce316be073e002"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -137,9 +137,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-mount"
-version = "1.16.11"
+version = "1.16.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "102fd10588989152a7890a7a8a1fba19cfbbfaece3a0565942f2e8ea7a599c26"
+checksum = "f545f0436e9d56320af1c49390fc7c78b083d91d1fd509619d6cc3fe41f331c9"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
@@ -155,9 +155,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-utils"
-version = "1.16.11"
+version = "1.16.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ef5845cbdaa40abd824d47ab4aa02d8264950b2016adc6e04272d88c1ca6bff"
+checksum = "7106d62a6c512eaa839b576e01e7e36386af559267d846bc91781dc4845bff67"
 dependencies = [
  "anstream",
  "anyhow",
@@ -1451,9 +1451,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "virtfw-libefi"
-version = "0.6.4"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8508c830cd7bd67ed6103ddc02a04b7aabfe6d2d57b1a1767ff8ec20b706a39"
+checksum = "2f69a9745fa54a9f4964dc7b5188d83e4f649eeaf65ad91a3bbb511bcfcba1eb"
 dependencies = [
  "bitfield-struct",
  "byteorder",
