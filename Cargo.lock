@@ -196,7 +196,6 @@ dependencies = [
  "log",
  "openssl",
  "os-release",
- "rpm-version",
  "rustix",
  "serde",
  "serde_json",
@@ -1064,12 +1063,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "rpm-version"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61e5905b7c264d3aec4c631f6a90f0b68bec5bcf9dc0be2bb793c4cf797eae7d"
 
 [[package]]
 name = "rustix"

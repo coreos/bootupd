@@ -86,7 +86,7 @@ bootupctl status > out.txt
 evr=$(rpm -q grub2-common --qf '%{EVR}')
 assert_file_has_content_literal out.txt 'Component EFI'
 if  $efilib_exists; then
-    assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+    assert_file_has_content_literal out.txt '  Installed: grub2 '"${evr}"
 else
     assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
 fi
@@ -131,11 +131,11 @@ mv new.json ${bootupdir}/EFI.json
 bootupctl status | tee out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
 if  $efilib_exists; then
-    assert_file_has_content_literal out.txt '  Installed: grub2-'"${evr}"
+    assert_file_has_content_literal out.txt '  Installed: grub2 '"${evr}"
 else
     assert_file_has_content_literal out.txt '  Installed: grub2-efi-x64-'
 fi
-assert_not_file_has_content out.txt '  Installed: grub2-.*,test'
+assert_not_file_has_content out.txt '  Installed: grub2 .*,test'
 assert_file_has_content_literal out.txt 'Update: Available:'
 ok update avail
 
@@ -143,17 +143,17 @@ bootupctl status --json > status.json
 jq -r '.components.EFI.installed.version' < status.json > installed.txt
 
 if  $efilib_exists; then
-    assert_file_has_content installed.txt '^grub2-'"${evr}"
+    assert_file_has_content installed.txt '^grub2 '"${evr}"
 else
     assert_file_has_content installed.txt '^grub2-efi-x64'
 fi
 
 bootupctl update | tee out.txt
-assert_file_has_content out.txt 'Updated EFI: grub2-.*,test'
+assert_file_has_content out.txt 'Updated EFI: grub2 .*,test'
 
 bootupctl status > out.txt
 assert_file_has_content_literal out.txt 'Component EFI'
-assert_file_has_content out.txt '  Installed: grub2-.*,test'
+assert_file_has_content out.txt '  Installed: grub2 .*,test'
 assert_file_has_content_literal out.txt 'Update: At latest version'
 ok status after update
 
