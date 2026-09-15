@@ -1,0 +1,62 @@
+name: TMT Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      plan_filter:
+        description: Test plan filter, for example tag:smoke.
+        required: false
+        default: ''
+      use_built_from_src:
+        description: Build bootupd from source instead of installing a distribution package.
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  tmt-tests:
+    runs-on: ubuntu-latest
+    env:
+      PLAN_FILTER: ${{ github.event.inputs.plan_filter }}
+      USE_BUILT_FROM_SRC: ${{ github.event.inputs.use_built_from_src || 'true' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set additional paths
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          set -xeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman
+          pip install --user 'tmt[provision-container]'
+
+      - name: Build bootupd
+        if: env.USE_BUILT_FROM_SRC == 'true'
+        run: cargo build --release
+
+      - name: Run TMT tests
+        run: |
+          set -xeuo pipefail
+          TMT_CMD=(tmt)
+          TMT_CMD+=(--context "use_built_from_src=${USE_BUILT_FROM_SRC}")
+          TMT_CMD+=(run --all --debug -vvv)
+          if [[ -n "${PLAN_FILTER}" ]]; then
+            TMT_CMD+=(plan --filter "${PLAN_FILTER}")
+          fi
+          if [[ "${ACT:-}" == true ]]; then
+            TMT_CMD+=(provision --how local --feeling-safe)
+          else
+            TMT_CMD+=(provision --how container)
+          fi
+          "${TMT_CMD[@]}"
