@@ -65,7 +65,7 @@ fn get_parent_device(root: &Dir) -> Result<Device> {
 
 impl SavedState {
     /// System-wide bootupd write lock (relative to sysroot).
-    const WRITE_LOCK_PATH: &'static str = "run/bootupd-lock";
+    pub(crate) const WRITE_LOCK_PATH: &'static str = "run/bootupd-lock";
     /// Top-level directory for statefile (relative to sysroot).
     pub(crate) const STATEFILE_DIR: &'static str = "boot";
     /// On-disk bootloader statefile, akin to a tiny rpm/dpkg database,
