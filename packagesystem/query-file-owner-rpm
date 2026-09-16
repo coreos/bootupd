@@ -8,7 +8,7 @@ export LANG=C
 
 # Usage: ./query-file-owner [FILE] [FILE...]
 if [ "$#" -eq 0 ]; then
-    echo "Usage: $0 [FILE] [FILE...]"
+    echo "Usage: $0 [FILE] [FILE...]" >&2
     exit 1
 fi
 
