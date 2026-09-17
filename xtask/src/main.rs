@@ -27,11 +27,13 @@ fn main() {
 fn try_main() -> Result<()> {
     let task = std::env::args().nth(1);
     let sh = xshell::Shell::new()?;
+    std::env::set_current_dir(sh.current_dir()).context("Changing to project root")?;
     if let Some(cmd) = task.as_deref() {
         let f = match cmd {
             "vendor" => vendor,
             "package" => package,
             "package-srpm" => package_srpm,
+            "spec" => spec,
             _ => print_help,
         };
         f(&sh)?;
@@ -130,7 +132,7 @@ fn impl_package(sh: &Shell) -> Result<Package> {
     let v = gitrev(sh)?;
 
     let namev = format!("{NAME}-{v}");
-    let p = Utf8Path::new("target").join(format!("{namev}.tar"));
+    let p = get_target_dir()?.join(format!("{namev}.tar"));
     let prefix = format!("{namev}/");
     cmd!(sh, "git archive --format=tar --prefix={prefix} -o {p} HEAD").run()?;
     // Generate the vendor directory now, as we want to embed the generated config to use
@@ -243,10 +245,38 @@ fn package_srpm(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
+fn spec(sh: &Shell) -> Result<()> {
+    let pkg = impl_package(sh)?;
+    let specin = File::open(format!("contrib/packaging/{NAME}.spec"))
+        .map(BufReader::new)
+        .context("Opening spec")?;
+    let mut output = BufWriter::new(
+        File::create(format!("target/{NAME}.spec")).context("Creating generated spec")?,
+    );
+
+    for line in specin.lines() {
+        let line = line?;
+        if line.starts_with("Version:") {
+            writeln!(output, "Version:        {}", pkg.version)?;
+        } else if line.starts_with("Source0:") {
+            writeln!(output, "Source0:        {}", pkg.srcpath.file_name().unwrap())?;
+        } else if line.starts_with("Source1:") {
+            writeln!(output, "Source1:        {}", pkg.vendorpath.file_name().unwrap())?;
+        } else {
+            writeln!(output, "{line}")?;
+        }
+    }
+
+    Ok(())
+}
+
 fn print_help(_sh: &Shell) -> Result<()> {
     eprintln!(
         "Tasks:
   - vendor
+  - package
+  - package-srpm
+  - spec
 "
     );
     Ok(())
