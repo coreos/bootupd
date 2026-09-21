@@ -19,6 +19,7 @@ env:
 
 jobs:
   bootc-e2e:
+    if: github.repository == 'coreos/bootupd'
     strategy:
       matrix:
         runner:
