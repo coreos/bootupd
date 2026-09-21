@@ -40,22 +40,13 @@ jobs:
     runs-on: [ "${{ matrix.runner }}" ]
 
     steps:
-      - name: Install QEMU and OVMF for VM boot tests
-        if: ${{ matrix.runner == 'ubuntu-24.04' }}
-        shell: bash
-        run: |
-          set -xeuo pipefail
-          sudo apt install -y qemu-utils qemu-kvm ovmf
+      - uses: bootc-dev/actions/bootc-ubuntu-setup@fdfe1dc66edbfa03897ab619a5c037fb8f5339ff
+        with:
+          libvirt: ${{ matrix.runner == 'ubuntu-24.04' && 'true' || 'false' }}
 
-      - name: Enable unprivileged /dev/kvm access
+      - name: Install OVMF for UEFI VM boot tests
         if: ${{ matrix.runner == 'ubuntu-24.04' }}
-        shell: bash
-        run: |
-          set -xeuo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
+        run: sudo apt-get install -y ovmf
 
       - name: Setup env
         run: |
@@ -71,28 +62,7 @@ jobs:
           echo "IMG_NAME=${IMG_NAME}" >> "$GITHUB_ENV"
           echo "OS_ID=${OS_ID}" >> "$GITHUB_ENV"
 
-      - name: Get a newer podman for heredoc support (from debian testing)
-        run: |
-          set -eux
-          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
-          sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 6ED0E7B82643E131 78DBA3BC47EF2265
-          sudo apt update
-          DIVERSION_PATHS="lib32 libo32 lib64"
-          for PATH_NAME in $DIVERSION_PATHS; do
-            sudo dpkg-divert --remove --package base-files --divert /$PATH_NAME.usr-is-merged /$PATH_NAME || true
-            sudo dpkg-divert --remove --package base-files --divert /.$PATH_NAME.usr-is-merged /$PATH_NAME || true
-          done
-          sudo dpkg --configure -a
-          sudo apt --fix-broken install
-          sudo apt install -y crun/testing podman/testing skopeo/testing
-
       - uses: actions/checkout@v7
-
-      - name: Install podman
-        if: ( matrix.runner == 'ubuntu-24.04-arm' )
-        run: |
-          sudo apt update -y
-          sudo apt install -y podman
 
       - name: build with grubcc=${{ matrix.grubcc }}
         run: |
