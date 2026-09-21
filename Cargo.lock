@@ -116,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.16.12"
+version = "1.16.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "768dd09c41fdc24f96d97bfce13582fb36fca36c94ca7adac6ce316be073e002"
+checksum = "c598cfd379ff81a4ac25ec0931db4b0c2c937e5f313cfe68c8823871399e4248"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -137,9 +137,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-mount"
-version = "1.16.12"
+version = "1.16.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f545f0436e9d56320af1c49390fc7c78b083d91d1fd509619d6cc3fe41f331c9"
+checksum = "c4942155e18fe1c8af008b44c09043104b3afe8c14dba57e333bdb533fb896eb"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
@@ -155,9 +155,9 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-utils"
-version = "1.16.12"
+version = "1.16.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7106d62a6c512eaa839b576e01e7e36386af559267d846bc91781dc4845bff67"
+checksum = "586a7d49f9233cfb816eecbd84f5276fc9c1f6128b0a68e2f02050e830673aca"
 dependencies = [
  "anstream",
  "anyhow",
@@ -168,7 +168,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex 2.0.1",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-journald",
@@ -226,9 +225,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "camino"
-version = "1.2.5"
+version = "1.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb1307f12aa967b5a58416e87b3653360e0fd614a016b6e970db08fecbb1b80d"
+checksum = "bbbad30e4b4c14a39e3cc8aed085a12a327257c316619c93581e017bc52be591"
 dependencies = [
  "serde_core",
 ]
@@ -1066,9 +1065,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
 dependencies = [
  "bitflags",
  "errno",
