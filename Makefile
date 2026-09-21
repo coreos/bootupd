@@ -28,7 +28,8 @@ all:
 install: query-file-$(PACKAGESYSTEM)
 	mkdir -p "${DESTDIR}$(PREFIX)/bin" "${DESTDIR}$(LIBEXECDIR)"
 	install -D -t "${DESTDIR}$(LIBEXECDIR)" target/${PROFILE}/bootupd
-	cd "${DESTDIR}$(PREFIX)/bin" && ln -sf ../libexec/bootupd bootupctl
+	ln -srf "${DESTDIR}$(LIBEXECDIR)/bootupd" \
+		"${DESTDIR}$(PREFIX)"/bin/bootupctl
 
 .PHONY: query-file-$(PACKAGESYSTEM)
 query-file-$(PACKAGESYSTEM):
