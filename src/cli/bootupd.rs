@@ -108,15 +108,22 @@ pub struct DefaultBootloaderOpts {
     pub(crate) bootloader: Bootloader,
 }
 
+impl DVerb {
+    /// Run this verb; shared by `bootupd` and `bootupctl backend`.
+    pub(crate) fn run(self) -> Result<()> {
+        match self {
+            DVerb::Install(opts) => DCommand::run_install(opts),
+            DVerb::GenerateUpdateMetadata(opts) => DCommand::run_generate_meta(opts),
+            #[cfg(efi_arch)]
+            DVerb::SetDefaultBootloader(opts) => DCommand::set_default_bootloader(opts),
+        }
+    }
+}
+
 impl DCommand {
     /// Run CLI application.
     pub fn run(self) -> Result<()> {
-        match self.cmd {
-            DVerb::Install(opts) => Self::run_install(opts),
-            DVerb::GenerateUpdateMetadata(opts) => Self::run_generate_meta(opts),
-            #[cfg(efi_arch)]
-            DVerb::SetDefaultBootloader(opts) => Self::set_default_bootloader(opts),
-        }
+        self.cmd.run()
     }
 
     /// Runner for `generate-install-metadata` verb.

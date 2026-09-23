@@ -52,7 +52,7 @@ pub enum CtlVerb {
     // FIXME(lucab): drop this after refreshing
     // https://github.com/coreos/fedora-coreos-config/pull/595
     #[clap(name = "backend", hide = true, subcommand)]
-    Backend(CtlBackend),
+    Backend(super::bootupd::DVerb),
     #[clap(name = "status", about = "Show components status")]
     Status(StatusOpts),
     #[clap(name = "update", about = "Update all components")]
@@ -67,17 +67,6 @@ pub enum CtlVerb {
         about = "Migrate a system to a static GRUB config"
     )]
     MigrateStaticGrubConfig,
-}
-
-#[derive(Debug, Parser)]
-pub enum CtlBackend {
-    #[clap(name = "generate-update-metadata", hide = true)]
-    Generate(super::bootupd::GenerateOpts),
-    #[clap(name = "install", hide = true)]
-    Install(super::bootupd::InstallOpts),
-    #[clap(hide = true)]
-    #[cfg(efi_arch)]
-    SetDefaultBootloader(super::bootupd::DefaultBootloaderOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -123,16 +112,7 @@ impl CtlCommand {
             CtlVerb::Update(opts) => Self::run_update(opts),
             CtlVerb::AdoptAndUpdate(opts) => Self::run_adopt_and_update(opts),
             CtlVerb::Validate => Self::run_validate(),
-            CtlVerb::Backend(CtlBackend::Generate(opts)) => {
-                super::bootupd::DCommand::run_generate_meta(opts)
-            }
-            CtlVerb::Backend(CtlBackend::Install(opts)) => {
-                super::bootupd::DCommand::run_install(opts)
-            }
-            #[cfg(efi_arch)]
-            CtlVerb::Backend(CtlBackend::SetDefaultBootloader(opts)) => {
-                super::bootupd::DCommand::set_default_bootloader(opts)
-            }
+            CtlVerb::Backend(verb) => verb.run(),
             CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
         }
     }
