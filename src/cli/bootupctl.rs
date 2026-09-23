@@ -49,10 +49,6 @@ impl CtlCommand {
 /// CLI sub-commands.
 #[derive(Debug, Parser)]
 pub enum CtlVerb {
-    // FIXME(lucab): drop this after refreshing
-    // https://github.com/coreos/fedora-coreos-config/pull/595
-    #[clap(name = "backend", hide = true, subcommand)]
-    Backend(super::bootupd::DVerb),
     #[clap(name = "status", about = "Show components status")]
     Status(StatusOpts),
     #[clap(name = "update", about = "Update all components")]
@@ -61,6 +57,14 @@ pub enum CtlVerb {
     AdoptAndUpdate(AdoptAndUpdateOpts),
     #[clap(name = "validate", about = "Validate system state")]
     Validate,
+    /// Low-level commands for building and installing OS images
+    ///
+    /// These act on an OS tree or target root rather than on the running
+    /// system, and are intended for image build and installation tooling
+    /// (e.g. `bootc install` or disk image builders). To update the
+    /// bootloader of a booted system, use `update` or `adopt-and-update`.
+    #[clap(name = "backend", subcommand)]
+    Backend(super::bootupd::DVerb),
     #[clap(
         name = "migrate-static-grub-config",
         hide = true,

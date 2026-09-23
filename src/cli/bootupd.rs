@@ -36,10 +36,21 @@ impl DCommand {
 /// CLI sub-commands.
 #[derive(Debug, Parser)]
 pub enum DVerb {
-    #[clap(name = "generate-update-metadata", about = "Generate metadata")]
+    /// Generate update metadata from the bootloader files in an OS tree
+    ///
+    /// Run this at image build time. It records the bootloader component
+    /// versions (e.g. from the RPM database) under /usr/lib/bootupd/updates,
+    /// which `install` and `update` later use as their source.
+    #[clap(name = "generate-update-metadata")]
     GenerateUpdateMetadata(GenerateOpts),
-    #[clap(name = "install", about = "Install components")]
+    /// Install bootloader components to a target root
+    ///
+    /// Used when creating a disk image or installing a system: copies the
+    /// update payload from the source root into the target's ESP and/or
+    /// boot partition, and installs to the target block device(s) as needed.
+    #[clap(name = "install")]
     Install(InstallOpts),
+    /// Set the default bootloader on EFI systems
     #[cfg(efi_arch)]
     SetDefaultBootloader(DefaultBootloaderOpts),
 }
@@ -94,7 +105,7 @@ pub(crate) struct InstallOpts {
 
 #[derive(Debug, Parser)]
 pub struct GenerateOpts {
-    /// Physical root mountpoint
+    /// Root of the OS tree (only `/` is currently supported)
     #[clap(value_parser)]
     sysroot: Option<String>,
 }
