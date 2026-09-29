@@ -577,17 +577,65 @@ pub(crate) fn adopt_and_update(
 /// Get the block device backing the current root by trying `/boot` first,
 /// then falling back to `/sysroot`. This avoids issues with virtual
 /// filesystems like composefs that are mounted on `/`.
-#[context("Finding block device from boot or sysroot")]
-pub(crate) fn list_dev_current_root() -> Result<Device> {
-    let auth = cap_std::ambient_authority();
-    for path in ["/boot", "/sysroot"] {
-        if let Ok(dir) = Dir::open_ambient_dir(path, auth) {
-            if let Ok(dev) = bootc_internal_blockdev::list_dev_by_dir(&dir) {
-                return Ok(dev);
-            }
+///
+/// Returns `Ok(None)` when no block-backed filesystem is found (e.g. virtiofs
+/// in bcvk ephemeral, NFS root, ISO boot), so callers can skip gracefully.
+/// Any other failure is an error.
+#[context("Finding block device from /boot or /sysroot")]
+pub(crate) fn list_dev_current_root() -> Result<Option<Device>> {
+    let root = Dir::open_ambient_dir("/", ambient_authority()).context("Opening /")?;
+    for path in ["boot", "sysroot"] {
+        if let Some(dev) = list_dev_of_mount(&root, path)? {
+            return Ok(Some(dev));
         }
     }
-    anyhow::bail!("Failed to find block device from /boot or /sysroot")
+    Ok(None)
+}
+
+/// Get the block device backing the filesystem mounted at `path`, or `None`
+/// if `path` does not exist, is not a mountpoint, or is not block-backed.
+#[context("Finding block device for {path}")]
+fn list_dev_of_mount(root: &Dir, path: &str) -> Result<Option<Device>> {
+    let Some(dir) = root.open_dir_optional(path)? else {
+        return Ok(None);
+    };
+    // `None` means the kernel can't tell us; let findmnt decide below.
+    if dir.is_mountpoint(".")? == Some(false) {
+        return Ok(None);
+    }
+    list_dev_by_dir_optional(&dir)
+}
+
+/// The statfs magic of ZFS (`ZFS_SUPER_MAGIC` in OpenZFS), which libc lacks.
+const ZFS_SUPER_MAGIC: u32 = 0x2fc12fc1;
+
+/// Whether a filesystem with the given `st_dev` and statfs magic is backed by
+/// a block device.
+///
+/// The kernel gives filesystems without one (virtiofs, NFS, tmpfs,
+/// overlayfs, ...) an anonymous device number, whose major is 0. btrfs and
+/// ZFS get anonymous device numbers too (btrfs one per subvolume) even though
+/// they sit on block devices, so those are recognized by their magic.
+fn is_block_backed(st_dev: u64, fs_magic: u32) -> bool {
+    rustix::fs::major(st_dev) != 0
+        || fs_magic == libc::BTRFS_SUPER_MAGIC as u32
+        || fs_magic == ZFS_SUPER_MAGIC
+}
+
+/// List the device containing the filesystem mounted at `dir`, or `None` if
+/// that filesystem is not backed by a block device.
+///
+/// TODO: Replace with `bootc_internal_blockdev::list_dev_by_dir_optional`
+/// once a bootc release has it; this is a copy.
+fn list_dev_by_dir_optional(dir: &Dir) -> Result<Option<Device>> {
+    let st_dev = rustix::fs::fstat(dir)?.st_dev;
+    // Filesystem magic numbers are 32 bits; f_type's width varies by arch.
+    let fs_magic = rustix::fs::fstatfs(dir)?.f_type as u32;
+    if !is_block_backed(st_dev, fs_magic) {
+        log::debug!("No block device: st_dev={st_dev:#x} f_type={fs_magic:#x}");
+        return Ok(None);
+    }
+    bootc_internal_blockdev::list_dev_by_dir(dir).map(Some)
 }
 
 /// daemon implementation of component validate
@@ -597,7 +645,9 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    let device = list_dev_current_root()?;
+    let Some(device) = list_dev_current_root()? else {
+        return Ok(ValidationResult::Skip);
+    };
     component.validate(inst, &device)
 }
 
@@ -771,17 +821,27 @@ impl RootContext {
     }
 }
 
-/// Initialize parent devices to prepare the update
-fn prep_before_update() -> Result<RootContext> {
+/// Initialize parent devices to prepare the update.
+///
+/// Returns `Ok(None)` when no block-backed boot filesystem is found,
+/// so the caller can skip the update gracefully.
+fn prep_before_update() -> Result<Option<RootContext>> {
     let path = "/";
     let sysroot = Dir::open_ambient_dir(path, ambient_authority()).context("Opening root dir")?;
-    let device = list_dev_current_root()?;
-    Ok(RootContext::new(sysroot, path, device))
+    let Some(device) = list_dev_current_root()? else {
+        println!(
+            "No block-backed boot filesystem found; bootloader update is not applicable, skipping."
+        );
+        return Ok(None);
+    };
+    Ok(Some(RootContext::new(sysroot, path, device)))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
     crate::try_fail_point!("update");
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.components.is_empty() && status.adoptable.is_empty() {
         println!("No components installed.");
@@ -836,7 +896,9 @@ pub(crate) fn client_run_update() -> Result<()> {
 }
 
 pub(crate) fn client_run_adopt_and_update(with_static_config: bool) -> Result<()> {
-    let rootcxt = prep_before_update()?;
+    let Some(rootcxt) = prep_before_update()? else {
+        return Ok(());
+    };
     let status: Status = status()?;
     if status.adoptable.is_empty() {
         println!("No components are adoptable.");
@@ -1007,6 +1069,50 @@ fn strip_grub_config_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_block_backed() {
+        use rustix::fs::makedev;
+        // Filesystem magic numbers are 32 bits; see list_dev_by_dir_optional.
+        let cases = [
+            (makedev(252, 3), libc::XFS_SUPER_MAGIC as u32, true),
+            (makedev(253, 0), libc::EXT4_SUPER_MAGIC as u32, true),
+            (makedev(0, 38), libc::BTRFS_SUPER_MAGIC as u32, true),
+            (makedev(0, 51), ZFS_SUPER_MAGIC, true),
+            (makedev(0, 29), libc::FUSE_SUPER_MAGIC as u32, false),
+            (makedev(0, 52), libc::NFS_SUPER_MAGIC as u32, false),
+            (makedev(0, 40), libc::OVERLAYFS_SUPER_MAGIC as u32, false),
+            (makedev(0, 23), libc::TMPFS_MAGIC as u32, false),
+        ];
+        for (st_dev, fs_magic, expected) in cases {
+            assert_eq!(
+                is_block_backed(st_dev, fs_magic),
+                expected,
+                "st_dev={st_dev:#x} f_type={fs_magic:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_dev_by_dir_optional_procfs() -> Result<()> {
+        let proc = Dir::open_ambient_dir("/proc", ambient_authority())?;
+        assert!(list_dev_by_dir_optional(&proc)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_dev_of_mount() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Dir::open_ambient_dir(td.path(), ambient_authority())?;
+        // Missing, or a plain directory rather than a mountpoint: skip.
+        assert!(list_dev_of_mount(&root, "boot")?.is_none());
+        root.create_dir("boot")?;
+        assert!(list_dev_of_mount(&root, "boot")?.is_none());
+        // Anything else propagates.
+        root.write("sysroot", "not a directory")?;
+        assert!(list_dev_of_mount(&root, "sysroot").is_err());
+        Ok(())
+    }
 
     #[test]
     fn test_failpoint_update() {
