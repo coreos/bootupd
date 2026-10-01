@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result};
 use chrono::prelude::*;
+use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
@@ -36,6 +37,7 @@ const ALEPH_PATHS: &[&str] = &[
     "sysroot/.bootc-aleph.json",
 ];
 
+#[context("Getting aleph version")]
 pub(crate) fn get_aleph_version(root: &Path) -> Result<Option<AlephWithTimestamp>> {
     for aleph_path in ALEPH_PATHS {
         let path = &root.join(aleph_path);
