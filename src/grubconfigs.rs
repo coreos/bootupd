@@ -174,12 +174,19 @@ fn write_grubenv(grubdir: &Dir) -> Result<()> {
         .run_inherited_with_cmd_context()
 }
 
-#[context("Ensure file permissions are 0600")]
+#[context("Ensure file permissions are {GRUBCONFIG_FILE_MODE:04o}")]
 fn ensure_file_permissions(target_dir: &Dir, target_file: &str) -> Result<()> {
-    let metadata = match target_dir.metadata(target_file) {
+    use std::os::unix::fs::PermissionsExt;
+
+    // grub.cfg may be a symlink pointing outside this Dir cap_std refuses to traverse
+    // such symlinks via openat, so resolve through /proc/self/fd
+    let absolute_path = format!("/proc/self/fd/{}/{target_file}", target_dir.as_raw_fd());
+
+    let metadata = match std::fs::metadata(&absolute_path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Silently return if file doesn't exist
+            log::debug!("File {target_file} not found");
             return Ok(());
         }
         Err(e) => return Err(e).context(format!("Reading {} metadata", target_file)),
@@ -187,14 +194,21 @@ fn ensure_file_permissions(target_dir: &Dir, target_file: &str) -> Result<()> {
 
     let mode = metadata.permissions().mode() & 0o777;
     if mode != GRUBCONFIG_FILE_MODE {
-        target_dir
-            .set_permissions(target_file, Permissions::from_mode(GRUBCONFIG_FILE_MODE))
-            .with_context(|| format!("Setting {} permissions to 0600", target_file))?;
+        std::fs::set_permissions(
+            absolute_path,
+            std::fs::Permissions::from_mode(GRUBCONFIG_FILE_MODE),
+        )
+        .with_context(|| {
+            format!(
+                "Setting {} permissions to {GRUBCONFIG_FILE_MODE:04o}",
+                target_file
+            )
+        })?;
     }
     Ok(())
 }
 
-#[context("Ensure grub files permissions are 0600")]
+#[context("Ensure grub files permissions are {GRUBCONFIG_FILE_MODE:04o}")]
 pub(crate) fn ensure_grub_permissions(grub_dir: &Dir) -> Result<()> {
     for file_name in GRUB_FILES.iter() {
         ensure_file_permissions(&grub_dir, file_name)
@@ -251,7 +265,7 @@ mod tests {
         {
             let metadata = td.metadata("grubenv")?;
             let mode = metadata.permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
+            assert_eq!(mode, GRUBCONFIG_FILE_MODE);
         }
         Ok(())
     }
@@ -285,11 +299,29 @@ mod tests {
 
         // Verify grubenv was fixed to 0o600
         let metadata = grub_dir.metadata("grubenv")?;
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.permissions().mode() & 0o777, GRUBCONFIG_FILE_MODE);
 
         // Verify grub.cfg was fixed 0o600
         let metadata = grub_dir.metadata("grub.cfg")?;
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.permissions().mode() & 0o777, GRUBCONFIG_FILE_MODE);
+
+        use std::os::unix::fs::PermissionsExt;
+
+        // Test it with symlinks pointing outside the grub2 dir
+        // Create the symlink target outside the grub2 dir, with wrong perms
+        let external_target = tdp.join("external-grub.cfg");
+        std::fs::write(&external_target, "external grub.cfg content")?;
+        std::fs::set_permissions(&external_target, std::fs::Permissions::from_mode(0o644))?;
+
+        grub_dir.remove_file("grub.cfg")?;
+        std::os::unix::fs::symlink(&external_target, grub.join("grub.cfg"))?;
+
+        ensure_grub_permissions(&grub_dir)?;
+
+        // Verify grub.cfg was fixed 0o600
+        let metadata = std::fs::metadata(&external_target)?;
+        assert_eq!(metadata.permissions().mode() & 0o777, GRUBCONFIG_FILE_MODE);
+
         Ok(())
     }
 }
