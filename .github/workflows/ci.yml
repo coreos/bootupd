@@ -161,4 +161,10 @@ jobs:
         run: |
           set -xeuo pipefail
           sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "ostree"
-          sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "composefs"
+
+          # TODO: Skip composefs tests for C10S as bootc 1.16.3 uses composefs.digest=
+          # cmdline, but for some reason that cmdline is not mentioned in 
+          # bootc-root-setup.service
+          if [[ "${{ matrix.stream }}" != "10" ]]; then
+            sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "composefs"
+          fi
