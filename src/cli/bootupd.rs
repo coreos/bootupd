@@ -1,5 +1,7 @@
 use crate::bootloader::Bootloader;
 use crate::bootupd::{self, ConfigMode};
+#[cfg(efi_arch)]
+use crate::varlink;
 use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std::ambient_authority;
@@ -42,6 +44,9 @@ pub enum DVerb {
     Install(InstallOpts),
     #[cfg(efi_arch)]
     SetDefaultBootloader(DefaultBootloaderOpts),
+    #[cfg(efi_arch)]
+    #[clap(name = "varlink", hide = true, about = "Run the varlink service")]
+    Varlink,
 }
 
 #[derive(Debug, Parser)]
@@ -116,6 +121,8 @@ impl DCommand {
             DVerb::GenerateUpdateMetadata(opts) => Self::run_generate_meta(opts),
             #[cfg(efi_arch)]
             DVerb::SetDefaultBootloader(opts) => Self::set_default_bootloader(opts),
+            #[cfg(efi_arch)]
+            DVerb::Varlink => Self::run_varlink_service(),
         }
     }
 
@@ -177,5 +184,10 @@ impl DCommand {
         }
 
         Ok(())
+    }
+
+    #[cfg(efi_arch)]
+    fn run_varlink_service() -> Result<()> {
+        varlink::run_varlink_service()
     }
 }
