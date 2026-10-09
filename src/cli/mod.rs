@@ -59,6 +59,23 @@ mod tests {
     }
 
     #[test]
+    fn backend_is_documented() {
+        use clap::CommandFactory;
+        let ctl = bootupctl::CtlCommand::command();
+        let backend = ctl.find_subcommand("backend").unwrap();
+        assert!(!backend.is_hide_set());
+        assert!(backend.get_about().is_some());
+        for verb in backend.get_subcommands() {
+            assert!(!verb.is_hide_set(), "{} is hidden", verb.get_name());
+            assert!(
+                verb.get_about().is_some(),
+                "{} has no help",
+                verb.get_name()
+            );
+        }
+    }
+
+    #[test]
     fn test_multicall_dispatch() {
         {
             let d_argv = vec![
