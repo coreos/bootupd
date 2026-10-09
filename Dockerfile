@@ -33,6 +33,11 @@ if [ "$ID" = "centos" ]; then
   dnf -y copr enable rhcontainerbot/bootc centos-stream-${VERSION_ID}-$(uname -m)
 fi
 dnf -y install bootc
+# The copr bootc can be newer than the one in the base image's initramfs;
+# a newer bootc with an older initramfs is unsupported (e.g. it can write
+# composefs kargs the old initramfs doesn't recognize), so regenerate it.
+kver=$(cd /usr/lib/modules && echo *)
+dracut --force --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"
 dnf clean all
 rm -rf /var/log
 rm -rf /var/lib
