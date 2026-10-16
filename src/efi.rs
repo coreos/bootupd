@@ -53,6 +53,15 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
 
+#[cfg(target_arch = "aarch64")]
+const GRUB_EFI_MODULE_DIR: &str = "arm64-efi";
+
+#[cfg(target_arch = "x86_64")]
+const GRUB_EFI_MODULE_DIR: &str = "x86_64-efi";
+
+#[cfg(target_arch = "riscv64")]
+const GRUB_EFI_MODULE_DIR: &str = "riscv64-efi";
+
 /// The mount path for uefi
 const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 
@@ -62,6 +71,38 @@ const STUB_INFO_VAR_STR: &str = "StubInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
 /// The options of cp command for installation
 const OPTIONS: &[&str] = &["-rp", "--reflink=auto"];
+
+// GRUB needs FAT filesystem and chainloading support to be able to boot UKIs.
+// Both may be packaged as external modules (not builtin), so copy them in to be safe.
+const GRUB_EFI_MODULES: [&str; 2] = ["fat.mod", "chain.mod"];
+
+/// Copy the external modules for booting UKIs to /boot when the image provides
+/// them. A GRUB EFI binary may already contain these modules.
+fn install_grub_efi_modules(source_root: &Dir, target_root: &Dir) -> Result<()> {
+    let target_dir = format!("boot/{}/{GRUB_EFI_MODULE_DIR}", grubconfigs::GRUB2DIR);
+
+    for module in GRUB_EFI_MODULES {
+        let source = format!("usr/lib/grub/{GRUB_EFI_MODULE_DIR}/{module}");
+        if !source_root.try_exists(&source)? {
+            continue;
+        }
+
+        target_root.create_dir_all(&target_dir)?;
+        let target = target_root.open_dir(&target_dir)?;
+        target
+            .atomic_replace_with(module, |f| -> std::io::Result<()> {
+                let mut source = source_root.open(&source)?;
+                std::io::copy(&mut source, f)?;
+                f.get_ref()
+                    .as_file()
+                    .set_permissions(source.metadata()?.permissions())?;
+                Ok(())
+            })
+            .with_context(|| format!("Installing GRUB module {module}"))?;
+    }
+
+    Ok(())
+}
 
 /// Check if the given path is a mount point via statx(MOUNT_ROOT).
 fn is_mount_point(path: &Path) -> Result<bool> {
@@ -476,6 +517,9 @@ impl Component for Efi {
             drop(efidir);
             self.unmount().context("unmount after adopt")?;
         }
+        if get_bootloader()? == Bootloader::Grub {
+            install_grub_efi_modules(&rootcxt.sysroot, &rootcxt.sysroot)?;
+        }
         Ok(Some(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
@@ -573,6 +617,11 @@ impl Component for Efi {
                 }
             }
         }
+        if bootloader == Bootloader::Grub {
+            let dest_root = Dir::open_ambient_dir(dest_root, ambient_authority())
+                .with_context(|| format!("opening destination root {dest_root}"))?;
+            install_grub_efi_modules(&src_dir, &dest_root)?;
+        }
         Ok(InstalledContent {
             meta,
             filetree: Some(ft),
@@ -638,6 +687,9 @@ impl Component for Efi {
             fsfreeze_thaw_cycle(destdir.reopen_as_ownedfd()?)?;
             drop(destdir);
             self.unmount().context("unmount after update")?;
+        }
+        if bootloader == Bootloader::Grub {
+            install_grub_efi_modules(&rootcxt.sysroot, &rootcxt.sysroot)?;
         }
 
         let adopted_from = None;
