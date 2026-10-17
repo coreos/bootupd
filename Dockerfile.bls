@@ -19,34 +19,10 @@ RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/rooth
     make && make install-all DESTDIR=/out
 
 
-# Get the latest GrubCC binary
-FROM quay.io/fedora/eln:latest AS grub-cc-download
-RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF
-set -eux
-
-# There isn't a generic grub2-efi-cc package that DNF can automatically resolve
-case "$(uname -m)" in
-    x86_64)
-        dnf download grub2-efi-x64-cc
-        ;;
-    aarch64)
-        dnf download grub2-efi-aa64-cc
-        ;;
-    *)
-        echo "Unsupported architecture: $(uname -m)" >&2
-        exit 1
-        ;;
-esac
-
-mv ./*.rpm grub-cc.rpm
-
-EOF
-
 FROM $base
 # Clean out the default to ensure we're using our updated content
 RUN rpm -e bootupd
 COPY --from=build /out/ /
-COPY --from=grub-cc-download /grub-cc.rpm /var/grub-cc.rpm
 # Install bootc from copr
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EORUN
 set -xeuo pipefail
@@ -90,6 +66,24 @@ cleanup() {
     # Clean up temporary files
     rm -rvf /var/grub-cc*
 }
+
+# HACK: fetch grub-cc from Fedora Koji since there is currently no reliable source for grub-cc.
+# NOTE: the referenced build may eventually be garbage collected.
+case "$(uname -m)" in
+    x86_64)
+        grub_cc_url=https://kojipkgs.fedoraproject.org/packages/grub2/2.12/60.eln156/x86_64/grub2-efi-x64-cc-2.12-60.eln156.x86_64.rpm
+        ;;
+    aarch64)
+        grub_cc_url=https://kojipkgs.fedoraproject.org/packages/grub2/2.12/60.eln156/aarch64/grub2-efi-aa64-cc-2.12-60.eln156.aarch64.rpm
+        ;;
+    *)
+        echo "Unsupported architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
+curl --fail --location --retry 5 --retry-all-errors --retry-delay 1 \
+    --output /var/grub-cc.rpm "$grub_cc_url"
 
 # Extract and install grub-cc at the correct path
 mkdir /var/grub-cc
