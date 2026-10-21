@@ -15,7 +15,7 @@ fi
 for FILE in "$@"; do
     # Use your package manager to find the package that owns the file
     # Package Manager should return two space-separated values: NAME and VERSION
-    dpkg-query -W -f '${Package} ${Version}\n' \
-        $(dpkg -S "$FILE" | cut -d: -f1 | tr ',' ' ')
+    ABS_FILE=$(realpath "$FILE")
+    PKG=$(dpkg -S "$ABS_FILE" | cut -d: -f1 | tr ',' ' ')
+    dpkg-query -W -f '${Package} ${Version}\n' $PKG
 done
-    

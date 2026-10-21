@@ -1,0 +1,66 @@
+name: Package system scripts
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly
+    - cron: '0 0 * * 1'
+  push:
+    branches: ["main"]
+    paths: ['packagesystem/*', '.github/workflows/**']
+  pull_request:
+    branches: ["main"]
+    paths: ['packagesystem/*', '.github/workflows/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-package-system-script-output:
+    runs-on: ubuntu-latest
+    name: Check script output for ${{ matrix.package_manager }} (${{ matrix.image }})
+
+    strategy:
+      matrix:
+        include:
+          - image: alpine:latest
+            package_manager: apk
+          - image: fedora:latest
+            package_manager: rpm
+          - image: ubuntu:latest
+            package_manager: dpkg
+          - image: archlinux:latest
+            package_manager: pacman
+
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Confirm output matches expected format
+        run: |
+          pkg_count="2"
+          output=$(packagesystem/query-file-owner-${{ matrix.package_manager }} /bin/sh /usr/bin/env)
+          printf "Script output:\n%s\n" "${output}"
+          # Verify we got at least one line per queried file
+          line_count=$(echo "${output}" | wc -l)
+          if [ "${line_count}" -lt "${pkg_count}" ]; then
+            echo "ERROR: expected at least ${pkg_count} lines of output, got ${line_count}" >&2
+            exit 1
+          fi
+          # Verify each line matches the expected "NAME VERSION" format
+          echo "${output}" | while IFS= read -r line; do
+            if ! echo "${line}" | grep -qE '^[^ ]+ [^ ]+$'; then
+              echo "ERROR: output line does not match 'NAME VERSION' format: ${line}" >&2
+              exit 1
+            fi
+          done || exit 1
+          echo "All output lines match expected format."
