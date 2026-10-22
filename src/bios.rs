@@ -217,7 +217,19 @@ impl Component for Bios {
         // if /boot/grub2/grub.cfg is file
         if current_config != grub_config {
             println!("Removing {}", current_config);
-            grub_config_dir.remove_file_optional(current_config.as_std_path())?;
+
+            // current_config is an absolute path of the form
+            //
+            // /boot/grub2/../loader/grub.cfg
+            //
+            // as it's a RELATIVE symlink from /boot/grub2/grub.cfg -> /boot/loader/grub.cfg
+            match std::fs::remove_file(current_config.as_std_path()) {
+                Ok(..) => { /* No op */ }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    println!("{} not found for removal", current_config);
+                }
+                Err(e) => Err(e).with_context(|| format!("Removing {current_config}"))?,
+            };
         }
 
         // Synchronize the filesystem containing /boot/grub2 to disk.
