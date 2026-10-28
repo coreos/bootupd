@@ -609,7 +609,7 @@ pub(crate) fn status() -> Result<Status> {
     let root = Dir::open_ambient_dir("/", ambient_authority())?;
 
     // Populate aleph version
-    ret.aleph_version = aleph::get_aleph_version(Path::new("/"))?.map(|a| a.aleph.version);
+    ret.aleph_version = aleph::get_aleph_version(Path::new("/"))?.and_then(|a| a.aleph.version);
 
     // Populate boot method
     #[cfg(any(

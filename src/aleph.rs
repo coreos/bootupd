@@ -22,7 +22,7 @@ use std::path::Path;
 /// See https://github.com/coreos/fedora-coreos-tracker/blob/66d7d00bedd9d5eabc7287b9577f443dcefb7c04/internals/README-internals.md#aleph-version
 pub(crate) struct Aleph {
     #[serde(alias = "build")]
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
 }
 
 pub(crate) struct AlephWithTimestamp {
@@ -91,7 +91,7 @@ mod test {
         std::fs::create_dir(sysroot).context("Creating sysroot")?;
         std::fs::write(root.join(ALEPH_PATHS[0]), V1_ALEPH_DATA).context("Writing aleph")?;
         let aleph = get_aleph_version(root).unwrap().unwrap();
-        assert_eq!(aleph.aleph.version, "32.20201002.dev.2");
+        assert_eq!(aleph.aleph.version, Some("32.20201002.dev.2".into()));
         Ok(())
     }
 
@@ -105,7 +105,7 @@ mod test {
         std::fs::create_dir(sysroot).context("Creating sysroot")?;
         std::fs::write(root.join(ALEPH_PATHS[1]), V1_ALEPH_DATA).context("Writing aleph")?;
         let aleph = get_aleph_version(root).unwrap().unwrap();
-        assert_eq!(aleph.aleph.version, "32.20201002.dev.2");
+        assert_eq!(aleph.aleph.version, Some("32.20201002.dev.2".into()));
         Ok(())
     }
 
@@ -123,7 +123,7 @@ mod test {
         std::fs::write(root.join(ALEPH_PATHS[0]), coreos_data).context("Writing coreos aleph")?;
         std::fs::write(root.join(ALEPH_PATHS[1]), bootc_data).context("Writing bootc aleph")?;
         let aleph = get_aleph_version(root).unwrap().unwrap();
-        assert_eq!(aleph.aleph.version, "coreos-version");
+        assert_eq!(aleph.aleph.version, Some("coreos-version".into()));
         Ok(())
     }
 
@@ -140,7 +140,7 @@ mod test {
         std::fs::write(root.join(target), V1_ALEPH_DATA).context("Writing aleph")?;
         std::os::unix::fs::symlink(target_name, root.join(ALEPH_PATHS[0])).context("Symlinking")?;
         let aleph = get_aleph_version(root).unwrap().unwrap();
-        assert_eq!(aleph.aleph.version, "32.20201002.dev.2");
+        assert_eq!(aleph.aleph.version, Some("32.20201002.dev.2".into()));
         Ok(())
     }
 
@@ -156,14 +156,14 @@ mod test {
     "imgid": "fedora-coreos-32.20201002.dev.2-qemu.x86_64.qcow2"
 }"##;
         let aleph: Aleph = serde_json::from_str(alephdata)?;
-        assert_eq!(aleph.version, "32.20201002.dev.2");
+        assert_eq!(aleph.version, Some("32.20201002.dev.2".into()));
         Ok(())
     }
 
     #[test]
     fn test_parse_aleph() -> Result<()> {
         let aleph: Aleph = serde_json::from_str(V1_ALEPH_DATA)?;
-        assert_eq!(aleph.version, "32.20201002.dev.2");
+        assert_eq!(aleph.version, Some("32.20201002.dev.2".into()));
         Ok(())
     }
 
@@ -196,7 +196,36 @@ mod test {
     "version": "43.20260301.20.dev1"
 }"##;
         let aleph: Aleph = serde_json::from_str(alephdata)?;
-        assert_eq!(aleph.version, "43.20260301.20.dev1");
+        assert_eq!(aleph.version, Some("43.20260301.20.dev1".into()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_null_version_aleph() -> Result<()> {
+        let alephdata = r##"
+    {
+        "version": null,
+        "ref": "fedora/x86_64/coreos/testing-devel",
+        "ostree-commit": "b2ea6159d6274e1bbbb49aa0ef093eda5d53a75c8a793dbe184f760ed64dc862",
+        "timestamp": null
+    }"##;
+
+        let aleph: Aleph = serde_json::from_str(alephdata)?;
+        assert_eq!(aleph.version, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_no_version_aleph() -> Result<()> {
+        let alephdata = r##"
+    {
+        "ref": "fedora/x86_64/coreos/testing-devel",
+        "ostree-commit": "b2ea6159d6274e1bbbb49aa0ef093eda5d53a75c8a793dbe184f760ed64dc862",
+        "timestamp": null
+    }"##;
+
+        let aleph: Aleph = serde_json::from_str(alephdata)?;
+        assert_eq!(aleph.version, None);
         Ok(())
     }
 }

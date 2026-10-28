@@ -271,7 +271,7 @@ pub(crate) fn query_adopt_state() -> Result<Option<Adoptable>> {
     if let Some(aleph) = crate::aleph::get_aleph_version(Path::new("/"))? {
         let meta = ContentMetadata {
             timestamp: aleph.ts,
-            version: aleph.aleph.version,
+            version: aleph.aleph.version.unwrap_or_else(|| "unknown".into()),
             versions: None,
             #[cfg(efi_arch)]
             default_bootloader: None,
