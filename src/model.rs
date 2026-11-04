@@ -17,11 +17,11 @@ pub(crate) const BOOTUPD_UPDATES_DIR: &str = "usr/lib/bootupd/updates";
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ContentMetadata {
-    /// The timestamp, which is used to determine update availability
+    /// The timestamp marking when this metadata was generated
     pub(crate) timestamp: DateTime<Utc>,
-    /// Human readable version number, like ostree it is not ever parsed, just displayed
+    /// Human-readable version string, joined from component versions
     pub(crate) version: String,
-    /// Transfer version into Module struct list
+    /// Human-readable version numbers
     pub(crate) versions: Option<Vec<Module>>,
     /// The default bootloader to install if at install time no bootloader option is
     /// provided
@@ -78,7 +78,7 @@ impl ContentMetadata {
 pub(crate) struct InstalledContent {
     /// Associated metadata
     pub(crate) meta: ContentMetadata,
-    /// Human readable version number, like ostree it is not ever parsed, just displayed
+    /// The [`crate::filetree::FileTree`] representing installed files
     pub(crate) filetree: Option<crate::filetree::FileTree>,
     /// The version this was originally adopted from
     pub(crate) adopted_from: Option<ContentMetadata>,
@@ -116,7 +116,7 @@ pub(crate) struct ComponentStatus {
     pub(crate) interrupted: Option<ContentMetadata>,
     /// Update in the deployed filesystem tree
     pub(crate) update: Option<ContentMetadata>,
-    /// Is true if the version in `update` is different from `installed`
+    /// Is true if the content in `update` is different from `installed`
     pub(crate) updatable: ComponentUpdatable,
     /// Originally adopted version
     pub(crate) adopted_from: Option<ContentMetadata>,
