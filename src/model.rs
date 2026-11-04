@@ -63,10 +63,7 @@ impl ContentMetadata {
     }
 
     pub(crate) fn filter_bootloader(&mut self, bootloader: Bootloader) {
-        let to_remove = Bootloader::iter()
-            .filter(|b| *b != bootloader)
-            .map(|b| b.efi_component_name())
-            .collect::<Vec<_>>();
+        let to_remove = bootloader.dirs_to_skip();
 
         // Version is of type "<bootloader-name>-<rpm_evr>,<bootloader-name>-<rpm_evr>"
         self.version = self
