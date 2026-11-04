@@ -13,6 +13,7 @@ echo "Starting $0"
 current_commit=$(rpm-ostree status --json | jq -r .deployments[0].checksum)
 
 stampfile=/etc/${bn}.upgraded
+stampfile2=/etc/${bn}.changed_content
 if ! test -f ${stampfile}; then
     if test "${current_commit}" = ${TARGET_COMMIT}; then
         fatal "already at ${TARGET_COMMIT}"
@@ -31,6 +32,42 @@ if ! test -f ${stampfile}; then
     runv systemd-run -- systemctl reboot
     touch /run/rebooting
     sleep infinity
+elif test -f ${stampfile2}; then
+    if test "${current_commit}" != ${TARGET_COMMIT2}; then
+        fatal "not at ${TARGET_COMMIT2}"
+    fi
+
+    # Validate that on reboot we're still enforcing. Other branches
+    # covered below.
+    semode=$(getenforce)
+    if test "$semode" != Enforcing; then
+        fatal "SELinux mode is ${semode}"
+    fi
+
+    # Update has a lower EVR than the installed 1.0, but with changed
+    # content, so the update must still be offered and applied.
+    # See https://github.com/coreos/bootupd/issues/1137
+    bootupctl status | tee out.txt
+    assert_file_has_content out.txt 'Installed:.*test_bootupd_payload[- ]1\.0'
+    assert_file_has_content out.txt 'Update: Available:.*test_bootupd_payload[- ]0\.9'
+    ok update avail at lower evr
+
+    tmpefimount=$(mount_tmp_efi)
+    bootupctl update -vvv | tee out.txt
+    assert_file_has_content ${tmpefimount}/EFI/fedora/test-bootupd.efi test-payload-v2
+    assert_file_has_content ${tmpefimount}/EFI/BOOT/test-bootupd1.efi test-payload1-v2
+    ok update applied at lower evr
+
+    bootupctl status --print-if-available > out.txt
+    if test -s out.txt; then
+        fatal "Found available updates: $(cat out.txt)"
+    fi
+    ok no update after lower evr update
+
+    tap_finish
+    touch /run/testtmp/success
+    sync
+    exec poweroff -ff
 else
     if test "${current_commit}" != ${TARGET_COMMIT}; then
         fatal "not at ${TARGET_COMMIT}"
@@ -77,7 +114,7 @@ tmpefimount=$(mount_tmp_efi)
 
 assert_not_has_file ${tmpefimount}/EFI/fedora/test-bootupd.efi
 
-if env FAILPOINTS='update::exchange=return' bootupctl update -vvv 2>err.txt; then
+if env FAILPOINTS='update::exchange=return' bootupctl update -vvv 2> err.txt; then
     fatal "should have errored"
 fi
 assert_file_has_content err.txt "error: .*synthetic failpoint"
@@ -102,6 +139,14 @@ assert_file_has_content out.txt "Adopted and updated: EFI: .*"
 bootupctl validate
 ok adopt-and-update
 
+# Adoption must record content matching the update payload, so no update
+# should be offered right after adopting.
+bootupctl status --print-if-available > out.txt
+if test -s out.txt; then
+    fatal "Found available updates after adopt: $(cat out.txt)"
+fi
+ok no update after adopt
+
 # Verify the adoption does not fail when install files if they are missing on the disk.
 # see https://github.com/coreos/bootupd/issues/762
 rm -f /boot/bootupd-state.json
@@ -109,8 +154,21 @@ rm -f /boot/bootupd-state.json
 bootupctl adopt-and-update | tee out.txt
 assert_file_has_content out.txt "Adopted and updated: BIOS: .*"
 assert_file_has_content out.txt "Adopted and updated: EFI: .*"
-if bootupctl validate 2>err.txt; then
+if bootupctl validate 2> err.txt; then
     fatal "unexpectedly passed validation"
+fi
+
+if test -n "${TARGET_COMMIT2:-}"; then
+    # Rebase to a second update whose payload has a lower EVR and changed
+    # content, then reboot and check that it is still applied.
+    # FIXME
+    # https://github.com/coreos/rpm-ostree/issues/2210
+    runv setenforce 0
+    runv rpm-ostree rebase /run/cosadir/tmp/repo:${TARGET_COMMIT2}
+    runv touch ${stampfile2}
+    runv systemd-run -- systemctl reboot
+    touch /run/rebooting
+    sleep infinity
 fi
 
 tap_finish

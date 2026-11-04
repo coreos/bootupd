@@ -34,6 +34,18 @@ build_rpm test_bootupd_payload \
            mkdir -p %{buildroot}/$(dirname ${test_bootupd_payload_file1})
            echo test-payload1 > %{buildroot}/${test_bootupd_payload_file1}"
 
+# A second update payload with a lower EVR and changed content.
+# See https://github.com/coreos/bootupd/issues/1137
+test_bootupd_payload_file2=/usr/lib/efi/test_bootupd_payload/0.9/EFI/fedora/test-bootupd.efi
+test_bootupd_payload_file3=/usr/lib/efi/test_bootupd_payload/0.9/EFI/BOOT/test-bootupd1.efi
+build_rpm test_bootupd_payload version 0.9 \
+  files "${test_bootupd_payload_file2}
+         ${test_bootupd_payload_file3}" \
+  install "mkdir -p %{buildroot}/$(dirname ${test_bootupd_payload_file2})
+           echo test-payload-v2 > %{buildroot}/${test_bootupd_payload_file2}
+           mkdir -p %{buildroot}/$(dirname ${test_bootupd_payload_file3})
+           echo test-payload1-v2 > %{buildroot}/${test_bootupd_payload_file3}"
+
 # Start in cosa dir
 cd ${COSA_DIR}
 test -d builds
@@ -64,11 +76,28 @@ if test -z "${e2e_skip_build:-}"; then
     echo "Building update ostree"
     # Latest (current) version in F44
     add_override grub2-2.12-58.fc44
-    mv ${test_tmpdir}/yumrepo/packages/$(arch)/*.rpm ${overrides}/rpm/
+    mv ${test_tmpdir}/yumrepo/packages/$(arch)/test_bootupd_payload-1.0-1.$(arch).rpm ${overrides}/rpm/
     # Only build ostree update
     runv cosa build ostree
+    target_commit=$(cosa meta --get-value ostree-commit)
     # Undo manifest modification
     runv git -C src/config checkout manifest.yaml
+
+    # Build a second update with the lower EVR payload
+    echo "packages: [test_bootupd_payload]" >> src/config/manifest.yaml
+    rm -f ${overrides}/rpm/*.rpm
+    add_override grub2-2.12-58.fc44
+    mv ${test_tmpdir}/yumrepo/packages/$(arch)/test_bootupd_payload-0.9-1.$(arch).rpm ${overrides}/rpm/
+    echo "Building lower EVR update ostree"
+    runv cosa build ostree
+    target_commit2=$(cosa meta --get-value ostree-commit)
+    # Undo manifest modification
+    runv git -C src/config checkout manifest.yaml
+else
+    # Assumes the latest build is the round 1 update. The lower EVR round
+    # is only reachable through the full build path above.
+    target_commit=$(cosa meta --get-value ostree-commit)
+    target_commit2=
 fi
 echo "Preparing test"
 grubarch=
@@ -80,7 +109,6 @@ esac
 target_grub_name=grub2-efi-${grubarch}
 target_grub_pkg=$(rpm -qp --queryformat='%{nevra}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
 target_grub_evr=$(rpm -qp --queryformat='%{evr}\n' ${overrides}/rpm/${target_grub_name}-2*.rpm)
-target_commit=$(cosa meta --get-value ostree-commit)
 echo "Target commit: ${target_commit}"
 # For some reason 9p can't write to tmpfs
 
@@ -99,6 +127,7 @@ systemd:
         Type=oneshot
         RemainAfterExit=yes
         Environment=TARGET_COMMIT=${target_commit}
+        Environment=TARGET_COMMIT2=${target_commit2:-}
         Environment=TARGET_GRUB_NAME=${target_grub_name}
         Environment=TARGET_GRUB_PKG=${target_grub_pkg}
         Environment=TARGET_GRUB_EVR=${target_grub_evr}
@@ -115,7 +144,7 @@ qemuexec_args=(kola qemuexec --propagate-initramfs-failure --qemu-image "${prev_
 if test -n "${e2e_debug:-}"; then
     runv ${qemuexec_args[@]} --devshell
 else
-    runv timeout 5m "${qemuexec_args[@]}" --console-to-file ${COSA_DIR}/tmp/console.txt
+    runv timeout 10m "${qemuexec_args[@]}" --console-to-file ${COSA_DIR}/tmp/console.txt
 fi
 if ! test -f ${testtmp}/success; then
     if test -s ${testtmp}/out.txt; then
