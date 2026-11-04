@@ -255,6 +255,20 @@ impl Efi {
         let device_path = device.path();
         create_efi_boot_entry(&device_path, esp_part_num.trim(), &loader, &product_name)
     }
+
+    /// Returns the [`Dir`] containing the EFI update payload.
+    fn get_update_payload_dir(&self, root: &Utf8Path) -> Result<Dir> {
+        let efilib_path = root.join(EFILIB);
+        let update_path =
+            if efilib_path.exists() && get_efi_component_from_usr(root, EFILIB, None)?.is_some() {
+                efilib_path
+            } else {
+                // Legacy fallback
+                root.join(BOOTUPD_UPDATES_DIR).join(self.name())
+            };
+        Dir::open_ambient_dir(&update_path, ambient_authority())
+            .with_context(|| format!("opening update dir {}", update_path.as_str()))
+    }
 }
 
 /// Helper function to remove ".release.*" from the contents of etc/system-release, leaving just the name
@@ -425,20 +439,7 @@ impl Component for Efi {
             return Ok(None);
         };
 
-        let updated_path = {
-            let efilib_path = rootcxt.path.join(EFILIB);
-            if efilib_path.exists()
-                && get_efi_component_from_usr(&rootcxt.path, EFILIB, None)?.is_some()
-            {
-                PathBuf::from(EFILIB)
-            } else {
-                component_updatedirname(self)
-            }
-        };
-        let updated = rootcxt
-            .sysroot
-            .open_dir(&updated_path)
-            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
+        let updated = self.get_update_payload_dir(&rootcxt.path)?;
         // TODO(Johan-Liebert1): Handle adpot
         let updatef =
             filetree::FileTree::new_from_dir(&updated, None).context("reading update dir")?;
@@ -592,21 +593,7 @@ impl Component for Efi {
         let updatemeta = self
             .query_update(sysroot_dir, bootloader)?
             .expect("update available");
-        let updated_path = {
-            let efilib_path = rootcxt.path.join(EFILIB);
-            if efilib_path.exists()
-                && get_efi_component_from_usr(&rootcxt.path, EFILIB, None)?.is_some()
-            {
-                PathBuf::from(EFILIB)
-            } else {
-                component_updatedirname(self)
-            }
-        };
-
-        let updated = rootcxt
-            .sysroot
-            .open_dir(&updated_path)
-            .with_context(|| format!("opening update dir {}", updated_path.display()))?;
+        let updated = self.get_update_payload_dir(&rootcxt.path)?;
 
         let dirs_to_skip = bootloader.dirs_to_skip();
 
@@ -1341,5 +1328,33 @@ Boot0003* test";
         );
         assert_eq!("", string_from_utf16_bytes(&[]));
         assert_eq!("", string_from_utf16_bytes(&[0, 0]));
+    }
+
+    #[test]
+    fn test_get_update_payload_dir() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+        let efi = Efi::default();
+
+        // An empty usr/lib/efi falls back to the legacy layout
+        std::fs::create_dir_all(utf8_sysroot.join(EFILIB))?;
+        let legacy = utf8_sysroot.join(BOOTUPD_UPDATES_DIR).join("EFI");
+        std::fs::create_dir_all(&legacy)?;
+        std::fs::write(legacy.join("marker"), "legacy")?;
+        let payload_dir = efi.get_update_payload_dir(utf8_sysroot)?;
+        assert!(payload_dir.exists("marker"));
+
+        // A component in usr/lib/efi wins over the legacy layout
+        std::fs::create_dir_all(utf8_sysroot.join(EFILIB).join("shim/16.1-7.el9/EFI/fedora"))?;
+        std::fs::write(
+            utf8_sysroot
+                .join(EFILIB)
+                .join("shim/16.1-7.el9/EFI/fedora/shimx64.efi"),
+            "shim",
+        )?;
+        let payload_dir = efi.get_update_payload_dir(utf8_sysroot)?;
+        assert!(payload_dir.exists("shim/16.1-7.el9/EFI/fedora/shimx64.efi"));
+
+        Ok(())
     }
 }
