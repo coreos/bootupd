@@ -3,22 +3,36 @@ use camino::Utf8PathBuf;
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use fn_error_context::context;
+use std::collections::BTreeMap;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bootc_internal_blockdev::Device;
 
 use crate::bootloader::Bootloader;
-use crate::bootupd::RootContext;
+use crate::bootupd::{RootContext, Sysroot};
 use crate::component::*;
+use crate::filetree::FileMetadata;
+use crate::filetree::FileTree;
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::grubconfigs;
 use crate::model::*;
 use crate::packagesystem;
 
+// TODO: grub bin and modules should be handled differently when we're making this
+//       distro-agnostic. See https://github.com/coreos/bootupd/issues/810
+
 // grub2-install file path
 pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
+
+/// The GRUB target directory holding the images and modules which
+/// grub2-install embeds into the boot device
+#[cfg(target_arch = "x86_64")]
+const GRUB_MODULES: &str = "usr/lib/grub/i386-pc";
+#[cfg(target_arch = "powerpc64")]
+const GRUB_MODULES: &str = "usr/lib/grub/powerpc-ieee1275";
 
 #[cfg(target_arch = "powerpc64")]
 fn target_device(device: &Device) -> Result<String> {
@@ -39,32 +53,76 @@ fn target_device(device: &Device) -> Result<String> {
     Ok(prepdev.path())
 }
 
+/// Hash every file under the GRUB target directory,
+/// keyed by `<GRUB_MODULES>/<relative path>`
+#[context("Hashing GRUB files in directory at {path}")]
+fn hash_grub_dir(
+    dir: &Dir,
+    path: &str,
+    children: &mut BTreeMap<String, FileMetadata>,
+) -> Result<()> {
+    for entry in dir.entries_utf8()? {
+        let entry = entry?;
+        let name = entry.file_name().context("getting file name")?;
+        let rel_path = format!("{path}/{name}");
+        let file_type = entry.file_type()?;
+        if file_type.is_file() {
+            let meta = FileMetadata::new_from_path(dir, &name)
+                .with_context(|| format!("hashing {rel_path}"))?;
+            children.insert(rel_path, meta);
+        } else if file_type.is_dir() {
+            let child = dir.open_dir(&name)?;
+            hash_grub_dir(&child, &rel_path, children)?;
+        } else {
+            bail!("Unsupported file type in the GRUB modules directory: {rel_path}");
+        }
+    }
+    Ok(())
+}
+
+/// The BIOS update payload is the GRUB installer binary plus its inputs.
+///
+/// The images and modules can change without the installer binary changing,
+/// and are embedded into the installed boot code. A sysroot without
+/// the modules is fingerprinted by the installer binary alone.
+#[context("Generating GRUB FileTree from root {}", root.as_ref().display())]
+fn grub_filetree(root: impl AsRef<Path>) -> Result<FileTree> {
+    let root = root.as_ref();
+    let dir = Dir::open_ambient_dir(root, ambient_authority())
+        .with_context(|| format!("opening {}", root.display()))?;
+
+    let mut children = BTreeMap::new();
+    let meta = FileMetadata::new_from_path(&dir, GRUB_BIN)
+        .with_context(|| format!("hashing {GRUB_BIN}"))?;
+    children.insert(GRUB_BIN.into(), meta);
+
+    if let Some(grubdir) = dir.open_dir_optional(GRUB_MODULES)? {
+        hash_grub_dir(&grubdir, GRUB_MODULES, &mut children)?;
+    }
+
+    Ok(FileTree { children })
+}
+
 #[derive(Default)]
 pub(crate) struct Bios {}
 
 impl Bios {
     // Return `true` if grub2-modules installed
     fn check_grub_modules(&self) -> Result<bool> {
-        let usr_path = Path::new("/usr/lib/grub");
-        #[cfg(target_arch = "x86_64")]
-        {
-            usr_path.join("i386-pc").try_exists().map_err(Into::into)
-        }
-        #[cfg(target_arch = "powerpc64")]
-        {
-            usr_path
-                .join("powerpc-ieee1275")
-                .try_exists()
-                .map_err(Into::into)
-        }
+        Path::new("/")
+            .join(GRUB_MODULES)
+            .try_exists()
+            .context("checking for GRUB modules dir")
     }
 
-    // Run grub2-install
-    fn run_grub_install(&self, dest_root: &str, device: &Device) -> Result<()> {
+    // Run grub2-install from the process root, returning that root so
+    // callers can identify the installer which was actually used
+    fn run_grub_install(&self, dest_root: &str, device: &Device) -> Result<PathBuf> {
         if !self.check_grub_modules()? {
             bail!("Failed to find grub2-modules");
         }
-        let grub_install = Path::new("/").join(GRUB_BIN);
+        let process_root = PathBuf::from("/");
+        let grub_install = process_root.join(GRUB_BIN);
         if !grub_install.exists() {
             bail!("Failed to find {:?}", grub_install);
         }
@@ -94,7 +152,7 @@ impl Bios {
             std::io::stderr().write_all(&cmdout.stderr)?;
             bail!("Failed to run {:?}", cmd);
         }
-        Ok(())
+        Ok(process_root)
     }
 }
 
@@ -135,12 +193,15 @@ impl Component for Bios {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        self.run_grub_install(dest_root, device)
+        // Record the installer which was actually used, which comes from
+        // the process root rather than from src_root (when they are not equivalent)
+        let root = self
+            .run_grub_install(dest_root, device)
             .with_context(|| format!("installing GRUB on {}", device.path()))?;
 
         Ok(InstalledContent {
             meta,
-            filetree: None,
+            filetree: Some(grub_filetree(&root)?),
             adopted_from: None,
         })
     }
@@ -252,6 +313,7 @@ impl Component for Bios {
             );
             return Ok(None);
         }
+
         let bios_devices = rootcxt.device.find_colocated_bios_boot()?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
             return Ok(None);
@@ -278,7 +340,7 @@ impl Component for Bios {
         }
         Ok(Some(InstalledContent {
             meta: update.clone(),
-            filetree: None,
+            filetree: Some(grub_filetree(&rootcxt.path)?),
             adopted_from: Some(meta.version),
         }))
     }
@@ -316,7 +378,7 @@ impl Component for Bios {
         let adopted_from = None;
         Ok(InstalledContent {
             meta: updatemeta,
-            filetree: None,
+            filetree: Some(grub_filetree(&rootcxt.path)?),
             adopted_from,
         })
     }
@@ -327,5 +389,150 @@ impl Component for Bios {
 
     fn get_efi_vendor(&self, _: &Path) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    fn has_changed_content(
+        &self,
+        sysroot: Sysroot<'_>,
+        current: &InstalledContent,
+        _bootloader: Bootloader,
+    ) -> Result<bool> {
+        let updated = grub_filetree(sysroot.path)?;
+        if let Some(t) = current.filetree.as_ref() {
+            Ok(!t.is_content_eq(&updated))
+        } else {
+            // Fallback path for existing installs which don't store a filetree for the BIOS component
+            log::warn!("no filetree available for the current install, assuming updatable");
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packagesystem::Module;
+    use camino::Utf8Path;
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_query_updatable_content_differs() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let sysroot_path = Utf8Path::from_path(sysroot.path()).expect("valid UTF-8");
+
+        // Create update payload
+        std::fs::create_dir_all(sysroot_path.join("usr/sbin"))?;
+        std::fs::write(sysroot_path.join(GRUB_BIN), "grub2-install new")?;
+        std::fs::create_dir_all(sysroot_path.join(BOOTUPD_UPDATES_DIR))?;
+        let meta = ContentMetadata {
+            timestamp: Utc::now(),
+            version: "grub2 2.12-7.el9".into(),
+            versions: Some(vec![Module {
+                name: "grub2".into(),
+                evr: "2.12-7.el9".into(),
+            }]),
+            #[cfg(efi_arch)]
+            default_bootloader: None,
+        };
+        write_update_metadata(sysroot_path.as_str(), PathBuf::from("BIOS.json"), &meta)?;
+
+        // A payload with the content that is currently installed
+        let old_payload = tempfile::tempdir()?;
+        std::fs::create_dir_all(old_payload.path().join("usr/sbin"))?;
+        std::fs::write(old_payload.path().join(GRUB_BIN), "grub2-install old")?;
+
+        let sysroot_dir = Dir::open_ambient_dir(sysroot_path, ambient_authority())?;
+        let sysroot = Sysroot {
+            dir: &sysroot_dir,
+            path: sysroot_path,
+        };
+        let bios = Bios::default();
+
+        // Changed content wins even though the metadata is identical
+        let inst = InstalledContent {
+            meta: meta.clone(),
+            filetree: Some(grub_filetree(old_payload.path())?),
+            adopted_from: None,
+        };
+        let (update, updatable) = bios.query_updatable(sysroot, &inst, Bootloader::Grub)?;
+        assert!(update.is_some());
+        assert!(matches!(updatable, ComponentUpdatable::Upgradable));
+
+        // Installs from before filetrees were stored, update once
+        let inst = InstalledContent {
+            meta: meta.clone(),
+            filetree: None,
+            adopted_from: None,
+        };
+        let (_, updatable) = bios.query_updatable(sysroot, &inst, Bootloader::Grub)?;
+        assert!(matches!(updatable, ComponentUpdatable::Upgradable));
+
+        // Identical content, no update
+        let inst = InstalledContent {
+            meta: meta.clone(),
+            filetree: Some(grub_filetree(sysroot.path)?),
+            adopted_from: None,
+        };
+        let (_, updatable) = bios.query_updatable(sysroot, &inst, Bootloader::Grub)?;
+        assert!(matches!(updatable, ComponentUpdatable::AtLatestVersion));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grub_filetree_includes_modules() -> Result<()> {
+        let payload = tempfile::tempdir()?;
+        std::fs::create_dir_all(payload.path().join("usr/sbin"))?;
+        std::fs::write(payload.path().join(GRUB_BIN), "grub2-install")?;
+        let modules = payload.path().join(GRUB_MODULES);
+        std::fs::create_dir_all(&modules)?;
+        std::fs::write(modules.join("kernel.img"), "kernel")?;
+        let fonts = modules.join("fonts");
+        std::fs::create_dir_all(&fonts)?;
+        std::fs::write(fonts.join("unicode.pf2"), "font")?;
+
+        let tree = grub_filetree(payload.path())?;
+        assert!(tree.children.contains_key(GRUB_BIN));
+        assert!(tree
+            .children
+            .contains_key(&format!("{GRUB_MODULES}/kernel.img")));
+
+        // The fingerprint changes when a module changes but grub2-install
+        // does not
+        std::fs::write(
+            payload.path().join(GRUB_MODULES).join("kernel.img"),
+            "kernel new",
+        )?;
+        let changed = grub_filetree(payload.path())?;
+        assert!(!tree.is_content_eq(&changed));
+
+        // Nested file is keyed by its full path under the modules dir
+        let tree = grub_filetree(payload.path())?;
+        assert!(tree
+            .children
+            .contains_key(&format!("{GRUB_MODULES}/fonts/unicode.pf2")));
+
+        // A change in the nested dir changes the tree
+        std::fs::write(fonts.join("unicode.pf2"), "font new")?;
+        let changed = grub_filetree(payload.path())?;
+        assert!(!tree.is_content_eq(&changed));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_grub_filetree_refuses_symlinks_in_modules() -> Result<()> {
+        let payload = tempfile::tempdir()?;
+        std::fs::create_dir_all(payload.path().join("usr/sbin"))?;
+        std::fs::write(payload.path().join(GRUB_BIN), "grub2-install")?;
+        let modules = payload.path().join(GRUB_MODULES);
+        std::fs::create_dir_all(&modules)?;
+        std::os::unix::fs::symlink("target", modules.join("link"))?;
+
+        let err = grub_filetree(payload.path())
+            .expect_err("a symlink in the modules directory should be refused");
+        assert!(format!("{err:#}").contains("Unsupported file type"));
+        Ok(())
     }
 }

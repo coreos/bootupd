@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -148,60 +147,6 @@ fn parse_module(pkg: &str) -> Result<Module> {
     })
 }
 
-fn parse_module_vec(input: &str) -> Result<Vec<Module>> {
-    let mut pkgs: Vec<Module> = input
-        .split(',')
-        .map(|pkg| parse_module(pkg)) // parse_module returns owned Module
-        .collect::<Result<Vec<_>>>()?;
-    // Sort packages to ensure a consistent order for comparison, which is
-    // required by `compare_package_slices`.
-    pkgs.sort_unstable();
-    // Now that it's sorted, we can efficiently remove duplicates.
-    pkgs.dedup();
-    Ok(pkgs)
-}
-
-pub(crate) fn compare_package_slices(a: &[Module], b: &[Module]) -> Ordering {
-    let mut has_greater = false;
-
-    // Assume it is in order
-    for (pkg_a, pkg_b) in a.iter().zip(b.iter()) {
-        match pkg_a.cmp(pkg_b) {
-            Ordering::Less => return Ordering::Less, // upgradable
-            Ordering::Greater => has_greater = true, // downgrade
-            Ordering::Equal => {}
-        }
-    }
-
-    // If all compared equal, longer slice wins
-    if a.len() < b.len() {
-        return Ordering::Less; // extra packages in b → upgrade
-    }
-    if a.len() > b.len() {
-        return Ordering::Greater; // extra packages in a → downgrade
-    }
-
-    if has_greater {
-        Ordering::Greater
-    } else {
-        Ordering::Equal
-    }
-}
-
-// Compare package versions:
-// If any package is Ordering::Less, return Ordering::Less, means upgradable,
-// Else if any package is Ordering::Greater, return Ordering::Greater,
-// Else (all equal), return Ordering::Equal.
-pub(crate) fn compare_package_versions(a: &str, b: &str) -> Ordering {
-    // Fast path: if the two values are equal, skip detailed comparison
-    if a == b {
-        return Ordering::Equal;
-    }
-    let pkg_a = parse_module_vec(a).unwrap_or_default();
-    let pkg_b = parse_module_vec(b).unwrap_or_default();
-    compare_package_slices(&pkg_a, &pkg_b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,130 +183,34 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_package_slices() {
-        let a = vec![
+    fn test_parse_module() {
+        // New format: "NAME EVR"
+        assert_eq!(
+            parse_module("grub2-efi-x64 1:2.12-28.fc42").unwrap(),
             Module {
-                name: "grub2".into(),
-                evr: "1:2.12-21.fc41".into(),
-            },
+                name: "grub2-efi-x64".into(),
+                evr: "1:2.12-28.fc42".into(),
+            }
+        );
+
+        // Legacy RPM format: "NAME-EVR.ARCH"
+        assert_eq!(
+            parse_module("shim-x64-15.8-3.x86_64").unwrap(),
             Module {
-                name: "shim".into(),
+                name: "shim-x64".into(),
                 evr: "15.8-3".into(),
-            },
-        ];
-        let b = vec![
+            }
+        );
+
+        // Legacy RPM format without an architecture suffix. The version must
+        // not contain dots. Everything after the last dot is treated as the
+        // architecture and stripped.
+        assert_eq!(
+            parse_module("shim-x64-15-3").unwrap(),
             Module {
-                name: "grub2".into(),
-                evr: "1:2.12-28.fc41".into(),
-            },
-            Module {
-                name: "shim".into(),
-                evr: "15.8-3".into(),
-            },
-        ];
-        let ord = compare_package_slices(&a, &b);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_slices(&b, &a);
-        assert_eq!(ord, Ordering::Greater);
-
-        let ord = compare_package_slices(&a, &a);
-        assert_eq!(ord, Ordering::Equal);
-    }
-
-    #[test]
-    fn test_compare_legacy_and_new_metadata() {
-        let legacy = "grub2-efi-ia32-1:2.12-21.fc41.x86_64,\
-         grub2-efi-x64-1:2.12-21.fc41.x86_64,\
-         shim-ia32-15.8-3.x86_64,\
-         shim-x64-15.8-3.x86_64";
-
-        let new = "grub2-efi-ia32 1:2.12-28.fc41,\
-         grub2-efi-x64 1:2.12-28.fc41,\
-         shim-ia32 15.8-3,\
-         shim-x64 15.8-3";
-
-        assert_eq!(compare_package_versions(legacy, new), Ordering::Less);
-    }
-
-    #[test]
-    fn test_compare_legacy_and_new_equal_metadata() {
-        let legacy = "grub2-efi-x64-1:2.12-28.fc42.x86_64,shim-x64-15.8-3.x86_64";
-
-        let new = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
-
-        assert_eq!(compare_package_versions(legacy, new), Ordering::Equal);
-    }
-    #[test]
-    fn test_compare_package_versions() {
-        // Test 1: Same packages, different versions
-        let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
-        let target = "grub2-efi-x64 1:2.12-29.fc42,shim-x64 15.8-3";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // Test 2: Different package names but same version comparison logic
-        let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
-        let target = "grub2 1:2.12-28.fc42,shim 15.8-4";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less); // current < target
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // Test 3: Target includes new package, should upgrade
-        let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
-        let target = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3,test 1.0";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        // The target missed some package
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // Test 4: Mixed comparison (different ordering)
-        {
-            let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
-            let target = "grub2 1:2.12-27.fc42,shim 15.8-4";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Less);
-
-            let ord = compare_package_versions(target, current);
-            assert_eq!(ord, Ordering::Less);
-        }
-
-        // Test 5: Equal versions
-        {
-            let current = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
-            let target = "grub2-efi-x64 1:2.12-28.fc42,shim-x64 15.8-3";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-
-            let current = "grub2 1:2.12-28.fc42,shim 15.8-3";
-            let target = "grub2 1:2.12-28.fc42,shim 15.8-3";
-            let ord = compare_package_versions(current, target);
-            assert_eq!(ord, Ordering::Equal);
-        }
-
-        // Test 6: Single package comparison
-        let current = "grub2-tools 1:2.06-86.el9_4.3";
-        let target = "grub2-tools 1:2.06-110.el9";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
-
-        // Test 7: Multiple packages with different names
-        let current = "grub2-efi-ia32 1:2.12-21.fc41,grub2-efi-x64 1:2.12-21.fc41,shim-ia32 15.8-3,shim-x64 15.8-3";
-        let target = "grub2-efi-ia32 1:2.12-28.fc42,grub2-efi-x64 1:2.12-28.fc42,shim-ia32 15.8-3,shim-x64 15.8-3";
-        let ord = compare_package_versions(current, target);
-        assert_eq!(ord, Ordering::Less);
-
-        let ord = compare_package_versions(target, current);
-        assert_eq!(ord, Ordering::Greater);
+                name: "shim-x64".into(),
+                evr: "15-3".into(),
+            }
+        );
     }
 }

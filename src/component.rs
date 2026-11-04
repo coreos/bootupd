@@ -17,7 +17,7 @@ use bootc_internal_blockdev::Device;
 
 #[cfg(efi_arch)]
 use crate::cli::bootupd::DefaultBootloaderOpts;
-use crate::{bootloader::Bootloader, bootupd::RootContext, model::*};
+use crate::{bootloader::Bootloader, bootupd::RootContext, bootupd::Sysroot, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -205,6 +205,32 @@ pub(crate) trait Component {
             .ok_or_else(|| anyhow::anyhow!("Expected to get update metadata"))?;
 
         Ok(update_meta.default_bootloader)
+    }
+
+    /// Returns whether the update payload differs from what's currently installed.
+    fn has_changed_content(
+        &self,
+        sysroot: Sysroot<'_>,
+        current: &InstalledContent,
+        bootloader: Bootloader,
+    ) -> Result<bool>;
+
+    /// Query the available update and compare its content against what's currently installed.
+    fn query_updatable(
+        &self,
+        sysroot: Sysroot<'_>,
+        current: &InstalledContent,
+        bootloader: Bootloader,
+    ) -> Result<(Option<ContentMetadata>, ComponentUpdatable)> {
+        let update = self.query_update(sysroot.dir, bootloader)?;
+        let updatable = match update.as_ref() {
+            None => ComponentUpdatable::NoUpdateAvailable,
+            Some(_) if self.has_changed_content(sysroot, current, bootloader)? => {
+                ComponentUpdatable::Upgradable
+            }
+            Some(_) => ComponentUpdatable::AtLatestVersion,
+        };
+        Ok((update, updatable))
     }
 }
 

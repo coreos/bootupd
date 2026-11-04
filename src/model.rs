@@ -6,7 +6,6 @@
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::bootloader::Bootloader;
@@ -31,14 +30,6 @@ pub(crate) struct ContentMetadata {
 }
 
 impl ContentMetadata {
-    pub(crate) fn can_upgrade_to(&self, target: &Self) -> Ordering {
-        if let (Some(self_versions), Some(target_versions)) = (&self.versions, &target.versions) {
-            compare_package_slices(self_versions, target_versions)
-        } else {
-            compare_package_versions(&self.version, &target.version)
-        }
-    }
-
     /// Returns bootloaders are available for install
     #[cfg(efi_arch)]
     pub(crate) fn available_bootloaders(&self) -> Vec<Bootloader> {
@@ -113,22 +104,6 @@ pub(crate) enum ComponentUpdatable {
     NoUpdateAvailable,
     AtLatestVersion,
     Upgradable,
-    WouldDowngrade,
-}
-
-impl ComponentUpdatable {
-    pub(crate) fn from_metadata(from: &ContentMetadata, to: Option<&ContentMetadata>) -> Self {
-        match to {
-            Some(to) => {
-                match from.can_upgrade_to(to) {
-                    Ordering::Equal => return ComponentUpdatable::AtLatestVersion, // from == to
-                    Ordering::Less => return ComponentUpdatable::Upgradable,       // from < to
-                    Ordering::Greater => return ComponentUpdatable::WouldDowngrade, // from > to
-                }
-            }
-            None => ComponentUpdatable::NoUpdateAvailable,
-        }
-    }
 }
 
 /// The status of an individual component.
@@ -179,64 +154,6 @@ pub(crate) struct Status {
 mod test {
     use super::*;
     use anyhow::Result;
-    use chrono::Duration;
-
-    #[test]
-    fn test_meta_compare() {
-        let t = Utc::now();
-        let a = ContentMetadata {
-            timestamp: t,
-            version: "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
-            versions: None,
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        let b = ContentMetadata {
-            timestamp: t + Duration::try_seconds(1).unwrap(),
-            version: "grub2-efi-ia32-1:2.12-28.fc41.x86_64,grub2-efi-x64-1:2.12-28.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
-            versions: None,
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
-        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
-
-        // Compare versions if it is not none
-        let a = ContentMetadata {
-            timestamp: t,
-            version: "test".into(),
-            versions: Some(vec![
-                Module {
-                    name: "grub2".into(),
-                    evr: "1:2.12-21.fc41".into(),
-                },
-                Module {
-                    name: "shim".into(),
-                    evr: "15.8-3".into(),
-                },
-            ]),
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        let b = ContentMetadata {
-            timestamp: t + Duration::try_seconds(1).unwrap(),
-            version: "test".into(),
-            versions: Some(vec![
-                Module {
-                    name: "grub2".into(),
-                    evr: "1:2.12-28.fc41".into(),
-                },
-                Module {
-                    name: "shim".into(),
-                    evr: "15.8-3".into(),
-                },
-            ]),
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
-        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
-    }
 
     /// Validate we're not breaking the serialized format of /boot/bootupd-state.json
     #[test]
