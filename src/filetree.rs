@@ -90,6 +90,17 @@ pub(crate) struct FileTree {
     pub(crate) children: BTreeMap<String, FileMetadata>,
 }
 
+impl FileTree {
+    /// Compare trees by file content only. `FileMetadata` equality ignores
+    /// the `source` path, and `new_from_dir` keys children by ESP
+    /// destination path (`shim/<version>/EFI/fedora/x.efi` becomes
+    /// `fedora/x.efi`), so trees recorded from different directory layouts
+    /// compare equal when they hold the same files.
+    pub(crate) fn is_content_eq(&self, other: &Self) -> bool {
+        self.children == other.children
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct FileTreeDiff {
     pub(crate) additions: HashSet<String>,
