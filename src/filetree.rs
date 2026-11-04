@@ -10,30 +10,21 @@
     target_arch = "riscv64"
 ))]
 use crate::freezethaw::fsfreeze_thaw_cycle;
+use anyhow::Result;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context};
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
 use camino::{Utf8Path, Utf8PathBuf};
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
 use cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
 use openssl::hash::{Hasher, MessageDigest};
 #[cfg(any(
     target_arch = "x86_64",
@@ -129,7 +120,8 @@ impl FileMetadata {
     #[cfg(any(
         target_arch = "x86_64",
         target_arch = "aarch64",
-        target_arch = "riscv64"
+        target_arch = "riscv64",
+        target_arch = "powerpc64",
     ))]
     pub(crate) fn new_from_path<P: AsRef<std::path::Path>>(
         dir: &Dir,
