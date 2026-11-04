@@ -442,6 +442,8 @@ impl Component for Efi {
             return Ok(None);
         };
 
+        ensure_boot_components(&rootcxt.path, bootloader, false)?;
+
         let updated = self.get_update_payload_dir(rootcxt.as_sysroot())?;
         let updatef = filetree::FileTree::new_from_dir(&updated, Some(bootloader.dirs_to_skip()))
             .context("reading update dir")?;
@@ -500,6 +502,11 @@ impl Component for Efi {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
         log::debug!("Found metadata {}", meta.version);
+
+        // Refuse a payload which does not carry the component for the
+        // requested bootloader before touching the ESP. Whether the system
+        // boots via shim is not known at install time, so it is not required.
+        ensure_boot_components(Utf8Path::new(src_root), bootloader, false)?;
 
         // Determine the destination path for the ESP.
         // If a device is provided, find and mount its ESP partition (unmounting
@@ -591,6 +598,17 @@ impl Component for Efi {
             .filetree
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No filetree for installed EFI found!"))?;
+
+        // Whether the installed content includes the shim binary.
+        let boots_via_shim = currentf
+            .children
+            .keys()
+            .any(|p| Utf8Path::new(p).file_name() == Some(SHIM));
+
+        // Refuse a payload which does not carry the components the system
+        // boots from, since it cannot re-provide them.
+        ensure_boot_components(&rootcxt.path, bootloader, boots_via_shim)?;
+
         let sysroot_dir = &rootcxt.sysroot;
         let updatemeta = self
             .query_update(sysroot_dir, bootloader)?
@@ -1018,6 +1036,42 @@ fn get_efi_component_from_usr<'a>(
     }
 
     Ok(Some(efi_comps))
+}
+
+/// Errors when the update payload uses the `usr/lib/efi` layout but does
+/// not carry the component for `bootloader`, or shim when `boots_via_shim`
+/// is true.
+///
+/// The legacy update directory has no per-bootloader components, so it is not checked.
+fn ensure_boot_components(
+    root: &Utf8Path,
+    bootloader: Bootloader,
+    boots_via_shim: bool,
+) -> Result<()> {
+    let Some(components) = get_efi_component_from_usr(root, EFILIB, None)? else {
+        // Legacy payload layout, no components to check
+        return Ok(());
+    };
+    let bootloader = bootloader.efi_component_name();
+    let required_components = if boots_via_shim {
+        vec![bootloader, "shim"]
+    } else {
+        vec![bootloader]
+    };
+    for component in required_components {
+        if !components.iter().any(|c| c.name == component) {
+            let found = components
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "Update payload has no '{component}' component. Expected \
+                 {EFILIB}/{component}/<version>/EFI (found: {found})"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Copies usr/lib/ostree-boot/EFI to usr/lib/bootupd/updates
@@ -1670,6 +1724,71 @@ Boot0003* test";
         )?;
         let payload_dir = efi.get_update_payload_dir(sysroot)?;
         assert!(payload_dir.exists("shim/16.1-7.el9/EFI/fedora/shimx64.efi"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_boot_components() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+
+        // No usr/lib/efi at all
+        ensure_boot_components(utf8_sysroot, Bootloader::Grub, true)?;
+
+        // A payload with only the grub2 component, missing shim
+        let grub2 = utf8_sysroot
+            .join(EFILIB)
+            .join("grub2/2.12-7.el9/EFI/fedora");
+        std::fs::create_dir_all(&grub2)?;
+        std::fs::write(grub2.join("grubx64.efi"), "grub")?;
+
+        ensure_boot_components(utf8_sysroot, Bootloader::Grub, false)?;
+        let err = ensure_boot_components(utf8_sysroot, Bootloader::Grub, true)
+            .expect_err("missing shim component must be an error");
+        assert!(err.to_string().contains("no 'shim' component"));
+
+        // With shim
+        let shim = utf8_sysroot.join(EFILIB).join("shim/16.1-7.el9/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join("shimx64.efi"), "shim")?;
+        ensure_boot_components(utf8_sysroot, Bootloader::Grub, true)?;
+
+        // The same payload has no systemd-boot component
+        let err = ensure_boot_components(utf8_sysroot, Bootloader::Systemd, true)
+            .expect_err("missing component must be an error");
+        assert!(err.to_string().contains("no 'systemd-boot' component"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_refuses_payload_missing_bootloader() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+
+        // A payload with only the shim component, missing grub2
+        let shim = utf8_sysroot.join(EFILIB).join("shim/16.1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join("shimx64.efi"), "shim")?;
+        std::fs::create_dir_all(utf8_sysroot.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            utf8_sysroot.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("shim 16.1"),
+        )?;
+
+        let dest = tempfile::tempdir()?;
+        let err = Efi::default()
+            .install(
+                sysroot.path().to_str().unwrap(),
+                dest.path().to_str().unwrap(),
+                None,
+                false,
+                Bootloader::Grub,
+            )
+            .expect_err("install must refuse a payload missing the bootloader");
+        assert!(err.to_string().contains("no 'grub2' component"));
 
         Ok(())
     }
