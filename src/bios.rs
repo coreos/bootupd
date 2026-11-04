@@ -243,7 +243,15 @@ impl Component for Bios {
         rootcxt: &RootContext,
         update: &ContentMetadata,
         with_static_config: bool,
+        bootloader: Bootloader,
     ) -> Result<Option<InstalledContent>> {
+        if !self.is_bootloader_supported(bootloader) {
+            log::debug!(
+                "Skip BIOS adopt: bootloader {} is not supported",
+                bootloader.efi_component_name()
+            );
+            return Ok(None);
+        }
         let bios_devices = rootcxt.device.find_colocated_bios_boot()?;
         let Some(meta) = self.query_adopt(&bios_devices)? else {
             return Ok(None);

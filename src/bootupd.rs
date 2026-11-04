@@ -552,7 +552,7 @@ pub(crate) fn adopt_and_update(
         .context("Failed to acquire write lock")?;
 
     let inst = component
-        .adopt_update(&rootcxt, &update, with_static_config)
+        .adopt_update(&rootcxt, &update, with_static_config, bootloader)
         .context("Failed adopt and update")?;
     if let Some(inst) = inst {
         state.installed.insert(component.name().into(), inst);

@@ -78,6 +78,7 @@ pub(crate) trait Component {
         rootcxt: &RootContext,
         update: &ContentMetadata,
         with_static_config: bool,
+        bootloader: Bootloader,
     ) -> Result<Option<InstalledContent>>;
 
     /// Implementation of `bootupd install` for a given component.  This should

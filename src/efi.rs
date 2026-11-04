@@ -433,6 +433,7 @@ impl Component for Efi {
         rootcxt: &RootContext,
         updatemeta: &ContentMetadata,
         with_static_config: bool,
+        bootloader: Bootloader,
     ) -> Result<Option<InstalledContent>> {
         let esp_devices = rootcxt.device.find_colocated_esps()?;
         let Some(meta) = self.query_adopt(&esp_devices)? else {
@@ -440,9 +441,8 @@ impl Component for Efi {
         };
 
         let updated = self.get_update_payload_dir(&rootcxt.path)?;
-        // TODO(Johan-Liebert1): Handle adpot
-        let updatef =
-            filetree::FileTree::new_from_dir(&updated, None).context("reading update dir")?;
+        let updatef = filetree::FileTree::new_from_dir(&updated, Some(bootloader.dirs_to_skip()))
+            .context("reading update dir")?;
 
         let esp_devices = esp_devices.unwrap_or_default();
         for esp in esp_devices {
