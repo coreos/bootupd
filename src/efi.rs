@@ -53,6 +53,17 @@ pub(crate) const SHIM: &str = "shimx64.efi";
 #[cfg(target_arch = "riscv64")]
 pub(crate) const SHIM: &str = "shimriscv64.efi";
 
+/// The bootloader binary, which every bootloader names grub<arch>.efi
+/// because that name is baked into the shim
+#[cfg(target_arch = "x86_64")]
+const BOOTLOADER_BIN: &str = "grubx64.efi";
+
+#[cfg(target_arch = "aarch64")]
+const BOOTLOADER_BIN: &str = "grubaa64.efi";
+
+#[cfg(target_arch = "riscv64")]
+const BOOTLOADER_BIN: &str = "grubriscv64.efi";
+
 /// The mount path for uefi
 const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 
@@ -621,6 +632,8 @@ impl Component for Efi {
             .context("reading update dir")?;
         let diff = currentf.diff(&updatef)?;
 
+        ensure_boot_binaries(currentf, &updatef, boots_via_shim)?;
+
         let Some(esp_devices) = rootcxt.device.find_colocated_esps()? else {
             anyhow::bail!("Failed to find all esp devices");
         };
@@ -1068,6 +1081,39 @@ fn ensure_boot_components(
             anyhow::bail!(
                 "Update payload has no '{component}' component. Expected \
                  {EFILIB}/{component}/<version>/EFI (found: {found})"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Errors when the update payload does not carry the binaries the current
+/// system boots from.
+///
+/// Unlike [`ensure_boot_components`] this inspects the payload file trees,
+/// so it also covers the legacy update directory layout.
+fn ensure_boot_binaries(
+    currentf: &filetree::FileTree,
+    updatef: &filetree::FileTree,
+    boots_via_shim: bool,
+) -> Result<()> {
+    let required_binaries = if boots_via_shim {
+        vec![BOOTLOADER_BIN, SHIM]
+    } else {
+        vec![BOOTLOADER_BIN]
+    };
+    for path in currentf.children.keys() {
+        // What is currently installed must remain provided by the
+        // payload, since nothing else can re-provide it.
+        // The path must match too since shim and the firmware boot entry
+        // resolve the binaries by their installed path, so a payload which moves
+        // the binary would break the boot chain too.
+        let name = Utf8Path::new(path)
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid filetree key: {path:?}"))?;
+        if required_binaries.contains(&name) && !updatef.children.contains_key(path) {
+            anyhow::bail!(
+                "The update payload does not include '{name}' at '{path}', refusing to remove it from the ESP"
             );
         }
     }
@@ -1758,6 +1804,63 @@ Boot0003* test";
         let err = ensure_boot_components(utf8_sysroot, Bootloader::Systemd, true)
             .expect_err("missing component must be an error");
         assert!(err.to_string().contains("no 'systemd-boot' component"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_boot_binaries() -> Result<()> {
+        use crate::filetree::FileTree;
+
+        let tree_from = |files: &[&str]| -> Result<FileTree> {
+            let payload = tempfile::tempdir()?;
+            for f in files {
+                let p = payload.path().join(f);
+                std::fs::create_dir_all(p.parent().unwrap())?;
+                std::fs::write(&p, f)?;
+            }
+            FileTree::new_from_dir(
+                &Dir::open_ambient_dir(payload.path(), ambient_authority())?,
+                None,
+            )
+        };
+
+        let current = tree_from(&[
+            &format!("fedora/{SHIM}"),
+            &format!("fedora/{BOOTLOADER_BIN}"),
+        ])?;
+
+        // A payload which keeps both binaries is accepted
+        let update = tree_from(&[
+            &format!("fedora/{SHIM}"),
+            &format!("fedora/{BOOTLOADER_BIN}"),
+        ])?;
+        ensure_boot_binaries(&current, &update, true)?;
+
+        // A payload which drops the shim is refused while booting via shim
+        let update = tree_from(&[&format!("fedora/{BOOTLOADER_BIN}")])?;
+        let err = ensure_boot_binaries(&current, &update, true)
+            .expect_err("dropping the shim must be refused");
+        assert!(err.to_string().contains(SHIM));
+
+        // The shim is not required when the system does not boot via it
+        ensure_boot_binaries(&current, &update, false)?;
+
+        // A payload which drops the bootloader is always refused
+        let update = tree_from(&[&format!("fedora/{SHIM}")])?;
+        let err = ensure_boot_binaries(&current, &update, true)
+            .expect_err("dropping the bootloader must be refused");
+        assert!(err.to_string().contains(BOOTLOADER_BIN));
+
+        // A payload which moves the bootloader to another path is
+        // refused, since the firmware and shim resolve it by path
+        let update = tree_from(&[
+            &format!("fedora/{SHIM}"),
+            &format!("redhat/{BOOTLOADER_BIN}"),
+        ])?;
+        let err = ensure_boot_binaries(&current, &update, true)
+            .expect_err("moving the bootloader must be refused");
+        assert!(err.to_string().contains(BOOTLOADER_BIN));
 
         Ok(())
     }
