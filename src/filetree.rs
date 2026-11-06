@@ -10,30 +10,21 @@
     target_arch = "riscv64"
 ))]
 use crate::freezethaw::fsfreeze_thaw_cycle;
+use anyhow::Result;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context};
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
 use camino::{Utf8Path, Utf8PathBuf};
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
 use cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-))]
 use openssl::hash::{Hasher, MessageDigest};
 #[cfg(any(
     target_arch = "x86_64",
@@ -99,6 +90,17 @@ pub(crate) struct FileTree {
     pub(crate) children: BTreeMap<String, FileMetadata>,
 }
 
+impl FileTree {
+    /// Compare trees by file content only. `FileMetadata` equality ignores
+    /// the `source` path, and `new_from_dir` keys children by ESP
+    /// destination path (`shim/<version>/EFI/fedora/x.efi` becomes
+    /// `fedora/x.efi`), so trees recorded from different directory layouts
+    /// compare equal when they hold the same files.
+    pub(crate) fn is_content_eq(&self, other: &Self) -> bool {
+        self.children == other.children
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct FileTreeDiff {
     pub(crate) additions: HashSet<String>,
@@ -129,7 +131,8 @@ impl FileMetadata {
     #[cfg(any(
         target_arch = "x86_64",
         target_arch = "aarch64",
-        target_arch = "riscv64"
+        target_arch = "riscv64",
+        target_arch = "powerpc64",
     ))]
     pub(crate) fn new_from_path<P: AsRef<std::path::Path>>(
         dir: &Dir,
@@ -156,7 +159,10 @@ impl FileTree {
         target_arch = "aarch64",
         target_arch = "riscv64"
     ))]
-    fn unsorted_from_dir(dir: &Dir) -> Result<HashMap<String, FileMetadata>> {
+    fn unsorted_from_dir(
+        dir: &Dir,
+        dirs_to_skip: &[&str],
+    ) -> Result<HashMap<String, FileMetadata>> {
         let mut ret = HashMap::new();
         for entry in dir.entries_utf8()? {
             let entry = entry?;
@@ -164,13 +170,16 @@ impl FileTree {
             if name.starts_with(TMP_PREFIX) {
                 bail!("File {} contains our temporary prefix!", name);
             }
+            if dirs_to_skip.contains(&name.as_str()) {
+                continue;
+            }
             let file_type = entry.file_type()?;
             if file_type.is_file() {
                 let meta = FileMetadata::new_from_path(dir, &name)?;
                 let _ = ret.insert(name.to_string(), meta);
             } else if file_type.is_dir() {
                 let child = dir.open_dir(&name)?;
-                for (mut k, v) in FileTree::unsorted_from_dir(&child)?.drain() {
+                for (mut k, v) in FileTree::unsorted_from_dir(&child, dirs_to_skip)?.drain() {
                     k.reserve(name.len() + 1);
                     k.insert(0, '/');
                     k.insert_str(0, &name);
@@ -195,13 +204,9 @@ impl FileTree {
         let mut children = BTreeMap::new();
         let dirs_to_skip = dirs_to_skip.unwrap_or([].into());
 
-        for (k, mut v) in Self::unsorted_from_dir(dir)?.drain() {
+        for (k, mut v) in Self::unsorted_from_dir(dir, &dirs_to_skip)?.drain() {
             let src = Utf8Path::new(&k);
             let k_path = get_dest_efi_path(src);
-
-            if src.components().any(|c| dirs_to_skip.contains(&c.as_str())) {
-                continue;
-            }
 
             v.source = Some(k);
             children.insert(k_path.to_string(), v);
@@ -775,6 +780,33 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn test_new_from_dir_skips_excluded_dirs() -> Result<()> {
+        let tmpd = tempfile::tempdir()?;
+        let p = tmpd.path();
+        std::fs::create_dir_all(p.join("grub2"))?;
+        std::fs::create_dir_all(p.join("systemd-boot/sub"))?;
+        // A symlink inside the excluded directory must not be validated
+        std::os::unix::fs::symlink("target", p.join("systemd-boot/sub/link"))?;
+        // A regular file inside the excluded directory must not be hashed
+        // into the tree
+        std::fs::write(p.join("systemd-boot/sub/file"), "excluded")?;
+        std::fs::write(p.join("grub2/bootloader"), "payload")?;
+
+        let d = Dir::open_ambient_dir(p, ambient_authority())?;
+        let tree = FileTree::new_from_dir(&d, Some(vec!["systemd-boot"]))?;
+        assert_eq!(tree.children.len(), 1);
+        assert!(tree.children.contains_key("grub2/bootloader"));
+
+        // A symlink outside the excluded directories is still refused
+        std::os::unix::fs::symlink("target", p.join("grub2/link"))?;
+        let err = FileTree::new_from_dir(&d, Some(vec!["systemd-boot"]))
+            .expect_err("symlink in an included directory must fail");
+        assert!(err.to_string().contains("symbolic link"));
+        Ok(())
+    }
+
     #[test]
     fn test_cleanup_tmp() -> Result<()> {
         let tmpd = tempfile::tempdir()?;

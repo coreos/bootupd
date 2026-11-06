@@ -74,6 +74,15 @@ impl Bootloader {
             _ => anyhow::bail!("Not a valid bootloader: {component_name}"),
         }
     }
+
+    /// Returns the efi component names which do not match this bootloader.
+    /// Used to skip other bootloaders' directories when building a component's [`FileTree`].
+    pub(crate) fn dirs_to_skip(&self) -> Vec<&'static str> {
+        Bootloader::iter()
+            .filter(|b| b != self)
+            .map(|b| b.efi_component_name())
+            .collect()
+    }
 }
 
 #[cfg(not(efi_arch))]

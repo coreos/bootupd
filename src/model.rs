@@ -6,7 +6,6 @@
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::bootloader::Bootloader;
@@ -18,11 +17,11 @@ pub(crate) const BOOTUPD_UPDATES_DIR: &str = "usr/lib/bootupd/updates";
 #[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ContentMetadata {
-    /// The timestamp, which is used to determine update availability
+    /// The timestamp marking when this metadata was generated
     pub(crate) timestamp: DateTime<Utc>,
-    /// Human readable version number, like ostree it is not ever parsed, just displayed
+    /// Human-readable version string, joined from component versions
     pub(crate) version: String,
-    /// Transfer version into Module struct list
+    /// Human-readable version numbers
     pub(crate) versions: Option<Vec<Module>>,
     /// The default bootloader to install if at install time no bootloader option is
     /// provided
@@ -31,14 +30,6 @@ pub(crate) struct ContentMetadata {
 }
 
 impl ContentMetadata {
-    pub(crate) fn can_upgrade_to(&self, target: &Self) -> Ordering {
-        if let (Some(self_versions), Some(target_versions)) = (&self.versions, &target.versions) {
-            compare_package_slices(self_versions, target_versions)
-        } else {
-            compare_package_versions(&self.version, &target.version)
-        }
-    }
-
     /// Returns bootloaders are available for install
     #[cfg(efi_arch)]
     pub(crate) fn available_bootloaders(&self) -> Vec<Bootloader> {
@@ -63,10 +54,7 @@ impl ContentMetadata {
     }
 
     pub(crate) fn filter_bootloader(&mut self, bootloader: Bootloader) {
-        let to_remove = Bootloader::iter()
-            .filter(|b| *b != bootloader)
-            .map(|b| b.efi_component_name())
-            .collect::<Vec<_>>();
+        let to_remove = bootloader.dirs_to_skip();
 
         // Version is of type "<bootloader-name>-<rpm_evr>,<bootloader-name>-<rpm_evr>"
         self.version = self
@@ -90,7 +78,7 @@ impl ContentMetadata {
 pub(crate) struct InstalledContent {
     /// Associated metadata
     pub(crate) meta: ContentMetadata,
-    /// Human readable version number, like ostree it is not ever parsed, just displayed
+    /// The [`crate::filetree::FileTree`] representing installed files
     pub(crate) filetree: Option<crate::filetree::FileTree>,
     /// The version this was originally adopted from
     pub(crate) adopted_from: Option<ContentMetadata>,
@@ -116,22 +104,6 @@ pub(crate) enum ComponentUpdatable {
     NoUpdateAvailable,
     AtLatestVersion,
     Upgradable,
-    WouldDowngrade,
-}
-
-impl ComponentUpdatable {
-    pub(crate) fn from_metadata(from: &ContentMetadata, to: Option<&ContentMetadata>) -> Self {
-        match to {
-            Some(to) => {
-                match from.can_upgrade_to(to) {
-                    Ordering::Equal => return ComponentUpdatable::AtLatestVersion, // from == to
-                    Ordering::Less => return ComponentUpdatable::Upgradable,       // from < to
-                    Ordering::Greater => return ComponentUpdatable::WouldDowngrade, // from > to
-                }
-            }
-            None => ComponentUpdatable::NoUpdateAvailable,
-        }
-    }
 }
 
 /// The status of an individual component.
@@ -144,7 +116,7 @@ pub(crate) struct ComponentStatus {
     pub(crate) interrupted: Option<ContentMetadata>,
     /// Update in the deployed filesystem tree
     pub(crate) update: Option<ContentMetadata>,
-    /// Is true if the version in `update` is different from `installed`
+    /// Is true if the content in `update` is different from `installed`
     pub(crate) updatable: ComponentUpdatable,
     /// Originally adopted version
     pub(crate) adopted_from: Option<ContentMetadata>,
@@ -182,64 +154,6 @@ pub(crate) struct Status {
 mod test {
     use super::*;
     use anyhow::Result;
-    use chrono::Duration;
-
-    #[test]
-    fn test_meta_compare() {
-        let t = Utc::now();
-        let a = ContentMetadata {
-            timestamp: t,
-            version: "grub2-efi-ia32-1:2.12-21.fc41.x86_64,grub2-efi-x64-1:2.12-21.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
-            versions: None,
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        let b = ContentMetadata {
-            timestamp: t + Duration::try_seconds(1).unwrap(),
-            version: "grub2-efi-ia32-1:2.12-28.fc41.x86_64,grub2-efi-x64-1:2.12-28.fc41.x86_64,shim-ia32-15.8-3.x86_64,shim-x64-15.8-3.x86_64".into(),
-            versions: None,
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
-        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
-
-        // Compare versions if it is not none
-        let a = ContentMetadata {
-            timestamp: t,
-            version: "test".into(),
-            versions: Some(vec![
-                Module {
-                    name: "grub2".into(),
-                    evr: "1:2.12-21.fc41".into(),
-                },
-                Module {
-                    name: "shim".into(),
-                    evr: "15.8-3".into(),
-                },
-            ]),
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        let b = ContentMetadata {
-            timestamp: t + Duration::try_seconds(1).unwrap(),
-            version: "test".into(),
-            versions: Some(vec![
-                Module {
-                    name: "grub2".into(),
-                    evr: "1:2.12-28.fc41".into(),
-                },
-                Module {
-                    name: "shim".into(),
-                    evr: "15.8-3".into(),
-                },
-            ]),
-            #[cfg(efi_arch)]
-            default_bootloader: None,
-        };
-        assert_eq!(a.can_upgrade_to(&b), Ordering::Less); // means upgradable
-        assert_eq!(b.can_upgrade_to(&a), Ordering::Greater);
-    }
 
     /// Validate we're not breaking the serialized format of /boot/bootupd-state.json
     #[test]
