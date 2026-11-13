@@ -1,6 +1,7 @@
 [Unit]
 Description=Update bootloader on boot
 Documentation=https://github.com/coreos/bootupd
+RequiresMountsFor=/sysroot
 
 [Service]
 Type=oneshot

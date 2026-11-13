@@ -58,6 +58,7 @@ Conflicts:      bootc < 1.14.1
 %{_unitdir}/bootloader-update.service
 %{_unitdir}/bootupd-varlink.socket
 %{_unitdir}/bootupd-varlink.service
+%{_presetdir}/70-bootupd.preset
 
 %prep
 %autosetup -n %{crate}-%{version} -p1 -a1
@@ -73,6 +74,15 @@ Conflicts:      bootc < 1.14.1
 %make_install INSTALL="install -p -c"
 %{__make} install-grub-static DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
 %{__make} install-systemd-unit DESTDIR=%{?buildroot} INSTALL="%{__install} -p"
+
+%post -n %{crate}
+%systemd_post bootloader-update.service
+
+%preun -n %{crate}
+%systemd_preun bootloader-update.service
+
+%postun -n %{crate}
+%systemd_postun bootloader-update.service
 
 %changelog
 * Tue Oct 18 2022 Colin Walters <walters@verbum.org> - 0.2.8-3
