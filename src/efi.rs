@@ -282,6 +282,49 @@ impl Efi {
             .open_dir(&rel_path)
             .with_context(|| format!("opening update dir {}", rel_path.display()))
     }
+
+    /// Errors unless the update payload in `src_root` carries `bootloader`
+    /// once, which `install` checks before touching the ESP.
+    fn ensure_carried(&self, src_root: &Utf8Path, bootloader: Bootloader) -> Result<()> {
+        let carried = carried_bootloaders(src_root)?;
+        let Some((_, versions)) = carried.iter().find(|(b, _)| *b == bootloader) else {
+            let carried = carried.iter().map(|(b, _)| *b).collect::<Vec<_>>();
+            let carried = if carried.is_empty() {
+                "no bootloader".to_string()
+            } else {
+                format!("only {}", bootloader_names(&carried))
+            };
+            if payload_in_usr_lib_efi(src_root)? {
+                anyhow::bail!(
+                    "Cannot install bootloader '{bootloader}': {EFILIB} has no '{}' component holding {BOOTLOADER_BIN}; the update payload carries {carried}",
+                    bootloader.efi_component_name()
+                );
+            }
+            // `install` would copy the legacy update directory as a whole,
+            // whichever bootloader was requested, but it only carries GRUB.
+            anyhow::bail!(
+                "Cannot install bootloader '{bootloader}': the update payload in {} carries {carried}",
+                payload_location(src_root)?.display()
+            );
+        };
+        ensure_one_version(bootloader, versions)
+    }
+}
+
+/// Errors when more than one of the `versions` of `bootloader`'s component in
+/// `usr/lib/efi` holds its binary, as [`carried_bootloaders`] lists them:
+/// `install` would copy them over one another, in no particular order.
+fn ensure_one_version(bootloader: Bootloader, versions: &[String]) -> Result<()> {
+    if versions.len() > 1 {
+        let mut versions = versions.to_vec();
+        versions.sort_by(|a, b| uapi_version::strverscmp(a, b));
+        anyhow::bail!(
+            "Cannot install bootloader '{bootloader}': {EFILIB} has several versions of its '{}' component: {}",
+            bootloader.efi_component_name(),
+            versions.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Helper function to remove ".release.*" from the contents of etc/system-release, leaving just the name
@@ -514,10 +557,8 @@ impl Component for Efi {
         };
         log::debug!("Found metadata {}", meta.version);
 
-        // Refuse a payload which does not carry the component for the
-        // requested bootloader before touching the ESP. Whether the system
-        // boots via shim is not known at install time, so it is not required.
-        ensure_boot_components(Utf8Path::new(src_root), bootloader, false)?;
+        // Refuse a payload without the bootloader before touching the ESP.
+        self.ensure_carried(Utf8Path::new(src_root), bootloader)?;
 
         // Determine the destination path for the ESP.
         // If a device is provided, find and mount its ESP partition (unmounting
@@ -1005,8 +1046,8 @@ pub struct EFIComponent {
 /// Get EFIComponents from e.g. usr/lib/efi, like "usr/lib/efi/<name>/<version>/EFI"
 /// Filter the components by Bootloader, if Bootloader is None, no filtering is performed
 ///
-/// Errors if a Bootloader is requested but no component provides it, so that
-/// a missing payload fails here rather than silently producing a half-installed ESP.
+/// Errors if a Bootloader is requested but no component provides it. Install
+/// refuses such a payload before touching the ESP already, in `Efi::ensure_carried`.
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
@@ -2282,8 +2323,100 @@ Boot0003* test";
                 Bootloader::Grub,
             )
             .expect_err("install must refuse a payload missing the bootloader");
-        assert!(err.to_string().contains("no 'grub2' component"));
+        assert!(
+            err.to_string().ends_with(&format!(
+                "{EFILIB} has no 'grub2' component holding {BOOTLOADER_BIN}; the update payload carries no bootloader"
+            )),
+            "{err}"
+        );
 
         Ok(())
+    }
+
+    /// Run `install` from `src_root` to a fresh destination without an ESP, so
+    /// that it fails at the latest when looking for the ESP.
+    fn install_without_esp(src_root: &Utf8Path, bootloader: Bootloader) -> Result<()> {
+        let dest = tempfile::tempdir()?;
+        let dest = Utf8Path::from_path(dest.path()).expect("UTF-8");
+        Efi::default().install(src_root.as_str(), dest.as_str(), None, false, bootloader)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_install_refuses_bootloader_not_in_payload() -> Result<()> {
+        // The legacy update directory, which only carries GRUB
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+        let vendor = utf8_sysroot.join(BOOTUPD_UPDATES_DIR).join("EFI/centos");
+        std::fs::create_dir_all(&vendor)?;
+        std::fs::write(vendor.join(SHIM), "shim")?;
+        std::fs::write(vendor.join(BOOTLOADER_BIN), "grub")?;
+        write_update_metadata(
+            utf8_sysroot.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2-efi-x64 1:2.12-58.el10"),
+        )?;
+
+        for bootloader in [Bootloader::GrubCC, Bootloader::Systemd] {
+            let err = install_without_esp(utf8_sysroot, bootloader)
+                .expect_err("install must refuse a bootloader the payload does not carry");
+            assert!(
+                format!("{err:#}").contains("in usr/lib/bootupd/updates/EFI carries only grub"),
+                "{err:#}"
+            );
+        }
+        // GRUB gets past the payload checks.
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_refuses_two_versions_of_bootloader() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+        std::fs::create_dir_all(utf8_sysroot.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            utf8_sysroot.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-2"),
+        )?;
+        for version in ["1:2.12-2", "1:2.12-1"] {
+            let grub = utf8_sysroot.join(EFILIB).join("grub2").join(version);
+            std::fs::create_dir_all(grub.join("EFI/fedora"))?;
+            std::fs::write(grub.join("EFI/fedora").join(BOOTLOADER_BIN), version)?;
+        }
+        let shim = utf8_sysroot.join(EFILIB).join("shim/16.1-1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join(SHIM), "shim")?;
+
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}")
+                .contains("several versions of its 'grub2' component: 1:2.12-1, 1:2.12-2"),
+            "{err:#}"
+        );
+
+        // An upgrade can leave the empty directory of the older version.
+        let older = utf8_sysroot.join(EFILIB).join("grub2/1:2.12-1/EFI/fedora");
+        std::fs::remove_file(older.join(BOOTLOADER_BIN))?;
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_one_version() {
+        ensure_one_version(Bootloader::Grub, &["1:2.12-9.fc44".into()]).unwrap();
+        let versions = ["1:2.12-10.fc44".into(), "1:2.12-9.fc44".into()];
+        let err = ensure_one_version(Bootloader::Grub, &versions).unwrap_err();
+        // In version order, not as strings
+        assert!(
+            err.to_string().ends_with(
+                "several versions of its 'grub2' component: 1:2.12-9.fc44, 1:2.12-10.fc44"
+            ),
+            "{err}"
+        );
     }
 }
