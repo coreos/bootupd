@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 
 use bootc_internal_blockdev::Device;
 
+use crate::bootupd::{PayloadBootloaders, RootContext, Sysroot};
 #[cfg(efi_arch)]
 use crate::cli::bootupd::DefaultBootloaderOpts;
-use crate::{bootloader::Bootloader, bootupd::RootContext, bootupd::Sysroot, model::*};
+use crate::{bootloader::Bootloader, model::*};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -139,6 +140,12 @@ pub(crate) trait Component {
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>>;
 
     fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool;
+
+    /// The bootloaders [`Component::install`] can install for this component
+    /// from the update payload in `src_root`, and the default one `install`
+    /// takes from this component's update metadata, if any. `None` means there
+    /// is no update metadata for this component, so `install` skips it.
+    fn payload_bootloaders(&self, src_root: &str) -> Result<Option<PayloadBootloaders>>;
 
     /// Given a component, return metadata on the available update (if any)
     //

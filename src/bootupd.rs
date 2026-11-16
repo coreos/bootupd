@@ -164,6 +164,27 @@ fn install_bootloader(
     })
 }
 
+/// The components an install with `components` (`--component`) targets, out
+/// of `all_components` as [`get_components_impl`] returns them, with or
+/// without `--auto`.
+fn select_components<'a>(
+    all_components: &'a Components,
+    components: Option<&[String]>,
+) -> Result<Vec<&'a dyn Component>> {
+    let Some(components) = components else {
+        return Ok(all_components.values().map(|c| c.as_ref()).collect());
+    };
+    components
+        .iter()
+        .map(|name| {
+            all_components
+                .get(name.as_str())
+                .map(|c| c.as_ref())
+                .ok_or_else(|| anyhow!("Unknown component: {name}"))
+        })
+        .collect()
+}
+
 /// The `targets` that `install` installs `bootloader` for, in order, after
 /// checking each one's update payload in `src_root`, so that a payload one of
 /// them refuses fails before any is installed. BIOS is skipped without
@@ -217,7 +238,7 @@ fn components_to_install<'a>(
 }
 
 pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMode) -> Result<()> {
-    let all_components = get_components_impl(opts.auto);
+    let all_components = get_components_impl(opts.auto)?;
 
     if all_components.is_empty() {
         println!("No components available for this platform.");
@@ -227,21 +248,9 @@ pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMod
     let source_root_dir = Dir::open_ambient_dir(&opts.src_root, ambient_authority())
         .context("Opening source root")?;
 
-    let target_components = if let Some(target_components) = &opts.components {
-        // Checked by CLI parser
-        assert!(!opts.auto);
-        target_components
-            .iter()
-            .map(|name| {
-                all_components
-                    .get(name.as_str())
-                    .map(|c| c.as_ref())
-                    .ok_or_else(|| anyhow!("Unknown component: {name}"))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        all_components.values().map(|c| c.as_ref()).collect()
-    };
+    // Checked by CLI parser
+    assert!(opts.components.is_none() || !opts.auto);
+    let target_components = select_components(&all_components, opts.components.as_deref())?;
 
     if target_components.is_empty() && !opts.auto {
         anyhow::bail!("No components specified");
@@ -445,10 +454,28 @@ fn get_static_config_meta() -> Result<ContentMetadata> {
 
 type Components = BTreeMap<&'static str, Box<dyn Component>>;
 
-#[allow(clippy::box_default)]
 /// Return the set of known components; if `auto` is specified then the system
-/// filters to the target booted state.
-pub(crate) fn get_components_impl(_auto: bool) -> Components {
+/// filters to the target booted state, and fails if it cannot check for
+/// `/sys/firmware/efi`.
+#[cfg_attr(not(target_arch = "x86_64"), allow(unused_variables, unused_mut))]
+pub(crate) fn get_components_impl(auto: bool) -> Result<Components> {
+    let mut components = get_components();
+    #[cfg(target_arch = "x86_64")]
+    if auto {
+        let booted = if crate::efi::is_efi_booted()? {
+            ComponentType::Efi
+        } else {
+            ComponentType::Bios
+        };
+        log::info!("System boot method: {booted}");
+        components.retain(|_, c| c.component_type() == booted);
+    }
+    Ok(components)
+}
+
+#[allow(clippy::box_default)]
+/// Return the set of known components for this platform.
+pub(crate) fn get_components() -> Components {
     #[cfg(not(target_arch = "s390x"))]
     let mut components = BTreeMap::new();
 
@@ -461,21 +488,8 @@ pub(crate) fn get_components_impl(_auto: bool) -> Components {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if _auto {
-            let is_efi_booted = crate::efi::is_efi_booted().unwrap();
-            log::info!(
-                "System boot method: {}",
-                if is_efi_booted { "EFI" } else { "BIOS" }
-            );
-            if is_efi_booted {
-                insert_component(&mut components, Box::new(efi::Efi::default()));
-            } else {
-                insert_component(&mut components, Box::new(bios::Bios::default()));
-            }
-        } else {
-            insert_component(&mut components, Box::new(bios::Bios::default()));
-            insert_component(&mut components, Box::new(efi::Efi::default()));
-        }
+        insert_component(&mut components, Box::new(bios::Bios::default()));
+        insert_component(&mut components, Box::new(efi::Efi::default()));
     }
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     insert_component(&mut components, Box::new(efi::Efi::default()));
@@ -486,8 +500,104 @@ pub(crate) fn get_components_impl(_auto: bool) -> Components {
     components
 }
 
-pub(crate) fn get_components() -> Components {
-    get_components_impl(false)
+/// The bootloaders an update payload offers, as reported by
+/// `bootupctl backend list-bootloaders`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PayloadBootloaders {
+    /// The bootloaders `install --bootloader` can install, in
+    /// [`Bootloader::iter`] order.
+    pub(crate) available: Vec<Bootloader>,
+    /// The EFI component's default bootloader, set with
+    /// `set-default-bootloader`. `None` if unset or if the EFI component is not
+    /// selected.
+    pub(crate) default: Option<Bootloader>,
+}
+
+impl PayloadBootloaders {
+    /// The JSON form, with the bootloader names `--bootloader` takes. Other
+    /// tools parse it, so keys may be added, but existing ones keep their
+    /// meaning.
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "bootloaders": self.available.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+            "default-bootloader": self.default.map(|b| b.to_string()),
+        })
+    }
+
+    /// The text form: one bootloader per line, with the default marked, even
+    /// if it cannot be installed.
+    pub(crate) fn to_text(&self) -> String {
+        let mut text = self
+            .available
+            .iter()
+            .map(|b| {
+                if self.default == Some(*b) {
+                    format!("{b} (default)\n")
+                } else {
+                    format!("{b}\n")
+                }
+            })
+            .collect::<String>();
+        if let Some(default) = self.default.filter(|b| !self.available.contains(b)) {
+            text.push_str(&format!("{default} (default, cannot be installed)\n"));
+        }
+        text
+    }
+}
+
+/// The bootloaders `install` can install from the update payload in
+/// `src_root`, for an `install` with the same `auto` and `components`. Unlike
+/// for `status`, `src_root` need not be booted. See README-devel.md and
+/// [`combine_payload_bootloaders`] for how the selected components are
+/// combined. A `src_root` or selected payload that cannot be read is an error,
+/// even for a component `install` would skip.
+#[context("Listing the bootloaders of the update payload")]
+pub(crate) fn payload_bootloaders(
+    src_root: &str,
+    auto: bool,
+    components: Option<&[String]>,
+) -> Result<PayloadBootloaders> {
+    let all_components = get_components_impl(auto)?;
+    if all_components.is_empty() {
+        // Like `install`, which then has nothing to install
+        return Ok(PayloadBootloaders::default());
+    }
+    // Report a source root that cannot be opened with `install`'s error, not
+    // a component's.
+    Dir::open_ambient_dir(src_root, ambient_authority()).context("Opening source root")?;
+    let mut payloads = Vec::new();
+    for component in select_components(&all_components, components)? {
+        let payload = component
+            .payload_bootloaders(src_root)
+            .with_context(|| format!("Reading the update payload of {}", component.name()))?;
+        match payload {
+            Some(payload) => payloads.push((component, payload)),
+            None => log::warn!(
+                "Component {} has no update metadata; install would skip it",
+                component.name()
+            ),
+        }
+    }
+    Ok(combine_payload_bootloaders(&payloads))
+}
+
+/// Combine the bootloaders of the components with update metadata. A
+/// bootloader is listed if every one of them that supports it can install it,
+/// as `install` requires, and at least one of them can. Otherwise a bootloader
+/// none of them supports would be listed.
+fn combine_payload_bootloaders(
+    payloads: &[(&dyn Component, PayloadBootloaders)],
+) -> PayloadBootloaders {
+    let available = Bootloader::iter()
+        .filter(|&b| {
+            payloads.iter().any(|(_, p)| p.available.contains(&b))
+                && payloads
+                    .iter()
+                    .all(|(c, p)| !c.is_bootloader_supported(b) || p.available.contains(&b))
+        })
+        .collect();
+    let default = payloads.iter().find_map(|(_, p)| p.default);
+    PayloadBootloaders { available, default }
 }
 
 pub(crate) fn generate_update_metadata(sysroot_path: &str) -> Result<()> {
@@ -1127,6 +1237,228 @@ fn strip_grub_config_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", efi_arch))]
+    fn test_combine_payload_bootloaders() {
+        use Bootloader::{Grub, GrubCC, Systemd};
+        #[derive(Debug)]
+        struct Case {
+            /// What the BIOS payload can install, `None` without BIOS metadata
+            bios: Option<&'static [Bootloader]>,
+            /// What the EFI payload can install, `None` without EFI metadata
+            efi: Option<&'static [Bootloader]>,
+            default: Option<Bootloader>,
+            expected: &'static [Bootloader],
+        }
+        let cases = [
+            Case {
+                bios: None,
+                efi: None,
+                default: None,
+                expected: &[],
+            },
+            Case {
+                bios: Some(&[Grub]),
+                efi: None,
+                default: None,
+                expected: &[Grub],
+            },
+            Case {
+                bios: None,
+                efi: Some(&[Grub, Systemd]),
+                default: None,
+                expected: &[Grub, Systemd],
+            },
+            Case {
+                bios: Some(&[Grub]),
+                efi: Some(&[Grub, Systemd]),
+                default: Some(Systemd),
+                expected: &[Grub, Systemd],
+            },
+            // BIOS could install GRUB, but the EFI payload cannot.
+            Case {
+                bios: Some(&[Grub]),
+                efi: Some(&[GrubCC]),
+                default: None,
+                expected: &[GrubCC],
+            },
+            Case {
+                bios: Some(&[Grub]),
+                efi: Some(&[]),
+                default: None,
+                expected: &[],
+            },
+            // The EFI payload could install GRUB, but BIOS cannot, e.g.
+            // without grub2-install.
+            Case {
+                bios: Some(&[]),
+                efi: Some(&[Grub, Systemd]),
+                default: None,
+                expected: &[Systemd],
+            },
+        ];
+        let components = get_components();
+        for case in &cases {
+            let mut payloads = Vec::new();
+            if let Some(available) = case.bios {
+                let bios = PayloadBootloaders {
+                    available: available.to_vec(),
+                    default: None,
+                };
+                payloads.push((components["BIOS"].as_ref(), bios));
+            }
+            if let Some(available) = case.efi {
+                let efi = PayloadBootloaders {
+                    available: available.to_vec(),
+                    default: case.default,
+                };
+                payloads.push((components["EFI"].as_ref(), efi));
+            }
+            let expected = PayloadBootloaders {
+                available: case.expected.to_vec(),
+                default: case.default,
+            };
+            assert_eq!(combine_payload_bootloaders(&payloads), expected, "{case:?}");
+        }
+    }
+
+    /// With `auto`, only the components for how this host booted
+    #[test]
+    fn test_get_components_auto() -> Result<()> {
+        let auto = get_components_impl(true)?;
+        let names = auto.keys().copied().collect::<Vec<_>>();
+        #[cfg(target_arch = "x86_64")]
+        {
+            let booted = if crate::efi::is_efi_booted()? {
+                "EFI"
+            } else {
+                "BIOS"
+            };
+            assert_eq!(names, [booted]);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        assert_eq!(names, get_components().keys().copied().collect::<Vec<_>>());
+        Ok(())
+    }
+
+    #[test]
+    fn test_select_components() {
+        let all = get_components();
+        let names = |selected: Vec<&dyn Component>| -> Vec<&str> {
+            selected.iter().map(|c| c.name()).collect()
+        };
+        let expected = all.keys().copied().collect::<Vec<_>>();
+        assert_eq!(names(select_components(&all, None).unwrap()), expected);
+        assert!(select_components(&all, Some(&[])).unwrap().is_empty());
+        let unknown = ["foo".to_string()];
+        let Err(err) = select_components(&all, Some(&unknown)) else {
+            panic!("an unknown component must be refused");
+        };
+        assert_eq!(err.to_string(), "Unknown component: foo");
+    }
+
+    /// A whole EFI payload, as laid out on Fedora 45 with systemd-boot added,
+    /// with and without shim
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_payload_bootloaders_on_root() -> Result<()> {
+        use crate::efi::{BOOTLOADER_BIN, SHIM};
+        use Bootloader::{Grub, Systemd};
+        let components = get_components();
+        let meta = |default_bootloader| ContentMetadata {
+            timestamp: chrono::Utc::now(),
+            version: "1.0-1".into(),
+            versions: None,
+            default_bootloader,
+        };
+        for with_shim in [true, false] {
+            let td = tempfile::tempdir()?;
+            let root = Utf8Path::from_path(td.path()).unwrap();
+            std::fs::create_dir_all(root.join(crate::model::BOOTUPD_UPDATES_DIR))?;
+            for name in ["grub2", "shim", "systemd-boot"] {
+                let vendor = root.join("usr/lib/efi").join(name).join("1.0-1/EFI/fedora");
+                std::fs::create_dir_all(&vendor)?;
+                if name != "shim" {
+                    std::fs::write(vendor.join(BOOTLOADER_BIN), "")?;
+                } else if with_shim {
+                    std::fs::write(vendor.join(SHIM), "")?;
+                }
+            }
+            let data_name = components["EFI"].component_update_data_name();
+            component::write_update_metadata(root.as_str(), data_name, &meta(Some(Systemd)))?;
+            let available = if with_shim {
+                vec![Grub, Systemd]
+            } else {
+                vec![]
+            };
+            let expected = PayloadBootloaders {
+                available,
+                default: Some(Systemd),
+            };
+            let efi = ["EFI".to_string()];
+            let payload = payload_bootloaders(root.as_str(), false, Some(&efi))?;
+            assert_eq!(payload, expected, "{with_shim}");
+            // Without --component, the BIOS component has no update metadata
+            // here and is skipped.
+            assert_eq!(payload_bootloaders(root.as_str(), false, None)?, expected);
+        }
+        // A source root that cannot be opened is an error, as for `install`.
+        let err = payload_bootloaders("/nonexistent/src-root", false, None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Opening source root"),
+            "{err:#}"
+        );
+        // So is a payload that cannot be read.
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let updates = root.join(crate::model::BOOTUPD_UPDATES_DIR);
+        std::fs::create_dir_all(&updates)?;
+        let efi_json = components["EFI"].component_update_data_name();
+        std::fs::write(updates.as_std_path().join(efi_json), "{garbage")?;
+        let efi = ["EFI".to_string()];
+        let err = payload_bootloaders(root.as_str(), false, Some(&efi)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Reading the update payload of EFI"),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_payload_bootloaders_output() {
+        use Bootloader::{Grub, GrubCC, Systemd};
+        // The bootloaders, and their JSON and text forms
+        let cases = [
+            (
+                PayloadBootloaders::default(),
+                r#"{"bootloaders":[],"default-bootloader":null}"#,
+                "",
+            ),
+            (
+                PayloadBootloaders {
+                    available: vec![Grub, GrubCC, Systemd],
+                    default: Some(Grub),
+                },
+                r#"{"bootloaders":["grub","grub-cc","systemd"],"default-bootloader":"grub"}"#,
+                "grub (default)\ngrub-cc\nsystemd\n",
+            ),
+            // A default that cannot be installed
+            (
+                PayloadBootloaders {
+                    available: vec![Grub],
+                    default: Some(Systemd),
+                },
+                r#"{"bootloaders":["grub"],"default-bootloader":"systemd"}"#,
+                "grub\nsystemd (default, cannot be installed)\n",
+            ),
+        ];
+        for (bootloaders, json, text) in cases {
+            assert_eq!(bootloaders.to_json().to_string(), json);
+            assert_eq!(bootloaders.to_text(), text);
+        }
+    }
 
     #[test]
     fn test_failpoint_update() {

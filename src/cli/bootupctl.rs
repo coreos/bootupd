@@ -78,6 +78,8 @@ pub enum CtlBackend {
     #[clap(hide = true)]
     #[cfg(efi_arch)]
     SetDefaultBootloader(super::bootupd::DefaultBootloaderOpts),
+    #[clap(name = "list-bootloaders", hide = true)]
+    ListBootloaders(super::bootupd::ListBootloadersOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -132,6 +134,9 @@ impl CtlCommand {
             #[cfg(efi_arch)]
             CtlVerb::Backend(CtlBackend::SetDefaultBootloader(opts)) => {
                 super::bootupd::DCommand::set_default_bootloader(opts)
+            }
+            CtlVerb::Backend(CtlBackend::ListBootloaders(opts)) => {
+                super::bootupd::DCommand::run_list_bootloaders(opts)
             }
             CtlVerb::MigrateStaticGrubConfig => Self::run_migrate_static_grub_config(),
         }

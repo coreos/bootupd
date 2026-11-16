@@ -23,6 +23,24 @@ if [ "$container" ] || [ -f /run/.containerenv ] || [ -f /.dockerenv ]; then
   [ "${components_text}" == "${output}" ]
   output=$(bootupctl status --json)
   [ "${components_json}" == "${output}" ]
+
+  # The CentOS Stream images carry GRUB. Dockerfile.bls adds a systemd-boot
+  # component, and a grub-cc one while grub-cc testing is enabled, and makes
+  # GRUB the default.
+  if [ -d /usr/lib/efi/systemd-boot ]; then
+    bootloaders='"grub"'
+    if [ -d /usr/lib/efi/grub-cc ]; then
+      bootloaders+=',"grub-cc"'
+    fi
+    bootloaders_json="{\"bootloaders\":[${bootloaders},\"systemd\"],\"default-bootloader\":\"grub\"}"
+  else
+    bootloaders_json='{"bootloaders":["grub"],"default-bootloader":null}'
+  fi
+  output=$(bootupctl backend list-bootloaders --json)
+  [ "${bootloaders_json}" == "${output}" ]
+  # The same for an install of the EFI component alone
+  output=$(bootupctl backend list-bootloaders --component EFI --json)
+  [ "${bootloaders_json}" == "${output}" ]
 else
   echo "Skip running as not in container"
 fi

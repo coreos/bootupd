@@ -112,6 +112,50 @@ mod tests {
     }
 
     #[test]
+    fn test_list_bootloaders_args() {
+        let ctl = bootupctl::CtlCommand::try_parse_from([
+            "bootupctl",
+            "backend",
+            "list-bootloaders",
+            "--src-root",
+            "/target",
+            "--component",
+            "EFI",
+            "--json",
+        ])
+        .unwrap();
+        match ctl.cmd {
+            bootupctl::CtlVerb::Backend(bootupctl::CtlBackend::ListBootloaders(opts)) => {
+                assert_eq!(opts.src_root, "/target");
+                assert_eq!(opts.components, Some(vec!["EFI".to_string()]));
+                assert!(!opts.auto);
+                assert!(opts.json);
+            }
+            cmd => panic!("{cmd:?}"),
+        }
+        let d =
+            bootupd::DCommand::try_parse_from(["bootupd", "list-bootloaders", "--auto"]).unwrap();
+        match d.cmd {
+            bootupd::DVerb::ListBootloaders(opts) => {
+                assert_eq!(opts.src_root, "/");
+                assert_eq!(opts.components, None);
+                assert!(opts.auto);
+                assert!(!opts.json);
+            }
+            cmd => panic!("{cmd:?}"),
+        }
+        // As for `install`
+        let both = [
+            "bootupd",
+            "list-bootloaders",
+            "--auto",
+            "--component",
+            "EFI",
+        ];
+        assert!(bootupd::DCommand::try_parse_from(both).is_err());
+    }
+
+    #[test]
     fn test_multicall_dispatch() {
         {
             let d_argv = vec![

@@ -28,7 +28,7 @@ use walkdir::WalkDir;
 use bootc_internal_blockdev::Device;
 
 use crate::bootloader::{get_bootloader, Bootloader};
-use crate::bootupd::{RootContext, Sysroot};
+use crate::bootupd::{PayloadBootloaders, RootContext, Sysroot};
 use crate::freezethaw::fsfreeze_thaw_cycle;
 use crate::model::*;
 use crate::ostreeutil;
@@ -730,6 +730,72 @@ impl Component for Efi {
             bootloader,
             Bootloader::Grub | Bootloader::GrubCC | Bootloader::Systemd
         )
+    }
+
+    fn payload_bootloaders(&self, src_root: &str) -> Result<Option<PayloadBootloaders>> {
+        let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
+            .with_context(|| format!("opening source directory {src_root}"))?;
+        #[cfg_attr(not(efi_arch), allow(unused_variables))]
+        let Some(meta) = self.get_component_update(&src_dir, None)?
+        else {
+            return Ok(None);
+        };
+        // The bootloaders the payload carries that pass the checks `install`
+        // runs before touching the ESP, see Efi::check_payload
+        let src_path = Utf8Path::new(src_root);
+        let carried = carried_bootloaders(src_path)?;
+        if carried.is_empty() {
+            log::warn!(
+                "The EFI update payload in {} carries no bootloader",
+                payload_location(src_path)?.display()
+            );
+        }
+        let mut available = Vec::new();
+        for (bootloader, versions) in carried {
+            match ensure_one_version(bootloader, &versions) {
+                Ok(()) => available.push(bootloader),
+                Err(e) => log::warn!("{e:#}"),
+            }
+        }
+        // Like `install`, check for shim only when there is a bootloader to
+        // install. An unreadable payload is an error; without exactly one
+        // shim, nothing can be installed. Whether that shim can load a
+        // bootloader once installed depends on the bootloader.
+        if !available.is_empty() {
+            let shims = self.find_shims(src_path.as_std_path(), false)?;
+            match efi_vendor(&shims) {
+                Ok(_) => {
+                    let mut loadable = Vec::new();
+                    for bootloader in available {
+                        // A payload that cannot be read is an error, as in
+                        // `install`.
+                        match shim_load_problem(src_path, bootloader, &shims[0])? {
+                            Some(problem) => {
+                                log::warn!("Cannot install bootloader '{bootloader}': {problem}")
+                            }
+                            None => {
+                                // `install` reads the file tree it records
+                                // before touching the ESP, failing if it cannot.
+                                install_filetree(src_path, bootloader)?;
+                                loadable.push(bootloader);
+                            }
+                        }
+                    }
+                    available = loadable;
+                }
+                Err(e) => {
+                    log::warn!("Cannot install {}: {e:#}", bootloader_names(&available));
+                    available.clear();
+                }
+            }
+        }
+        Ok(Some(PayloadBootloaders {
+            available,
+            #[cfg(efi_arch)]
+            default: meta.default_bootloader,
+            #[cfg(not(efi_arch))]
+            default: None,
+        }))
     }
 
     fn query_adopt(&self, devices: &Option<Vec<Device>>) -> Result<Option<Adoptable>> {
@@ -2116,6 +2182,339 @@ Boot0003* test";
             std::fs::write(vendor.join(binary), "")?;
         }
         assert_eq!(bootloaders_in_payload(root)?, [Grub]);
+        Ok(())
+    }
+
+    /// What payload_bootloaders adds to bootloaders_in_payload: the metadata,
+    /// its default, and shim
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_payload_bootloaders() -> Result<()> {
+        use Bootloader::{Grub, Systemd};
+        #[derive(Debug)]
+        struct Case {
+            /// Module names in the update metadata, `None` without metadata
+            metadata: Option<&'static [&'static str]>,
+            default: Option<Bootloader>,
+            /// The components in usr/lib/efi, `None` without that directory.
+            /// The shim component carries the shim binary.
+            usr_lib_efi: Option<&'static [&'static str]>,
+            /// A legacy update directory with GRUB, and whether it has the
+            /// shim binary as well; `None` without that directory
+            legacy_shim: Option<bool>,
+            expected: Option<&'static [Bootloader]>,
+        }
+        let cases = [
+            Case {
+                metadata: None,
+                default: None,
+                usr_lib_efi: Some(&["grub2", "shim"]),
+                legacy_shim: None,
+                expected: None,
+            },
+            Case {
+                metadata: Some(&["grub2", "shim", "systemd-boot"]),
+                default: Some(Systemd),
+                usr_lib_efi: Some(&["grub2", "shim", "systemd-boot"]),
+                legacy_shim: None,
+                expected: Some(&[Grub, Systemd]),
+            },
+            // `install` needs shim for any bootloader.
+            Case {
+                metadata: Some(&["grub2", "systemd-boot"]),
+                default: None,
+                usr_lib_efi: Some(&["grub2", "systemd-boot"]),
+                legacy_shim: None,
+                expected: Some(&[]),
+            },
+            // Metadata not regenerated after removing systemd-boot, which
+            // is still the default
+            Case {
+                metadata: Some(&["grub2", "shim", "systemd-boot"]),
+                default: Some(Systemd),
+                usr_lib_efi: Some(&["grub2", "shim"]),
+                legacy_shim: None,
+                expected: Some(&[Grub]),
+            },
+            // The metadata of the legacy layout names packages.
+            Case {
+                metadata: Some(&["grub2-efi-x64", "shim-x64"]),
+                default: None,
+                usr_lib_efi: None,
+                legacy_shim: Some(true),
+                expected: Some(&[Grub]),
+            },
+            Case {
+                metadata: Some(&["grub2-efi-x64"]),
+                default: None,
+                usr_lib_efi: None,
+                legacy_shim: Some(false),
+                expected: Some(&[]),
+            },
+        ];
+        let efi = Efi::default();
+        // The answer agrees with `install`, as far as that gets without an ESP.
+        let agrees = |root: &Utf8Path| -> Result<()> {
+            let available = efi
+                .payload_bootloaders(root.as_str())?
+                .map(|p| p.available)
+                .unwrap_or_default();
+            for bootloader in Bootloader::iter() {
+                let err = install_without_esp(root, bootloader).unwrap_err();
+                let installs = format!("{err:#}").contains("no mounted ESP");
+                assert_eq!(
+                    available.contains(&bootloader),
+                    installs,
+                    "{bootloader}: {err:#}"
+                );
+            }
+            Ok(())
+        };
+        for case in &cases {
+            let td = tempfile::tempdir()?;
+            let root = Utf8Path::from_path(td.path()).unwrap();
+            std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+            if let Some(components) = case.usr_lib_efi {
+                std::fs::create_dir_all(root.join(EFILIB))?;
+                for name in components {
+                    let vendor = root.join(EFILIB).join(name).join("1.0-1/EFI/fedora");
+                    std::fs::create_dir_all(&vendor)?;
+                    let binary = if *name == "shim" {
+                        SHIM
+                    } else {
+                        BOOTLOADER_BIN
+                    };
+                    std::fs::write(vendor.join(binary), "")?;
+                }
+            }
+            if let Some(with_shim) = case.legacy_shim {
+                let vendor = root.join(BOOTUPD_UPDATES_DIR).join("EFI/fedora");
+                std::fs::create_dir_all(&vendor)?;
+                std::fs::write(vendor.join(BOOTLOADER_BIN), "")?;
+                if with_shim {
+                    std::fs::write(vendor.join(SHIM), "")?;
+                }
+            }
+            if let Some(names) = case.metadata {
+                let meta = ContentMetadata {
+                    timestamp: chrono::Utc::now(),
+                    version: names.join(","),
+                    versions: Some(
+                        names
+                            .iter()
+                            .map(|name| Module {
+                                name: name.to_string(),
+                                evr: "1.0-1".into(),
+                            })
+                            .collect(),
+                    ),
+                    default_bootloader: case.default,
+                };
+                write_update_metadata(root.as_str(), efi.component_update_data_name(), &meta)?;
+            }
+            let expected = case.expected.map(|available| PayloadBootloaders {
+                available: available.to_vec(),
+                default: case.default,
+            });
+            assert_eq!(
+                efi.payload_bootloaders(root.as_str())?,
+                expected,
+                "{case:?}"
+            );
+            agrees(root)?;
+        }
+
+        // Two shims, which `install` refuses
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        let grub = root.join(EFILIB).join("grub2/1.0-1/EFI/fedora");
+        std::fs::create_dir_all(&grub)?;
+        std::fs::write(grub.join(BOOTLOADER_BIN), "")?;
+        for version in ["1.0-1", "2.0-1"] {
+            let vendor = root
+                .join(EFILIB)
+                .join("shim")
+                .join(version)
+                .join("EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(SHIM), "")?;
+        }
+        write_update_metadata(
+            root.as_str(),
+            efi.component_update_data_name(),
+            &create_test_meta("1.0-1"),
+        )?;
+        let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+        assert!(payload.available.is_empty(), "{payload:?}");
+        agrees(root)?;
+
+        // Two versions of grub2, which `install` refuses, next to systemd-boot
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        for component in ["grub2/1.0-1", "grub2/2.0-1", "systemd-boot/1.0-1"] {
+            let vendor = root.join(EFILIB).join(component).join("EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(BOOTLOADER_BIN), "")?;
+        }
+        let shim = root.join(EFILIB).join("shim/1.0-1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join(SHIM), "")?;
+        write_update_metadata(
+            root.as_str(),
+            efi.component_update_data_name(),
+            &create_test_meta("1.0-1"),
+        )?;
+        let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+        assert_eq!(payload.available, [Bootloader::Systemd]);
+        agrees(root)?;
+
+        // An older version of grub2 that an upgrade left empty, which does
+        // not count, and a systemd-boot component whose binary does not have
+        // the name shim loads
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        std::fs::create_dir_all(root.join(EFILIB).join("grub2/1.0-1/EFI"))?;
+        for (component, binary) in [
+            ("grub2/2.0-1", BOOTLOADER_BIN),
+            ("systemd-boot/1.0-1", "systemd-bootx64.efi"),
+            ("shim/1.0-1", SHIM),
+        ] {
+            let vendor = root.join(EFILIB).join(component).join("EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(binary), "")?;
+        }
+        write_update_metadata(
+            root.as_str(),
+            efi.component_update_data_name(),
+            &create_test_meta("1.0-1"),
+        )?;
+        let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+        assert_eq!(payload.available, [Bootloader::Grub]);
+        agrees(root)?;
+
+        // Next to systemd-boot in EFI/fedora: shim only in systemd-boot's
+        // component, which a GRUB install does not copy; shim in a component
+        // of its own, with GRUB in another directory, where shim cannot load
+        // it; shim and GRUB below a vendor directory; and a shim component
+        // that also has a file where shim loads either bootloader from
+        const SDBOOT: &str = "systemd-boot/1.0-1/EFI/fedora";
+        /// Files in usr/lib/efi besides systemd-boot's, and the bootloaders
+        /// that can be installed
+        struct Layout {
+            files: &'static [(&'static str, &'static str)],
+            expected: &'static [Bootloader],
+        }
+        let layouts = [
+            Layout {
+                files: &[("grub2/1.0-1/EFI/fedora", BOOTLOADER_BIN), (SDBOOT, SHIM)],
+                expected: &[Systemd],
+            },
+            Layout {
+                files: &[
+                    ("grub2/1.0-1/EFI/redhat", BOOTLOADER_BIN),
+                    ("shim/1.0-1/EFI/fedora", SHIM),
+                ],
+                expected: &[Systemd],
+            },
+            Layout {
+                files: &[
+                    ("grub2/1.0-1/EFI/extra/fedora", BOOTLOADER_BIN),
+                    ("shim/1.0-1/EFI/extra/fedora", SHIM),
+                ],
+                expected: &[],
+            },
+            Layout {
+                files: &[
+                    ("grub2/1.0-1/EFI/fedora", BOOTLOADER_BIN),
+                    ("shim/1.0-1/EFI/fedora", SHIM),
+                    ("shim/1.0-1/EFI/fedora", BOOTLOADER_BIN),
+                ],
+                expected: &[],
+            },
+            // The ESP's file system ignores case.
+            Layout {
+                files: &[
+                    ("grub2/1.0-1/EFI/fedora", BOOTLOADER_BIN),
+                    ("shim/1.0-1/EFI/fedora", SHIM),
+                    ("shim/1.0-1/EFI/FEDORA", BOOTLOADER_BIN),
+                ],
+                expected: &[],
+            },
+        ];
+        for Layout { files, expected } in layouts {
+            let td = tempfile::tempdir()?;
+            let root = Utf8Path::from_path(td.path()).unwrap();
+            std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+            for (dir, name) in files.iter().chain(&[(SDBOOT, BOOTLOADER_BIN)]) {
+                // Each a different file, see esp_entries
+                let path = root.join(EFILIB).join(dir).join(name);
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(&path, path.as_str())?;
+            }
+            write_update_metadata(
+                root.as_str(),
+                efi.component_update_data_name(),
+                &create_test_meta("1.0-1"),
+            )?;
+            let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+            assert_eq!(payload.available, expected, "{files:?}");
+            agrees(root)?;
+        }
+
+        // A legacy update directory that is a symbolic link
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let updates = root.join(BOOTUPD_UPDATES_DIR);
+        let real = updates.join("EFI.real/fedora");
+        std::fs::create_dir_all(&real)?;
+        std::fs::write(real.join(SHIM), "")?;
+        std::fs::write(real.join(BOOTLOADER_BIN), "")?;
+        std::os::unix::fs::symlink("EFI.real", updates.join("EFI"))?;
+        write_update_metadata(
+            root.as_str(),
+            efi.component_update_data_name(),
+            &create_test_meta("1.0-1"),
+        )?;
+        let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+        assert!(payload.available.is_empty(), "{payload:?}");
+        agrees(root)?;
+
+        // A symbolic link in a copied component, even one that loops, which
+        // `install` cannot copy to the ESP
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        for (dir, name) in [
+            ("grub2/1.0-1/EFI/fedora", BOOTLOADER_BIN),
+            ("shim/1.0-1/EFI/fedora", SHIM),
+        ] {
+            let dir = root.join(EFILIB).join(dir);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(name), "")?;
+        }
+        let extra = root.join(EFILIB).join("extra/1.0-1/EFI");
+        std::fs::create_dir_all(&extra)?;
+        std::os::unix::fs::symlink("fedora", extra.join("fedora"))?;
+        write_update_metadata(
+            root.as_str(),
+            efi.component_update_data_name(),
+            &create_test_meta("1.0-1"),
+        )?;
+        let payload = efi.payload_bootloaders(root.as_str())?.unwrap();
+        assert!(payload.available.is_empty(), "{payload:?}");
+        agrees(root)?;
+
+        // A payload whose file tree `install` cannot record is an error, as
+        // for `install`, not a bootloader that cannot be installed.
+        std::fs::remove_file(extra.join("fedora"))?;
+        std::fs::write(root.join(EFILIB).join(".btmp.leftover"), "")?;
+        let err = efi.payload_bootloaders(root.as_str()).unwrap_err();
+        assert!(format!("{err:#}").contains("temporary prefix"), "{err:#}");
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("temporary prefix"), "{err:#}");
         Ok(())
     }
 
