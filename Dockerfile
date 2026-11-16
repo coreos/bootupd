@@ -24,6 +24,32 @@ FROM $base
 # Clean out the default to ensure we're using our updated content
 RUN rpm -e bootupd
 COPY --from=build /out/ /
+# Regenerate the update metadata with this bootupd, as images built with it do.
+# Without usr/lib/efi, generate-update-metadata moves the payload out of
+# usr/lib/ostree-boot, as the base image already did, so move it back first.
+# CentOS Stream 9 keeps the base image's metadata, to keep covering images that
+# update bootupd without regenerating it. Fail once the base image ships the
+# 0.4.0 format, so that this coverage cannot silently go away.
+RUN <<EORUN
+set -xeuo pipefail
+. /etc/os-release
+if [ "$ID" = centos ] && [ "$VERSION_ID" = 9 ]; then
+  if [ ! -f /usr/lib/bootupd/updates/EFI.json ]; then
+    echo "The base image has no EFI.json" >&2
+    exit 1
+  fi
+  if ! grep -q '"rpm_evr"' /usr/lib/bootupd/updates/EFI.json; then
+    echo "The base image's EFI.json now uses the 0.4.0 format, so this no longer tests older metadata" >&2
+    exit 1
+  fi
+  exit 0
+fi
+if [ ! -d /usr/lib/efi ] && [ -d /usr/lib/bootupd/updates/EFI ]; then
+  mkdir -p /usr/lib/ostree-boot/efi
+  mv -T /usr/lib/bootupd/updates/EFI /usr/lib/ostree-boot/efi/EFI
+fi
+bootupctl backend generate-update-metadata
+EORUN
 # Install bootc from copr
 RUN <<EORUN
 set -xeuo pipefail

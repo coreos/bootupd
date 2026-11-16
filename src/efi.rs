@@ -56,13 +56,13 @@ pub(crate) const SHIM: &str = "shimriscv64.efi";
 /// The bootloader binary, which every bootloader names grub<arch>.efi
 /// because that name is baked into the shim
 #[cfg(target_arch = "x86_64")]
-const BOOTLOADER_BIN: &str = "grubx64.efi";
+pub(crate) const BOOTLOADER_BIN: &str = "grubx64.efi";
 
 #[cfg(target_arch = "aarch64")]
-const BOOTLOADER_BIN: &str = "grubaa64.efi";
+pub(crate) const BOOTLOADER_BIN: &str = "grubaa64.efi";
 
 #[cfg(target_arch = "riscv64")]
-const BOOTLOADER_BIN: &str = "grubriscv64.efi";
+pub(crate) const BOOTLOADER_BIN: &str = "grubriscv64.efi";
 
 /// The mount path for uefi
 const EFIVARFS: &str = "/sys/firmware/efi/efivars";
@@ -908,6 +908,23 @@ pub(crate) fn create_efi_boot_entry(
     cmd.run_inherited_with_cmd_context()
 }
 
+/// Whether `dir`, or a directory below it, holds a file named `name`. A
+/// directory that cannot be read fails this, while a missing `dir` holds
+/// nothing.
+fn holds_file(dir: &Path, name: &str) -> Result<bool> {
+    for entry in WalkDir::new(dir) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) if is_missing_root(&e) => return Ok(false),
+            Err(e) => return Err(walk_error(e, dir)),
+        };
+        if entry.file_type().is_file() && entry.file_name() == name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[context("Find target file recursively")]
 fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<PathBuf>> {
     let mut result = Vec::new();
@@ -1089,6 +1106,77 @@ fn payload_in_usr_lib_efi(sysroot: &Utf8Path) -> Result<bool> {
         .as_std_path()
         .try_exists()
         .with_context(|| format!("Checking for {efilib}"))
+}
+
+/// Where `install` takes the EFI update payload in `src_root` from, see
+/// [`payload_in_usr_lib_efi`].
+pub(crate) fn payload_location(src_root: &Utf8Path) -> Result<PathBuf> {
+    Ok(if payload_in_usr_lib_efi(src_root)? {
+        PathBuf::from(EFILIB)
+    } else {
+        let name: &str = ComponentType::Efi.into();
+        Path::new(BOOTUPD_UPDATES_DIR).join(name)
+    })
+}
+
+/// The bootloaders the EFI update payload in `src_root` carries, as `install`
+/// copies it, each with the versions of its `usr/lib/efi` component that
+/// hold the bootloader binary.
+///
+/// With `usr/lib/efi`, a bootloader needs a component of its own there. Only
+/// versions holding the binary count, as an upgrade can leave the empty
+/// directory of an older version behind. Without `usr/lib/efi`, the legacy
+/// update directory, which `install` copies as a whole, can only carry GRUB,
+/// if the binary is there. A payload directory that cannot be read fails
+/// this instead of hiding a bootloader.
+fn carried_bootloaders(src_root: &Utf8Path) -> Result<Vec<(Bootloader, Vec<String>)>> {
+    if !payload_in_usr_lib_efi(src_root)? {
+        let legacy = src_root.as_std_path().join(payload_location(src_root)?);
+        return Ok(if holds_file(&legacy, BOOTLOADER_BIN)? {
+            vec![(Bootloader::Grub, Vec::new())]
+        } else {
+            Vec::new()
+        });
+    }
+    let components = get_efi_component_from_usr(src_root, EFILIB, None)?.unwrap_or_default();
+    let mut carried = Vec::new();
+    for bootloader in Bootloader::iter() {
+        let mut versions = Vec::new();
+        for component in &components {
+            if component.name == bootloader.efi_component_name()
+                && holds_file(src_root.join(&component.path).as_std_path(), BOOTLOADER_BIN)?
+            {
+                versions.push(component.version.clone());
+            }
+        }
+        if !versions.is_empty() {
+            carried.push((bootloader, versions));
+        }
+    }
+    Ok(carried)
+}
+
+/// The bootloaders the EFI update payload in `src_root` carries, see
+/// [`carried_bootloaders`].
+///
+/// Unlike the component names in the update metadata, this also works for an
+/// image without `usr/lib/efi` whose metadata bootupd 0.4.0 or newer
+/// generated, as that names packages.
+#[cfg(efi_arch)]
+pub(crate) fn bootloaders_in_payload(src_root: &Utf8Path) -> Result<Vec<Bootloader>> {
+    Ok(carried_bootloaders(src_root)?
+        .into_iter()
+        .map(|(bootloader, _)| bootloader)
+        .collect())
+}
+
+/// The names of `bootloaders`, as `--bootloader` takes them, for messages.
+pub(crate) fn bootloader_names(bootloaders: &[Bootloader]) -> String {
+    let names = bootloaders
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>();
+    names.join(", ")
 }
 
 /// Errors when the update payload uses the `usr/lib/efi` layout but does
@@ -1527,6 +1615,38 @@ Boot0003* test";
     }
 
     #[test]
+    fn test_holds_file() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let vendor = root.join("EFI/fedora");
+        assert!(!holds_file(vendor.as_std_path(), BOOTLOADER_BIN)?);
+        std::fs::create_dir_all(&vendor)?;
+        assert!(!holds_file(root.as_std_path(), BOOTLOADER_BIN)?);
+        std::fs::write(vendor.join(BOOTLOADER_BIN), "grub")?;
+        assert!(holds_file(root.as_std_path(), BOOTLOADER_BIN)?);
+
+        // A symlink loop fails this even for root.
+        let looped = root.join("looped");
+        std::os::unix::fs::symlink("looped", &looped)?;
+        let err = holds_file(looped.as_std_path(), BOOTLOADER_BIN).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
+            "{err:#}"
+        );
+
+        // A directory that cannot be read, here with the binary in it
+        let (padded, long) = unreadable_below(root);
+        let hidden = root.join("hidden").join(&long);
+        std::fs::create_dir_all(&hidden)?;
+        std::fs::write(hidden.join(BOOTLOADER_BIN), "grub")?;
+        let err = holds_file(padded.join("hidden").as_std_path(), BOOTLOADER_BIN)
+            .expect_err("an unreadable directory must not hide the binary");
+        let enametoolong = os_error_text(libc::ENAMETOOLONG);
+        assert!(format!("{err:#}").contains(&enametoolong), "{err:#}");
+        Ok(())
+    }
+
+    #[test]
     fn test_payload_in_usr_lib_efi() -> Result<()> {
         let td = tempfile::tempdir()?;
         let root = Utf8Path::from_path(td.path()).unwrap();
@@ -1541,6 +1661,141 @@ Boot0003* test";
             format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
             "{err:#}"
         );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_bootloaders_in_payload() -> Result<()> {
+        use Bootloader::{Grub, GrubCC, Systemd};
+        #[derive(Debug)]
+        struct Case {
+            /// The components in usr/lib/efi, `None` without that directory.
+            /// Each holds the bootloader binary, but shim holds shim.
+            usr_lib_efi: Option<&'static [&'static str]>,
+            /// Components there, of another version, without any binary
+            empty: &'static [&'static str],
+            /// A legacy update directory with shim, and whether it has the
+            /// GRUB binary as well; `None` without that directory
+            legacy_grub: Option<bool>,
+            expected: &'static [Bootloader],
+        }
+        let cases = [
+            Case {
+                usr_lib_efi: Some(&["grub2", "shim"]),
+                empty: &[],
+                legacy_grub: None,
+                expected: &[Grub],
+            },
+            Case {
+                usr_lib_efi: Some(&["grub2", "shim", "systemd-boot"]),
+                empty: &[],
+                legacy_grub: None,
+                expected: &[Grub, Systemd],
+            },
+            Case {
+                usr_lib_efi: Some(&["grub-cc", "shim"]),
+                empty: &[],
+                legacy_grub: None,
+                expected: &[GrubCC],
+            },
+            Case {
+                usr_lib_efi: Some(&["shim"]),
+                empty: &[],
+                legacy_grub: None,
+                expected: &[],
+            },
+            // A component without the binary does not count,
+            Case {
+                usr_lib_efi: Some(&["grub2", "shim"]),
+                empty: &["systemd-boot"],
+                legacy_grub: None,
+                expected: &[Grub],
+            },
+            // nor does an empty version that an upgrade left behind.
+            Case {
+                usr_lib_efi: Some(&["grub2", "shim"]),
+                empty: &["grub2"],
+                legacy_grub: None,
+                expected: &[Grub],
+            },
+            Case {
+                usr_lib_efi: Some(&["shim"]),
+                empty: &["grub2"],
+                legacy_grub: None,
+                expected: &[],
+            },
+            // `install` refuses every bootloader with an empty usr/lib/efi,
+            // even next to the legacy update directory.
+            Case {
+                usr_lib_efi: Some(&[]),
+                empty: &[],
+                legacy_grub: Some(true),
+                expected: &[],
+            },
+            Case {
+                usr_lib_efi: None,
+                empty: &[],
+                legacy_grub: Some(true),
+                expected: &[Grub],
+            },
+            Case {
+                usr_lib_efi: None,
+                empty: &[],
+                legacy_grub: Some(false),
+                expected: &[],
+            },
+            Case {
+                usr_lib_efi: None,
+                empty: &[],
+                legacy_grub: None,
+                expected: &[],
+            },
+        ];
+        for case in &cases {
+            let td = tempfile::tempdir()?;
+            let root = Utf8Path::from_path(td.path()).unwrap();
+            if let Some(components) = case.usr_lib_efi {
+                std::fs::create_dir_all(root.join(EFILIB))?;
+                for name in components {
+                    let vendor = root.join(EFILIB).join(name).join("1.0-1/EFI/fedora");
+                    std::fs::create_dir_all(&vendor)?;
+                    let binary = if *name == "shim" {
+                        SHIM
+                    } else {
+                        BOOTLOADER_BIN
+                    };
+                    std::fs::write(vendor.join(binary), "")?;
+                }
+            }
+            for name in case.empty {
+                std::fs::create_dir_all(root.join(EFILIB).join(name).join("0.9-1/EFI"))?;
+            }
+            if let Some(with_grub) = case.legacy_grub {
+                let vendor = root.join(BOOTUPD_UPDATES_DIR).join("EFI/centos");
+                std::fs::create_dir_all(&vendor)?;
+                std::fs::write(vendor.join(SHIM), "shim")?;
+                if with_grub {
+                    std::fs::write(vendor.join(BOOTLOADER_BIN), "grub")?;
+                }
+            }
+            assert_eq!(bootloaders_in_payload(root)?, case.expected, "{case:?}");
+        }
+
+        // A component holding only a binary shim does not load does not
+        // count either.
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        for (name, binary) in [
+            ("grub2", BOOTLOADER_BIN),
+            ("shim", SHIM),
+            ("systemd-boot", "systemd-bootx64.efi"),
+        ] {
+            let vendor = root.join(EFILIB).join(name).join("1.0-1/EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(binary), "")?;
+        }
+        assert_eq!(bootloaders_in_payload(root)?, [Grub]);
         Ok(())
     }
 

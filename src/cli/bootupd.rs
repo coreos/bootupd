@@ -164,9 +164,12 @@ impl DCommand {
     #[cfg(efi_arch)]
     pub(crate) fn set_default_bootloader(opts: DefaultBootloaderOpts) -> Result<()> {
         let all_components = crate::bootupd::get_components();
-        let target_components: Vec<_> = all_components.values().collect();
+        let root_path = opts.sysroot.as_deref().unwrap_or("/");
+        let root = Dir::open_ambient_dir(root_path, ambient_authority())
+            .with_context(|| format!("Opening {root_path}"))?;
+        let mut target_components = Vec::new();
 
-        for &component in target_components.iter() {
+        for component in all_components.values() {
             if !component.is_bootloader_supported(opts.bootloader) {
                 log::info!(
                     "{} is not supported for {}. Skipping...",
@@ -176,7 +179,21 @@ impl DCommand {
 
                 continue;
             }
+            // Such as BIOS on an image without grub2-install
+            if component.get_component_update(&root, None)?.is_none() {
+                log::info!("{} has no update metadata. Skipping...", component.name());
+                continue;
+            }
 
+            target_components.push(component);
+        }
+        // `install` only reads the EFI component's default
+        if !target_components.iter().any(|c| c.name() == "EFI") {
+            anyhow::bail!(
+                "Cannot set the default bootloader: there is no EFI update metadata in {root_path}"
+            );
+        }
+        for component in target_components {
             component.set_default_bootloader(&opts)?;
         }
 

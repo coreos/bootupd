@@ -51,6 +51,59 @@ impl MultiCall {
 mod tests {
     use super::*;
 
+    /// set-default-bootloader records the default in the components that have
+    /// update metadata, as on an image without BIOS.json.
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_set_default_bootloader() -> Result<()> {
+        use crate::bootloader::Bootloader;
+        use crate::component::write_update_metadata;
+        use crate::model::ContentMetadata;
+        let td = tempfile::tempdir()?;
+        let root = td.path().to_str().unwrap();
+        let opts = || bootupd::DefaultBootloaderOpts {
+            sysroot: Some(root.to_string()),
+            bootloader: Bootloader::Grub,
+        };
+        let no_efi = "Cannot set the default bootloader: there is no EFI update metadata";
+        let err = bootupd::DCommand::set_default_bootloader(opts()).unwrap_err();
+        assert!(err.to_string().starts_with(no_efi), "{err}");
+
+        // BIOS metadata alone is not enough, as `install` only reads EFI's default
+        std::fs::create_dir_all(td.path().join(crate::model::BOOTUPD_UPDATES_DIR))?;
+        let meta: ContentMetadata = serde_json::from_str(
+            r#"{"timestamp":"2026-11-16T17:14:09Z","version":"grub2 1:2.12-58.fc45,shim 16.1-7","versions":[{"name":"grub2","evr":"1:2.12-58.fc45"},{"name":"shim","evr":"16.1-7"}]}"#,
+        )?;
+        write_update_metadata(root, "BIOS.json".into(), &meta)?;
+        let err = bootupd::DCommand::set_default_bootloader(opts()).unwrap_err();
+        assert!(err.to_string().starts_with(no_efi), "{err}");
+
+        let root_dir = cap_std_ext::cap_std::fs::Dir::open_ambient_dir(
+            root,
+            cap_std_ext::cap_std::ambient_authority(),
+        )?;
+        let efi = crate::efi::Efi::default();
+        let efi_default = || crate::component::Component::get_default_bootloader(&efi, &root_dir);
+
+        // EFI metadata alone is enough, as on images without BIOS.json
+        std::fs::remove_file(
+            td.path()
+                .join(crate::model::BOOTUPD_UPDATES_DIR)
+                .join("BIOS.json"),
+        )?;
+        write_update_metadata(root, "EFI.json".into(), &meta)?;
+        bootupd::DCommand::set_default_bootloader(opts())?;
+        assert_eq!(efi_default()?, Some(Bootloader::Grub));
+
+        // and so is metadata for both
+        write_update_metadata(root, "EFI.json".into(), &meta)?;
+        assert_eq!(efi_default()?, None);
+        write_update_metadata(root, "BIOS.json".into(), &meta)?;
+        bootupd::DCommand::set_default_bootloader(opts())?;
+        assert_eq!(efi_default()?, Some(Bootloader::Grub));
+        Ok(())
+    }
+
     #[test]
     fn clap_apps() {
         use clap::CommandFactory;
