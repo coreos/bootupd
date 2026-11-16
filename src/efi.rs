@@ -309,6 +309,33 @@ impl Efi {
         };
         ensure_one_version(bootloader, versions)
     }
+
+    /// Errors unless the update payload in `src_root` has exactly one shim
+    /// binary. After copying the payload, `install` takes the EFI vendor
+    /// directory from it, so it checks this before touching the ESP.
+    ///
+    /// Unlike the later vendor lookups, this fails on a payload directory that
+    /// cannot be read, since one could hide a shim.
+    fn ensure_shim(&self, src_root: &Utf8Path) -> Result<()> {
+        efi_vendor(&self.find_shims(src_root.as_std_path(), false)?)?;
+        Ok(())
+    }
+
+    /// The shim binaries in the EFI update payload under `sysroot`, in
+    /// `usr/lib/efi`, or else in the legacy update directory, or else, as a
+    /// last resort, anywhere in `sysroot`. A directory that cannot be read
+    /// fails this, unless `skip_unreadable`. See [`efi_vendor`].
+    fn find_shims(&self, sysroot: &Path, skip_unreadable: bool) -> Result<Vec<PathBuf>> {
+        let efi_lib = sysroot.join(EFILIB);
+        let updates = sysroot.join(component_updatedirname(self));
+
+        let paths: [&Path; 3] = [&efi_lib, &updates, sysroot];
+        let target = paths
+            .into_iter()
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("Failed to find valid target path"))?;
+        find_file_recursive(target, SHIM, skip_unreadable)
+    }
 }
 
 /// Errors when more than one of the `versions` of `bootloader`'s component in
@@ -325,6 +352,24 @@ fn ensure_one_version(bootloader: Bootloader, versions: &[String]) -> Result<()>
         );
     }
     Ok(())
+}
+
+/// The EFI vendor directory of the one shim binary in `shims`, as
+/// [`Efi::find_shims`] finds them. Errors without exactly one.
+fn efi_vendor(shims: &[PathBuf]) -> Result<String> {
+    // Does not support multiple shim for efi
+    if shims.len() > 1 {
+        anyhow::bail!("Found multiple {SHIM} in the image");
+    }
+    let Some(p) = shims.first() else {
+        anyhow::bail!("Failed to find {SHIM} in the image")
+    };
+    let p = p
+        .parent()
+        .unwrap()
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("No file name found"))?;
+    Ok(p.to_string_lossy().into_owned())
 }
 
 /// Helper function to remove ".release.*" from the contents of etc/system-release, leaving just the name
@@ -557,8 +602,10 @@ impl Component for Efi {
         };
         log::debug!("Found metadata {}", meta.version);
 
-        // Refuse a payload without the bootloader before touching the ESP.
+        // Refuse a payload without the bootloader, or without exactly one
+        // shim, before touching the ESP.
         self.ensure_carried(Utf8Path::new(src_root), bootloader)?;
+        self.ensure_shim(Utf8Path::new(src_root))?;
 
         // Determine the destination path for the ESP.
         // If a device is provided, find and mount its ESP partition (unmounting
@@ -807,30 +854,10 @@ impl Component for Efi {
     }
 
     fn get_efi_vendor(&self, sysroot: &Path) -> Result<Option<String>> {
-        let efi_lib = sysroot.join(EFILIB);
-        let updates = sysroot.join(component_updatedirname(self));
-
-        let paths: [&Path; 3] = [&efi_lib, &updates, sysroot];
-        let target = paths
-            .into_iter()
-            .find(|p| p.exists())
-            .ok_or_else(|| anyhow::anyhow!("Failed to find valid target path"))?;
-        let shim_files = find_file_recursive(target, SHIM)?;
-
-        // Does not support multiple shim for efi
-        if shim_files.len() > 1 {
-            anyhow::bail!("Found multiple {SHIM} in the image");
-        }
-        if let Some(p) = shim_files.first() {
-            let p = p
-                .parent()
-                .unwrap()
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("No file name found"))?;
-            Ok(Some(p.to_string_lossy().into_owned()))
-        } else {
-            anyhow::bail!("Failed to find {SHIM} in the image")
-        }
+        // Callers look the vendor up after writing to the ESP, so keep
+        // skipping unreadable directories as before. Efi::ensure_shim checks
+        // them up front.
+        efi_vendor(&self.find_shims(sysroot, true)?).map(Some)
     }
 
     fn has_changed_content(
@@ -966,11 +993,23 @@ fn holds_file(dir: &Path, name: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// The files named `target_file` in `dir` and the directories below it. A
+/// directory that cannot be read fails this, unless `skip_unreadable`.
 #[context("Find target file recursively")]
-fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<PathBuf>> {
+fn find_file_recursive<P: AsRef<Path>>(
+    dir: P,
+    target_file: &str,
+    skip_unreadable: bool,
+) -> Result<Vec<PathBuf>> {
+    let dir = dir.as_ref();
     let mut result = Vec::new();
 
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(dir) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) if skip_unreadable => continue,
+            Err(e) => return Err(walk_error(e, dir)),
+        };
         if entry.file_type().is_file() {
             if let Some(file_name) = entry.file_name().to_str() {
                 if file_name == target_file {
@@ -2418,5 +2457,62 @@ Boot0003* test";
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn test_install_checks_shim_before_the_esp() -> Result<()> {
+        let sysroot = tempfile::tempdir()?;
+        let utf8_sysroot = Utf8Path::from_path(sysroot.path()).expect("UTF-8");
+        std::fs::create_dir_all(utf8_sysroot.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            utf8_sysroot.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-1"),
+        )?;
+        let grub = utf8_sysroot.join(EFILIB).join("grub2/1:2.12-1/EFI/fedora");
+        std::fs::create_dir_all(&grub)?;
+        std::fs::write(grub.join(BOOTLOADER_BIN), "grub")?;
+        let shim = |version: &str| utf8_sysroot.join(EFILIB).join("shim").join(version);
+
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("Failed to find"), "{err:#}");
+
+        for version in ["16.1-1", "16.1-2"] {
+            let vendor = shim(version).join("EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(SHIM), "shim")?;
+        }
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("Found multiple"), "{err:#}");
+
+        // With one shim, `install` gets to the ESP.
+        std::fs::remove_dir_all(shim("16.1-2"))?;
+        let err = install_without_esp(utf8_sysroot, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+        Ok(())
+    }
+
+    /// The shim check before the ESP fails on a payload directory that cannot
+    /// be read, while the vendor lookups after it keep skipping such
+    /// directories, as in 0.4.0.
+    #[test]
+    fn test_shim_search_unreadable() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let shim = root.join(EFILIB).join("shim/1.0-1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join(SHIM), "shim")?;
+        // A directory that cannot be read next to the one shim
+        let (padded, long) = unreadable_below(root);
+        std::fs::create_dir_all(root.join(EFILIB).join(&long))?;
+        let efi = Efi::default();
+        let err = efi
+            .ensure_shim(&padded)
+            .expect_err("an unreadable directory could hide a shim");
+        let enametoolong = os_error_text(libc::ENAMETOOLONG);
+        assert!(format!("{err:#}").contains(&enametoolong), "{err:#}");
+        let vendor = efi.get_efi_vendor(padded.as_std_path())?;
+        assert_eq!(vendor, Some("fedora".to_string()));
+        Ok(())
     }
 }

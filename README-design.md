@@ -52,6 +52,7 @@ payload carries the bootloader to install exactly once. In `usr/lib/efi`, exactl
 of the bootloader's component must contain a file with the name shim loads, e.g.
 `grubx64.efi`. Without `usr/lib/efi`, `install` copies the whole legacy update directory,
 `usr/lib/bootupd/updates/EFI`, which can only carry GRUB, and only if it contains that file.
+The payload must also contain exactly one shim binary.
 
 ## Upgrade edges
 
