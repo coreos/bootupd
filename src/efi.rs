@@ -269,7 +269,7 @@ impl Efi {
 
     /// Returns the [`Dir`] containing the EFI update payload.
     fn get_update_payload_dir(&self, sysroot: Sysroot<'_>) -> Result<Dir> {
-        let rel_path = if sysroot.path.join(EFILIB).exists()
+        let rel_path = if payload_in_usr_lib_efi(sysroot.path)?
             && get_efi_component_from_usr(sysroot.path, EFILIB, None)?.is_some()
         {
             PathBuf::from(EFILIB)
@@ -544,7 +544,7 @@ impl Component for Efi {
         validate_esp_fstype(destd)?;
 
         let src_path = Utf8Path::new(src_root);
-        let efi_comps = if src_path.join(EFILIB).exists() {
+        let efi_comps = if payload_in_usr_lib_efi(src_path)? {
             get_efi_component_from_usr(src_path, EFILIB, Some(bootloader))?
         } else {
             None
@@ -672,7 +672,7 @@ impl Component for Efi {
 
         // Newer images >= F44 have boot entries in /usr/lib/efi, but older images
         // have them in /usr/lib/ostree-boot, which we move to /usr/lib/bootupd/updates/EFI
-        let metadata = if sysroot_path.join(EFILIB).exists() {
+        let metadata = if payload_in_usr_lib_efi(sysroot_path)? {
             println!("Generating metadata from {EFILIB}");
             generate_meta_from_usr_efi(sysroot_path)?
         } else {
@@ -958,6 +958,26 @@ fn generate_meta_from_usr_efi(sysroot_path: &Utf8Path) -> Result<ContentMetadata
     Ok(meta)
 }
 
+/// Whether a walk failed because the directory it started from is missing.
+fn is_missing_root(error: &walkdir::Error) -> bool {
+    error.depth() == 0
+        && error
+            .io_error()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// Turns a walkdir error into one naming the directory that could not be read.
+/// walkdir's message names it, except when reading a directory's entries
+/// fails; then this can only say it is below `start`. The message already
+/// includes the cause, so the cause is not kept as a separate source.
+fn walk_error(error: walkdir::Error, start: &Path) -> anyhow::Error {
+    if error.path().is_some() {
+        anyhow::anyhow!("{error}")
+    } else {
+        anyhow::anyhow!("Reading a directory below {}: {error}", start.display())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EFIComponent {
     pub name: String,
@@ -978,12 +998,19 @@ fn get_efi_component_from_usr<'a>(
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
-    let mut components: Vec<EFIComponent> = WalkDir::new(&efilib_path)
+    let mut components = WalkDir::new(&efilib_path)
         .min_depth(3) // <name>/<version>/EFI: so 3 levels down
         .max_depth(3)
         .into_iter()
         .filter_map(|entry| {
-            let entry = entry.ok()?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                // Without usr/lib/efi, there are no components.
+                Err(e) if is_missing_root(&e) => return None,
+                // Skipping a directory that cannot be read would make the
+                // components in it look absent.
+                Err(e) => return Some(Err(walk_error(e, efilib_path.as_std_path()))),
+            };
             if !entry.file_type().is_dir() || entry.file_name() != "EFI" {
                 return None;
             }
@@ -997,13 +1024,13 @@ fn get_efi_component_from_usr<'a>(
             let name = components.nth(skip_count)?.to_string();
             let version = components.next()?.to_string();
 
-            Some(EFIComponent {
+            Some(Ok(EFIComponent {
                 name,
                 version,
                 path: utf8_rel_path,
-            })
+            }))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     components.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -1049,6 +1076,19 @@ fn get_efi_component_from_usr<'a>(
     }
 
     Ok(Some(efi_comps))
+}
+
+/// Whether `usr/lib/efi` exists in `sysroot`, even if empty. If it does,
+/// `install` and generate-update-metadata take the EFI update payload from
+/// there instead of the legacy update directory; update and status also need a
+/// component in it. An error checking for it is returned, not treated as
+/// missing.
+fn payload_in_usr_lib_efi(sysroot: &Utf8Path) -> Result<bool> {
+    let efilib = sysroot.join(EFILIB);
+    efilib
+        .as_std_path()
+        .try_exists()
+        .with_context(|| format!("Checking for {efilib}"))
 }
 
 /// Errors when the update payload uses the `usr/lib/efi` layout but does
@@ -1437,6 +1477,73 @@ Boot0003* test";
         Ok(())
     }
 
+    /// The C library's text for `errno`, as error messages include it.
+    fn os_error_text(errno: i32) -> String {
+        std::io::Error::from_raw_os_error(errno).to_string()
+    }
+
+    /// `dir`, padded with "/." to almost PATH_MAX, and a name too long to be
+    /// read below it: such a path is longer than PATH_MAX, so reading it fails
+    /// with ENAMETOOLONG, for root as well, unlike a file mode.
+    fn unreadable_below(dir: &Utf8Path) -> (Utf8PathBuf, String) {
+        let mut padded = dir.to_string();
+        while padded.len() < 3900 {
+            padded.push_str("/.");
+        }
+        (Utf8PathBuf::from(padded), "x".repeat(255))
+    }
+
+    #[test]
+    fn test_get_efi_component_from_usr_unreadable() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        // Without usr/lib/efi, there are no components.
+        assert_eq!(get_efi_component_from_usr(root, EFILIB, None)?, None);
+
+        // A component directory that cannot be read
+        let (padded, long) = unreadable_below(root);
+        std::fs::create_dir_all(root.join(EFILIB).join(&long).join("1.0-1/EFI"))?;
+        let err = get_efi_component_from_usr(&padded, EFILIB, None)
+            .expect_err("an unreadable component must not look absent");
+        let enametoolong = os_error_text(libc::ENAMETOOLONG);
+        assert!(format!("{err:#}").contains(&enametoolong), "{err:#}");
+        Ok(())
+    }
+
+    /// A symlink loop fails a walk even for root, which file modes do not.
+    #[test]
+    fn test_payload_walks_fail_on_symlink_loop() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let efilib = root.join(EFILIB);
+        std::fs::create_dir_all(efilib.parent().unwrap())?;
+        std::os::unix::fs::symlink("efi", &efilib)?;
+        let err = get_efi_component_from_usr(root, EFILIB, None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_payload_in_usr_lib_efi() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        assert!(!payload_in_usr_lib_efi(root)?);
+        std::fs::create_dir_all(root.join(EFILIB))?;
+        assert!(payload_in_usr_lib_efi(root)?);
+        // One that cannot be checked does not count as missing.
+        std::fs::remove_dir(root.join(EFILIB))?;
+        std::os::unix::fs::symlink("efi", root.join(EFILIB))?;
+        let err = payload_in_usr_lib_efi(root).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_get_system_name() {
         assert_eq!("Fedora", &get_system_name("Fedora release 44 (Forty Four)"));
@@ -1771,6 +1878,35 @@ Boot0003* test";
         let payload_dir = efi.get_update_payload_dir(sysroot)?;
         assert!(payload_dir.exists("shim/16.1-7.el9/EFI/fedora/shimx64.efi"));
 
+        // A usr/lib/efi that cannot be checked does not fall back either
+        std::fs::remove_dir_all(utf8_sysroot.join(EFILIB))?;
+        std::os::unix::fs::symlink("efi", utf8_sysroot.join(EFILIB))?;
+        let err = efi.get_update_payload_dir(sysroot).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
+            "{err:#}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_update_metadata_unreadable_usr_lib_efi() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        let legacy = root.join(ostreeutil::BOOT_PREFIX).join("efi/EFI/fedora");
+        std::fs::create_dir_all(&legacy)?;
+        std::fs::write(legacy.join("shimx64.efi"), "shim")?;
+        std::os::unix::fs::symlink("efi", root.join(EFILIB))?;
+        let err = Efi::default()
+            .generate_update_metadata(root.as_str())
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(&os_error_text(libc::ELOOP)),
+            "{err:#}"
+        );
+        // The legacy payload stays where it is.
+        assert!(legacy.join("shimx64.efi").exists());
         Ok(())
     }
 
