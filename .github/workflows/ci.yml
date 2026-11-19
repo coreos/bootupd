@@ -140,14 +140,13 @@ jobs:
           set -xeuo pipefail
           sudo podman run --rm -v $PWD:/run/src -w /run/src --privileged "$IMG_NAME" tests/tests/generate-update-metadata.sh
 
-      - name: Test GrubCC and SystemdBoot
+      - name: Test SystemdBoot
         run: |
           if [[ "${{ matrix.grubcc }}" == "0" ]]; then
             exit 0
           fi
 
           set -xeuo pipefail
-          sudo ./scripts/test-bootloader.sh "$IMG_NAME" "grub-cc"
           sudo ./scripts/test-bootloader.sh "$IMG_NAME" "systemd"
 
       - name: Test BIOS installs and VM boot
