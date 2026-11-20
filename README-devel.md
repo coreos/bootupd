@@ -19,6 +19,28 @@ See also [the coreos-assembler docs](https://coreos.github.io/coreos-assembler/w
 
 There's a reference [Dockerfile](Dockerfile) that builds on [CentOS Stream bootc](https://docs.fedoraproject.org/en-US/bootc/).
 
+## Continuous Integration
+
+The `ci.yml` and `cross.yml` workflows each end in a `required-checks (<name>)`
+sentinel job, as should workflows inherited from [repo-templates](https://github.com/coreos/repo-templates).
+The sentinel fails when any job it's watching in that workflow fails.
+It's the names of these sentinel jobs which should be included in branch protection.
+
+Matrix jobs report expanded names like `bootc-e2e (ubuntu-24.04, 0, 9)`.
+Requiring those names means a rule edit on every matrix change. GitHub
+Actions cannot express `needs` across workflows, so each of these workflows
+has its own sentinel. Jobs which only have a single stable name, e.g. `tmt-tests`,
+can just be required directly.
+
+A sentinel must report on every PR, so its workflow cannot use `pull_request`
+path filters. `package-system.yml` keeps its filters and runs only when
+`packagesystem/*` or the workflow files change, so it's intentionally not
+required. On unrelated PRs its checks can only fail through distro image
+drift, which should not block merges.
+
+When jobs are added to `ci.yml` or `cross.yml`, they should also be
+added to that workflow's sentinel `needs` list.
+
 ## Integrating bootupd into a distribution/OS
 
 Today, bootupd only really works on systems that use ostree.

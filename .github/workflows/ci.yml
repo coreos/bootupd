@@ -167,3 +167,16 @@ jobs:
           if [[ "${{ matrix.stream }}" != "10" ]]; then
             sudo ./scripts/test-uefi-vm-boot.sh "$IMG_NAME" "composefs"
           fi
+
+  # SENTINEL JOB
+  # Require this name in branch protection instead of every
+  # matrix-expanded job name (e.g. "bootc-e2e (ubuntu-24.04, 0, 9)").
+  required-checks:
+    name: required-checks (ci)
+    if: always()
+    needs: [bootc-e2e]
+    runs-on: ubuntu-slim
+    steps:
+      - uses: bootc-dev/actions/required-checks@main
+        with:
+          needs: ${{ toJson(needs) }}
