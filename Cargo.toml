@@ -44,7 +44,7 @@ tempfile = "^3.26"
 uapi-version = "0.4.0"
 walkdir = "2.3.2"
 signal-hook-registry = "1.4.8"
-zlink = { version = "0.7.0", default-features = false, features = ["tokio", "service", "tracing"] }
+zlink = { version = "0.8.0", default-features = false, features = ["tokio", "service", "tracing"] }
 tokio = { version = "1.53", default-features = false, features = ["rt"] }
 
 # EFI-only dependencies
