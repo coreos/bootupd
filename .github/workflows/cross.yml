@@ -41,3 +41,16 @@ jobs:
             source $HOME/.cargo/env
             rustc --version
             cargo check
+
+  # SENTINEL JOB
+  # Require this name in branch protection instead of every
+  # matrix-expanded job name (e.g. "Build on s390x").
+  required-checks:
+    name: required-checks (cross)
+    if: always()
+    needs: [crossarch-check]
+    runs-on: ubuntu-slim
+    steps:
+      - uses: bootc-dev/actions/required-checks@main
+        with:
+          needs: ${{ toJson(needs) }}
