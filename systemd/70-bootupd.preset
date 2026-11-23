@@ -1,0 +1,2 @@
+# Enable the bootloader updater so it runs on boot
+enable bootloader-update.service

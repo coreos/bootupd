@@ -45,6 +45,7 @@ install-grub-static:
 .PHONY: install-systemd-unit
 install-systemd-unit:
 	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system/" systemd/bootloader-update.service systemd/bootupd-varlink.service systemd/bootupd-varlink.socket
+	install -m 644 -D -t "${DESTDIR}$(PREFIX)/lib/systemd/system-preset/" systemd/70-bootupd.preset
 
 .PHONY: install-all
 install-all: install install-grub-static install-systemd-unit
