@@ -164,6 +164,58 @@ fn install_bootloader(
     })
 }
 
+/// The `targets` that `install` installs `bootloader` for, in order, after
+/// checking each one's update payload in `src_root`, so that a payload one of
+/// them refuses fails before any is installed. BIOS is skipped without
+/// `devices`, and any component that does not support `bootloader` or has no
+/// update metadata.
+fn components_to_install<'a>(
+    targets: &[&'a dyn Component],
+    devices: &[Device],
+    bootloader: Bootloader,
+    src_root: &str,
+    source_root_dir: &Dir,
+) -> Result<Vec<&'a dyn Component>> {
+    let mut components = Vec::new();
+    for &component in targets {
+        // skip for BIOS if no devices specified
+        if component.component_type() == ComponentType::Bios && devices.is_empty() {
+            println!(
+                "Skip installing component {} without target device",
+                component.name()
+            );
+            continue;
+        }
+
+        if !component.is_bootloader_supported(bootloader) {
+            println!(
+                "Skip installing component {} as it does not support bootloader {bootloader}",
+                component.name()
+            );
+            continue;
+        }
+
+        // skip components that don't have an update metadata
+        if component
+            .query_update(source_root_dir, bootloader)?
+            .is_none()
+        {
+            println!(
+                "Skip installing component {} without update metadata",
+                component.name()
+            );
+            continue;
+        }
+        components.push(component);
+    }
+    for component in &components {
+        component
+            .check_payload(src_root, bootloader)
+            .with_context(|| format!("installing component {}", component.name()))?;
+    }
+    Ok(components)
+}
+
 pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMode) -> Result<()> {
     let all_components = get_components_impl(opts.auto);
 
@@ -231,39 +283,18 @@ pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMod
     #[cfg(not(efi_arch))]
     let bootloader = Bootloader::Grub;
 
+    let components = components_to_install(
+        &target_components,
+        devices,
+        bootloader,
+        &opts.src_root,
+        &source_root_dir,
+    )?;
+
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
 
-    for &component in target_components.iter() {
-        // skip for BIOS if no devices specified
-        if component.component_type() == ComponentType::Bios && devices.is_empty() {
-            println!(
-                "Skip installing component {} without target device",
-                component.name()
-            );
-            continue;
-        }
-
-        if !component.is_bootloader_supported(bootloader) {
-            println!(
-                "Skip installing component {} as it does not support bootloader {bootloader}",
-                component.name()
-            );
-            continue;
-        }
-
-        // skip components that don't have an update metadata
-        if component
-            .query_update(&source_root_dir, bootloader)?
-            .is_none()
-        {
-            println!(
-                "Skip installing component {} without update metadata",
-                component.name()
-            );
-            continue;
-        }
-
+    for &component in components.iter() {
         // Determine which devices to install to. For EFI, filter to only
         // devices that have an ESP partition.
         let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
@@ -1280,6 +1311,69 @@ initrdefi /ostree/rhcos-bf3b382/initramfs.img
             err.to_string()
                 .ends_with("carries systemd, but its metadata names grub. Pass --bootloader, or regenerate the metadata"),
             "{err}"
+        );
+        Ok(())
+    }
+
+    /// A payload a component refuses fails before any component is installed,
+    /// even when BIOS, which comes first, could install.
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_components_to_install() -> Result<()> {
+        use crate::efi::{BOOTLOADER_BIN, SHIM};
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        // The legacy update directory with shim, but without GRUB
+        write_empty(root, &format!("usr/lib/bootupd/updates/EFI/centos/{SHIM}"))?;
+        let updates = root.join("usr/lib/bootupd/updates");
+        std::fs::write(updates.join("EFI.json"), PACKAGE_METADATA)?;
+        std::fs::write(updates.join("BIOS.json"), PACKAGE_METADATA)?;
+        let src_dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let all = get_components();
+        let targets = all.values().map(|c| c.as_ref()).collect::<Vec<_>>();
+        let device: Device = serde_json::from_value(serde_json::json!({
+            "name": "vda",
+            "size": 0
+        }))?;
+        let devices = [device];
+        let names = |components: Vec<&dyn Component>| {
+            components.iter().map(|c| c.name()).collect::<Vec<_>>()
+        };
+        let install = |devices: &[Device]| {
+            components_to_install(&targets, devices, Bootloader::Grub, root.as_str(), &src_dir)
+        };
+
+        let Err(err) = install(&devices) else {
+            panic!("a payload EFI refuses must fail the install");
+        };
+        assert!(
+            format!("{err:#}").starts_with(
+                "installing component EFI: Cannot install bootloader 'grub': the update payload in usr/lib/bootupd/updates/EFI carries no bootloader"
+            ),
+            "{err:#}"
+        );
+
+        write_empty(
+            root,
+            &format!("usr/lib/bootupd/updates/EFI/centos/{BOOTLOADER_BIN}"),
+        )?;
+        let expected = if all.contains_key("BIOS") {
+            vec!["BIOS", "EFI"]
+        } else {
+            vec!["EFI"]
+        };
+        assert_eq!(names(install(&devices)?), expected);
+        // BIOS needs a device to install to
+        assert_eq!(names(install(&[])?), ["EFI"]);
+        // A component without update metadata is not checked either.
+        std::fs::remove_file(updates.join("EFI.json"))?;
+        std::fs::remove_file(updates.join(format!("EFI/centos/{BOOTLOADER_BIN}")))?;
+        assert_eq!(
+            names(install(&devices)?),
+            expected
+                .into_iter()
+                .filter(|c| *c != "EFI")
+                .collect::<Vec<_>>()
         );
         Ok(())
     }

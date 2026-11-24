@@ -587,6 +587,13 @@ impl Component for Efi {
         }))
     }
 
+    /// Refuses a payload without the bootloader, or without exactly one shim.
+    fn check_payload(&self, src_root: &str, bootloader: Bootloader) -> Result<()> {
+        let src_root = Utf8Path::new(src_root);
+        self.ensure_carried(src_root, bootloader)?;
+        self.ensure_shim(src_root)
+    }
+
     fn install(
         &self,
         src_root: &str,
@@ -602,10 +609,9 @@ impl Component for Efi {
         };
         log::debug!("Found metadata {}", meta.version);
 
-        // Refuse a payload without the bootloader, or without exactly one
-        // shim, before touching the ESP.
-        self.ensure_carried(Utf8Path::new(src_root), bootloader)?;
-        self.ensure_shim(Utf8Path::new(src_root))?;
+        // `install` checked this before installing any component, but this
+        // can be called directly too.
+        self.check_payload(src_root, bootloader)?;
 
         // Determine the destination path for the ESP.
         // If a device is provided, find and mount its ESP partition (unmounting

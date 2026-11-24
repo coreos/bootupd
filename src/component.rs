@@ -97,6 +97,15 @@ pub(crate) trait Component {
         bootloader: Bootloader,
     ) -> Result<InstalledContent>;
 
+    /// Errors when [`Component::install`] would refuse the update payload in
+    /// `src_root` for `bootloader`. `install` checks this for every component
+    /// it installs before installing any, so that a refused payload leaves
+    /// nothing written.
+    fn check_payload(&self, src_root: &str, bootloader: Bootloader) -> Result<()> {
+        let _ = (src_root, bootloader);
+        Ok(())
+    }
+
     /// Implementation of `bootupd generate-update-metadata` for a given component.
     /// This expects to be run during an "image update build" process.  For CoreOS
     /// this is an `rpm-ostree compose tree` for example.  For a dual-partition
