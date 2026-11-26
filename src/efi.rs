@@ -5,6 +5,7 @@
  */
 
 use std::cell::RefCell;
+use std::collections::{hash_map, HashMap};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -311,14 +312,33 @@ impl Efi {
     }
 
     /// Errors unless the update payload in `src_root` has exactly one shim
-    /// binary. After copying the payload, `install` takes the EFI vendor
-    /// directory from it, so it checks this before touching the ESP.
+    /// binary, which can load `bootloader` once installed, see
+    /// [`shim_load_problem`]. After copying the payload, `install` takes the
+    /// EFI vendor directory from the shim binaries anywhere in the payload, so
+    /// it checks this before touching the ESP.
     ///
     /// Unlike the later vendor lookups, this fails on a payload directory that
     /// cannot be read, since one could hide a shim.
-    fn ensure_shim(&self, src_root: &Utf8Path) -> Result<()> {
-        efi_vendor(&self.find_shims(src_root.as_std_path(), false)?)?;
+    fn ensure_shim(&self, src_root: &Utf8Path, bootloader: Bootloader) -> Result<()> {
+        let shims = self.find_shims(src_root.as_std_path(), false)?;
+        efi_vendor(&shims)?;
+        if let Some(problem) = shim_load_problem(src_root, bootloader, &shims[0])? {
+            anyhow::bail!("Cannot install bootloader '{bootloader}': {problem}");
+        }
         Ok(())
+    }
+
+    /// Checks the update payload in `src_root` before `install` touches the
+    /// ESP, see [`Component::check_payload`], and returns the file tree that
+    /// `install` records for `bootloader`.
+    fn prepare_install(
+        &self,
+        src_root: &Utf8Path,
+        bootloader: Bootloader,
+    ) -> Result<filetree::FileTree> {
+        self.ensure_carried(src_root, bootloader)?;
+        self.ensure_shim(src_root, bootloader)?;
+        install_filetree(src_root, bootloader)
     }
 
     /// The shim binaries in the EFI update payload under `sysroot`, in
@@ -335,6 +355,236 @@ impl Efi {
             .find(|p| p.exists())
             .ok_or_else(|| anyhow::anyhow!("Failed to find valid target path"))?;
         find_file_recursive(target, SHIM, skip_unreadable)
+    }
+}
+
+/// The `usr/lib/efi` components that `install` copies to the ESP for
+/// `bootloader`: all but those of other bootloaders. `None` without
+/// `usr/lib/efi`, where it copies the legacy update directory instead.
+fn install_components(
+    src_root: &Utf8Path,
+    bootloader: Bootloader,
+) -> Result<Option<Vec<EFIComponent>>> {
+    if payload_in_usr_lib_efi(src_root)? {
+        get_efi_component_from_usr(src_root, EFILIB, Some(bootloader))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The file tree that `install` records for `bootloader`, read from the
+/// update payload in `src_root`. All of the bootloaders' binaries are named
+/// [`BOOTLOADER_BIN`], the name shim loads, so the tree leaves out the other
+/// bootloaders' components.
+fn install_filetree(src_root: &Utf8Path, bootloader: Bootloader) -> Result<filetree::FileTree> {
+    let path = src_root.as_std_path().join(payload_location(src_root)?);
+    let dir = Dir::open_ambient_dir(&path, ambient_authority())
+        .with_context(|| format!("opening update dir {}", path.display()))?;
+    filetree::FileTree::new_from_dir(&dir, Some(bootloader.dirs_to_skip()))
+}
+
+/// A directory that `install` copies as the ESP's EFI directory
+struct CopySource {
+    /// How to name it in messages
+    name: String,
+    /// Whether it carries the bootloader being installed
+    carries_bootloader: bool,
+    path: PathBuf,
+}
+
+/// Why `install` cannot install `bootloader` with `shim`, the one shim binary
+/// in the update payload in `src_root`, or `None` if it can. It must copy shim
+/// for the bootloader to a vendor directory directly below the ESP's EFI
+/// directory, and the bootloader's binary to the path that shim loads, the
+/// file named [`BOOTLOADER_BIN`] in its own directory. It must also be able to
+/// copy everything it copies, see [`esp_entries`]. Shim and the bootloader may
+/// come from different components. Errors only when the payload cannot be
+/// read.
+fn shim_load_problem(
+    src_root: &Utf8Path,
+    bootloader: Bootloader,
+    shim: &Path,
+) -> Result<Option<String>> {
+    let wanted = bootloader.efi_component_name();
+    // The directories `install` copies, and how to name those that carry the
+    // bootloader
+    let (copied, holder) = match install_components(src_root, bootloader)? {
+        Some(components) => (
+            components
+                .into_iter()
+                .map(|c| CopySource {
+                    name: format!("the '{}' component", c.name),
+                    carries_bootloader: c.name == wanted,
+                    path: src_root.join(&c.path).into_std_path_buf(),
+                })
+                .collect::<Vec<_>>(),
+            format!("the '{wanted}' component"),
+        ),
+        None => {
+            let updates = payload_location(src_root)?;
+            let path = src_root.as_std_path().join(&updates);
+            // `cp -r` copies a symbolic link as such, which the ESP cannot hold.
+            if file_type_at(&path)?.is_some_and(|t| t.is_symlink()) {
+                return Ok(Some(format!(
+                    "{} is a symbolic link, which cannot be copied to the ESP",
+                    updates.display()
+                )));
+            }
+            let name = updates.display().to_string();
+            let source = CopySource {
+                name: name.clone(),
+                carries_bootloader: true,
+                path,
+            };
+            (vec![source], name)
+        }
+    };
+    let Some(installed) = copied
+        .iter()
+        .find_map(|source| shim.strip_prefix(&source.path).ok())
+    else {
+        let dir = shim.parent().unwrap_or(shim);
+        return Ok(Some(format!(
+            "the update payload has {SHIM} only in {}, which is not installed with it",
+            dir.strip_prefix(src_root).unwrap_or(dir).display()
+        )));
+    };
+    // bootupd takes the vendor directory's name from shim's directory, and
+    // registers EFI/<vendor>/<shim> with the firmware.
+    let mut parts = installed.iter();
+    let (Some(vendor), Some(_), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Ok(Some(format!(
+            "{SHIM} would be installed as EFI/{}, not directly in a vendor directory such as EFI/fedora",
+            installed.display()
+        )));
+    };
+    let entries = match esp_entries(&copied)? {
+        Ok(entries) => entries,
+        Err(problem) => return Ok(Some(problem)),
+    };
+    let loader = Path::new(vendor).join(BOOTLOADER_BIN);
+    let provided = entries
+        .get(&fat_key(&loader))
+        .is_some_and(|entry| entry.file.is_some() && entry.from_bootloader);
+    if !provided {
+        return Ok(Some(format!(
+            "{SHIM} would load EFI/{}, which {holder} does not provide",
+            loader.display()
+        )));
+    }
+    Ok(None)
+}
+
+/// An entry that `install` creates below the ESP's EFI directory
+struct EspEntry {
+    /// Its path below EFI in the first directory that provides it
+    path: PathBuf,
+    /// The file it is copied from, `None` for a directory
+    file: Option<PathBuf>,
+    /// The name of that directory, see [`CopySource`]
+    source: String,
+    /// Whether a directory that carries the bootloader provides it
+    from_bootloader: bool,
+}
+
+/// The entries that `install` creates below the ESP's EFI directory by
+/// copying `copied` one over another, by their [`fat_key`], or why it cannot
+/// copy them to the ESP's FAT file system: that cannot hold symbolic links or
+/// special files, and entries whose names differ only in case or trailing
+/// dots are the same entry there. Directories can share an entry; files only
+/// with the same path and contents, since the file tree that bootupd records
+/// would track one file under two names, and an update removing one of them
+/// would remove the file. Errors only when the payload cannot be read.
+fn esp_entries(
+    copied: &[CopySource],
+) -> Result<std::result::Result<HashMap<Vec<u8>, EspEntry>, String>> {
+    let mut entries = HashMap::<Vec<u8>, EspEntry>::new();
+    for source in copied {
+        for entry in WalkDir::new(&source.path).min_depth(1).sort_by_file_name() {
+            let entry = entry.map_err(|e| walk_error(e, &source.path))?;
+            let path = entry.path().strip_prefix(&source.path)?.to_path_buf();
+            let file_type = entry.file_type();
+            if file_type.is_symlink() {
+                return Ok(Err(format!(
+                    "{} has a symbolic link at EFI/{}, which cannot be copied to the ESP",
+                    source.name,
+                    path.display()
+                )));
+            } else if !file_type.is_file() && !file_type.is_dir() {
+                return Ok(Err(format!(
+                    "{} has EFI/{}, which is neither a file nor a directory and cannot be copied to the ESP",
+                    source.name,
+                    path.display()
+                )));
+            }
+            let file = file_type.is_file().then(|| entry.path().to_path_buf());
+            match entries.entry(fat_key(&path)) {
+                hash_map::Entry::Vacant(vacant) => {
+                    vacant.insert(EspEntry {
+                        path,
+                        file,
+                        source: source.name.clone(),
+                        from_bootloader: source.carries_bootloader,
+                    });
+                }
+                hash_map::Entry::Occupied(mut occupied) => {
+                    let first = occupied.get_mut();
+                    let what = match (&first.file, &file) {
+                        (None, None) => None,
+                        (Some(_), Some(_)) if first.path != path => {
+                            Some("file on the ESP, under two names")
+                        }
+                        (Some(a), Some(b)) => (!same_contents(a, b)?)
+                            .then_some("file on the ESP, with different contents"),
+                        _ => Some("entry on the ESP, one a directory and the other a file"),
+                    };
+                    if let Some(what) = what {
+                        return Ok(Err(format!(
+                            "EFI/{} from {} and EFI/{} from {} would be the same {what}",
+                            first.path.display(),
+                            first.source,
+                            path.display(),
+                            source.name
+                        )));
+                    }
+                    first.from_bootloader |= source.carries_bootloader;
+                }
+            }
+        }
+    }
+    Ok(Ok(entries))
+}
+
+/// The name by which the ESP's FAT file system finds `path`: ignoring ASCII
+/// case, and trailing dots, as Linux's vfat does.
+fn fat_key(path: &Path) -> Vec<u8> {
+    let mut key = Vec::new();
+    for (i, part) in path.iter().enumerate() {
+        if i > 0 {
+            key.push(b'/');
+        }
+        let bytes = part.as_encoded_bytes();
+        let end = bytes.iter().rposition(|b| *b != b'.').map_or(0, |i| i + 1);
+        key.extend(bytes[..end].iter().map(u8::to_ascii_lowercase));
+    }
+    key
+}
+
+/// Whether the files `a` and `b` have the same contents
+fn same_contents(a: &Path, b: &Path) -> Result<bool> {
+    let read =
+        |path: &Path| std::fs::read(path).with_context(|| format!("Reading {}", path.display()));
+    Ok(read(a)? == read(b)?)
+}
+
+/// The type of the file at `path`, not following a symbolic link, as
+/// [`holds_file`] sees files, or `None` without one. Other errors are
+/// returned.
+fn file_type_at(path: &Path) -> Result<Option<std::fs::FileType>> {
+    match path.symlink_metadata() {
+        Ok(meta) => Ok(Some(meta.file_type())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("Checking for {}", path.display())),
     }
 }
 
@@ -587,11 +837,11 @@ impl Component for Efi {
         }))
     }
 
-    /// Refuses a payload without the bootloader, or without exactly one shim.
+    /// Refuses a payload without the bootloader, or without exactly one shim
+    /// that can load it once installed, or that `install` cannot record.
     fn check_payload(&self, src_root: &str, bootloader: Bootloader) -> Result<()> {
-        let src_root = Utf8Path::new(src_root);
-        self.ensure_carried(src_root, bootloader)?;
-        self.ensure_shim(src_root)
+        self.prepare_install(Utf8Path::new(src_root), bootloader)?;
+        Ok(())
     }
 
     fn install(
@@ -611,7 +861,7 @@ impl Component for Efi {
 
         // `install` checked this before installing any component, but this
         // can be called directly too.
-        self.check_payload(src_root, bootloader)?;
+        let ft = self.prepare_install(Utf8Path::new(src_root), bootloader)?;
 
         // Determine the destination path for the ESP.
         // If a device is provided, find and mount its ESP partition (unmounting
@@ -638,11 +888,7 @@ impl Component for Efi {
         validate_esp_fstype(destd)?;
 
         let src_path = Utf8Path::new(src_root);
-        let efi_comps = if payload_in_usr_lib_efi(src_path)? {
-            get_efi_component_from_usr(src_path, EFILIB, Some(bootloader))?
-        } else {
-            None
-        };
+        let efi_comps = install_components(src_path, bootloader)?;
         let dest = destpath.to_str().with_context(|| {
             format!(
                 "Include invalid UTF-8 characters in dest {}",
@@ -663,18 +909,6 @@ impl Component for Efi {
             filetree::copy_dir_with_args(&src_dir, src, dest, OPTIONS)?;
             &src.to_owned()
         };
-
-        // Now that we have multiple bootloaders (all named grubx64.efi/grubaa64.efi
-        // due to that name being baked into the shim), we can't blindly use the key
-        // "fedora/grubx64.efi" to refer to the installed bootloader, hence we ask for
-        // any extra bootloaders to not be included in the FileTree
-        let dirs_to_skip = bootloader.dirs_to_skip();
-
-        // Get filetree from efi path
-        let ft = crate::filetree::FileTree::new_from_dir(
-            &src_dir.open_dir(efi_path)?,
-            Some(dirs_to_skip),
-        )?;
 
         if update_firmware {
             if let Some(dev) = device {
@@ -2498,6 +2732,381 @@ Boot0003* test";
         Ok(())
     }
 
+    /// `install` refuses a shim that it would not copy for the bootloader,
+    /// while a shim component of its own goes with every bootloader.
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_install_refuses_shim_it_does_not_copy() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-1"),
+        )?;
+        for component in ["grub2/1:2.12-1", "systemd-boot/262-1"] {
+            let vendor = root.join(EFILIB).join(component).join("EFI/fedora");
+            std::fs::create_dir_all(&vendor)?;
+            std::fs::write(vendor.join(BOOTLOADER_BIN), component)?;
+        }
+        // The only shim is in systemd-boot's component, which a GRUB install
+        // does not copy.
+        let sdboot = root.join(EFILIB).join("systemd-boot/262-1/EFI/fedora");
+        std::fs::write(sdboot.join(SHIM), "shim")?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").ends_with(&format!(
+                "Cannot install bootloader 'grub': the update payload has {SHIM} only in {EFILIB}/systemd-boot/262-1/EFI/fedora, which is not installed with it"
+            )),
+            "{err:#}"
+        );
+        let err = install_without_esp(root, Bootloader::Systemd).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+
+        // In a component of its own, shim is installed with either bootloader.
+        let shim = root.join(EFILIB).join("shim/16.1-1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::rename(sdboot.join(SHIM), shim.join(SHIM))?;
+        for bootloader in [Bootloader::Grub, Bootloader::Systemd] {
+            let err = install_without_esp(root, bootloader).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("no mounted ESP"),
+                "{bootloader}: {err:#}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `install` refuses a bootloader that would not land where shim loads it
+    /// from, its own directory.
+    #[test]
+    fn test_install_refuses_bootloader_shim_cannot_load() -> Result<()> {
+        // In usr/lib/efi, shim and the bootloader come from different
+        // components.
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-1"),
+        )?;
+        let shim = root.join(EFILIB).join("shim/16.1-1/EFI/fedora");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::write(shim.join(SHIM), "shim")?;
+        let grub = root.join(EFILIB).join("grub2/1:2.12-1/EFI");
+        std::fs::create_dir_all(grub.join("redhat"))?;
+        std::fs::write(grub.join("redhat").join(BOOTLOADER_BIN), "grub")?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").ends_with(&format!(
+                "Cannot install bootloader 'grub': {SHIM} would load EFI/fedora/{BOOTLOADER_BIN}, which the 'grub2' component does not provide"
+            )),
+            "{err:#}"
+        );
+        std::fs::create_dir_all(grub.join("fedora"))?;
+        std::fs::rename(
+            grub.join("redhat").join(BOOTLOADER_BIN),
+            grub.join("fedora").join(BOOTLOADER_BIN),
+        )?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+
+        // The legacy update directory
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        let updates = root.join(BOOTUPD_UPDATES_DIR).join("EFI");
+        for (vendor, binary) in [("fedora", SHIM), ("redhat", BOOTLOADER_BIN)] {
+            std::fs::create_dir_all(updates.join(vendor))?;
+            std::fs::write(updates.join(vendor).join(binary), "")?;
+        }
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2-efi-x64 1:2.12-1"),
+        )?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").ends_with(&format!(
+                "Cannot install bootloader 'grub': {SHIM} would load EFI/fedora/{BOOTLOADER_BIN}, which {BOOTUPD_UPDATES_DIR}/EFI does not provide"
+            )),
+            "{err:#}"
+        );
+        std::fs::rename(
+            updates.join("redhat").join(BOOTLOADER_BIN),
+            updates.join("fedora").join(BOOTLOADER_BIN),
+        )?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+        Ok(())
+    }
+
+    /// `install` refuses a shim below a vendor directory, since bootupd
+    /// registers EFI/<vendor>/<shim> with the firmware.
+    #[test]
+    fn test_install_refuses_nested_shim() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-1"),
+        )?;
+        for (dir, binary) in [
+            ("shim/16.1-1/EFI/extra/fedora", SHIM),
+            ("grub2/1:2.12-1/EFI/extra/fedora", BOOTLOADER_BIN),
+        ] {
+            let dir = root.join(EFILIB).join(dir);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(binary), "")?;
+        }
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").ends_with(&format!(
+                "Cannot install bootloader 'grub': {SHIM} would be installed as EFI/extra/fedora/{SHIM}, not directly in a vendor directory such as EFI/fedora"
+            )),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    /// A payload that cannot be read is an error, not a reason why the
+    /// bootloader cannot be installed.
+    #[test]
+    fn test_shim_load_problem_read_error() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        for (dir, binary) in [
+            ("shim/16.1-1/EFI/fedora", SHIM),
+            ("grub2/1:2.12-1/EFI/fedora", BOOTLOADER_BIN),
+        ] {
+            let dir = root.join(EFILIB).join(dir);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(binary), "")?;
+        }
+        let shim = |root: &Utf8Path| root.join(EFILIB).join("shim/16.1-1/EFI/fedora").join(SHIM);
+        assert_eq!(
+            shim_load_problem(root, Bootloader::Grub, shim(root).as_std_path())?,
+            None
+        );
+        // A directory in the GRUB component that cannot be read
+        let (padded, long) = unreadable_below(root);
+        std::fs::create_dir_all(root.join(EFILIB).join("grub2/1:2.12-1/EFI").join(&long))?;
+        let err = shim_load_problem(&padded, Bootloader::Grub, shim(&padded).as_std_path())
+            .expect_err("a directory that cannot be read");
+        let enametoolong = os_error_text(libc::ENAMETOOLONG);
+        assert!(format!("{err:#}").contains(&enametoolong), "{err:#}");
+        Ok(())
+    }
+
+    /// `install` refuses a payload that it cannot copy to the ESP's FAT file
+    /// system, which ignores case and trailing dots, and cannot hold symbolic
+    /// links.
+    #[test]
+    fn test_install_refuses_what_the_esp_cannot_hold() -> Result<()> {
+        enum Extra {
+            File(&'static str),
+            Symlink(&'static str),
+        }
+        struct Case {
+            /// Where the GRUB component has its binary, below usr/lib/efi
+            grub: String,
+            /// Another entry below usr/lib/efi
+            extra: Option<(String, Extra)>,
+            /// Why `install` refuses the payload, `None` if it gets to the ESP
+            refused: Option<String>,
+        }
+        let (bin, shim) = (BOOTLOADER_BIN, SHIM);
+        let (bin_upper, shim_upper) = (bin.to_ascii_uppercase(), shim.to_ascii_uppercase());
+        let grub = format!("grub2/1:2.12-1/EFI/fedora/{bin}");
+        let different = "would be the same file on the ESP, with different contents";
+        let two_names = "would be the same file on the ESP, under two names";
+        let and_shims = |path: &str, what: &str| {
+            Some(format!(
+                "EFI/fedora/{bin} from the 'grub2' component and {path} from the 'shim' component {what}"
+            ))
+        };
+        let file = |path: String, contents| Some((path, Extra::File(contents)));
+        let cases = [
+            Case {
+                grub: grub.clone(),
+                extra: None,
+                refused: None,
+            },
+            // Another component's file where shim loads the bootloader from
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{bin}"), "not grub"),
+                refused: and_shims(&format!("EFI/fedora/{bin}"), different),
+            },
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{bin_upper}"), "not grub"),
+                refused: and_shims(&format!("EFI/fedora/{bin_upper}"), two_names),
+            },
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/FEDORA/{bin}"), "not grub"),
+                refused: and_shims(&format!("EFI/FEDORA/{bin}"), two_names),
+            },
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{bin}."), "not grub"),
+                refused: and_shims(&format!("EFI/fedora/{bin}."), two_names),
+            },
+            // The same file twice is copied over itself, but not under two
+            // names, which the recorded file tree would track separately.
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{bin}"), "grub"),
+                refused: None,
+            },
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{bin_upper}"), "grub"),
+                refused: and_shims(&format!("EFI/fedora/{bin_upper}"), two_names),
+            },
+            // A second loader, or shim, in the same component
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("grub2/1:2.12-1/EFI/fedora/{bin_upper}"), "other grub"),
+                refused: Some(format!(
+                    "EFI/fedora/{bin_upper} from the 'grub2' component and EFI/fedora/{bin} from the 'grub2' component {two_names}"
+                )),
+            },
+            Case {
+                grub: grub.clone(),
+                extra: file(format!("shim/16.1-1/EFI/fedora/{shim_upper}"), "other shim"),
+                refused: Some(format!(
+                    "EFI/fedora/{shim_upper} from the 'shim' component and EFI/fedora/{shim} from the 'shim' component {two_names}"
+                )),
+            },
+            // A file where the vendor directory goes
+            Case {
+                grub: grub.clone(),
+                extra: file("zz-extra/1/EFI/FEDORA".into(), ""),
+                refused: Some(
+                    "EFI/fedora from the 'grub2' component and EFI/FEDORA from the 'zz-extra' component would be the same entry on the ESP, one a directory and the other a file".into(),
+                ),
+            },
+            Case {
+                grub: grub.clone(),
+                extra: Some((
+                    "shim/16.1-1/EFI/BOOT/alias.efi".into(),
+                    Extra::Symlink("../fedora/shimx64.efi"),
+                )),
+                refused: Some(
+                    "the 'shim' component has a symbolic link at EFI/BOOT/alias.efi, which cannot be copied to the ESP".into(),
+                ),
+            },
+            // On the ESP, GRUB lands in shim's directory.
+            Case {
+                grub: format!("grub2/1:2.12-1/EFI/FEDORA/{bin}"),
+                extra: None,
+                refused: None,
+            },
+        ];
+        for case in cases {
+            let td = tempfile::tempdir()?;
+            let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+            std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+            write_update_metadata(
+                root.as_str(),
+                PathBuf::from("EFI.json"),
+                &create_test_meta("grub2 1:2.12-1"),
+            )?;
+            let efilib = root.join(EFILIB);
+            let shim_path = efilib.join("shim/16.1-1/EFI/fedora").join(shim);
+            for (path, contents) in [(shim_path, "shim"), (efilib.join(&case.grub), "grub")] {
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(path, contents)?;
+            }
+            if let Some((path, extra)) = &case.extra {
+                let path = efilib.join(path);
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                match extra {
+                    Extra::File(contents) => std::fs::write(&path, contents)?,
+                    Extra::Symlink(target) => std::os::unix::fs::symlink(target, &path)?,
+                }
+            }
+            let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+            let err = format!("{err:#}");
+            match &case.refused {
+                None => assert!(err.contains("no mounted ESP"), "{err}"),
+                Some(refused) => assert!(
+                    err.ends_with(&format!("Cannot install bootloader 'grub': {refused}")),
+                    "{err}"
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// `install` records the payload's file tree before it touches the ESP,
+    /// so a payload that it cannot record fails first.
+    #[test]
+    fn test_install_reads_its_file_tree_first() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2 1:2.12-1"),
+        )?;
+        for (dir, binary) in [
+            ("shim/16.1-1/EFI/fedora", SHIM),
+            ("grub2/1:2.12-1/EFI/fedora", BOOTLOADER_BIN),
+        ] {
+            let dir = root.join(EFILIB).join(dir);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(binary), binary)?;
+        }
+        // A name bootupd reserves for temporary files, outside the copied
+        // components
+        std::fs::write(root.join(EFILIB).join(".btmp.leftover"), "")?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("File .btmp.leftover contains our temporary prefix"),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    /// `install` refuses a legacy update directory that is a symbolic link,
+    /// which `cp -r` would copy as such.
+    #[test]
+    fn test_install_refuses_symlinked_legacy_directory() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("UTF-8");
+        let updates = root.join(BOOTUPD_UPDATES_DIR);
+        let real = updates.join("EFI.real/fedora");
+        std::fs::create_dir_all(&real)?;
+        std::fs::write(real.join(SHIM), "")?;
+        std::fs::write(real.join(BOOTLOADER_BIN), "")?;
+        std::os::unix::fs::symlink("EFI.real", updates.join("EFI"))?;
+        write_update_metadata(
+            root.as_str(),
+            PathBuf::from("EFI.json"),
+            &create_test_meta("grub2-efi-x64 1:2.12-1"),
+        )?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(
+            format!("{err:#}").ends_with(&format!(
+                "Cannot install bootloader 'grub': {BOOTUPD_UPDATES_DIR}/EFI is a symbolic link, which cannot be copied to the ESP"
+            )),
+            "{err:#}"
+        );
+        // A directory gets past the payload checks.
+        std::fs::remove_file(updates.join("EFI"))?;
+        std::fs::rename(updates.join("EFI.real"), updates.join("EFI"))?;
+        let err = install_without_esp(root, Bootloader::Grub).unwrap_err();
+        assert!(format!("{err:#}").contains("no mounted ESP"), "{err:#}");
+        Ok(())
+    }
+
     /// The shim check before the ESP fails on a payload directory that cannot
     /// be read, while the vendor lookups after it keep skipping such
     /// directories, as in 0.4.0.
@@ -2513,7 +3122,7 @@ Boot0003* test";
         std::fs::create_dir_all(root.join(EFILIB).join(&long))?;
         let efi = Efi::default();
         let err = efi
-            .ensure_shim(&padded)
+            .ensure_shim(&padded, Bootloader::Grub)
             .expect_err("an unreadable directory could hide a shim");
         let enametoolong = os_error_text(libc::ENAMETOOLONG);
         assert!(format!("{err:#}").contains(&enametoolong), "{err:#}");
