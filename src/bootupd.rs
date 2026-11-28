@@ -54,6 +54,168 @@ impl ConfigMode {
     }
 }
 
+/// Choose the EFI bootloader to install when neither `--bootloader` nor a
+/// default bootloader says which, from the update payload in `src_root` and
+/// its metadata `meta`, see [`pick_efi_bootloader`].
+#[cfg(efi_arch)]
+fn choose_efi_bootloader(src_root: &Utf8Path, meta: &ContentMetadata) -> Result<Bootloader> {
+    let carried = crate::efi::bootloaders_in_payload(src_root)?;
+    let location = crate::efi::payload_location(src_root)?;
+    pick_efi_bootloader(&carried, &meta.available_bootloaders(), &location)
+}
+
+/// Picks the single bootloader that the EFI update payload carries (`carried`)
+/// and its metadata names (`named`). An empty `named` does not narrow the
+/// choice. `location` is only for error messages.
+///
+/// Narrowing the payload's bootloaders to what the metadata names keeps the
+/// choice for metadata that was not regenerated after adding a component.
+/// Metadata that bootupd 0.4.0 or newer generated for an image without
+/// usr/lib/efi names packages such as grub2-efi-x64, and so no bootloader.
+#[cfg(efi_arch)]
+fn pick_efi_bootloader(
+    carried: &[Bootloader],
+    named: &[Bootloader],
+    location: &Path,
+) -> Result<Bootloader> {
+    use crate::efi::bootloader_names;
+    let undetermined = "Could not determine bootloader. Default bootloader not set";
+    let location = location.display();
+    let candidates = carried
+        .iter()
+        .copied()
+        .filter(|b| named.is_empty() || named.contains(b))
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [bootloader] => Ok(*bootloader),
+        [] if carried.is_empty() => {
+            anyhow::bail!("{undetermined}. The EFI update payload in {location} carries no bootloader")
+        }
+        [] => anyhow::bail!(
+            "{undetermined}. The EFI update payload in {location} carries {}, but its metadata names {}. Pass --bootloader, or regenerate the metadata",
+            bootloader_names(carried),
+            bootloader_names(named)
+        ),
+        candidates => anyhow::bail!(
+            "{undetermined}. Multiple bootloaders found as install candidates: {}. Pass --bootloader, or set a default in the image with `bootupctl backend set-default-bootloader`",
+            bootloader_names(candidates)
+        ),
+    }
+}
+
+/// The bootloader to install: the one given with `--bootloader`, or
+/// else the EFI component's default, or GRUB when the BIOS component is among
+/// the targets, or the only one the EFI payload offers, see
+/// [`choose_efi_bootloader`]. Without `--bootloader`, a targeted EFI component
+/// needs update metadata.
+#[cfg(efi_arch)]
+fn install_bootloader(
+    opts: &InstallOpts,
+    target_components: &[&dyn Component],
+    source_root_dir: &Dir,
+) -> Result<Bootloader> {
+    Ok(match opts.bootloader {
+        // CLI overrides anything else
+        Some(b) => b,
+        None => {
+            let mut efi_default = None;
+            let mut efi_component_update = None;
+            let mut bios_default = None;
+
+            for c in target_components {
+                match c.component_type() {
+                    ComponentType::Bios => {
+                        bios_default = Some(Bootloader::Grub);
+                    }
+                    ComponentType::Efi => {
+                        efi_default = c.get_default_bootloader(source_root_dir)?;
+
+                        if efi_default.is_none() {
+                            // We don't want to filter any bootloader
+                            efi_component_update = c.get_component_update(source_root_dir, None)?;
+                        }
+                    }
+                }
+            }
+
+            match (bios_default, efi_default) {
+                // EFI bootloader takes precedence
+                // Take the following example
+                //  - BIOS default = Grub (always)
+                //  - EFI default = GrubCC
+                //
+                //  We can't install GrubCC for BIOS as it's not supported
+                //  So we just default to installing GrubCC
+                (_, Some(eb)) => eb,
+                (Some(bb), None) => bb,
+
+                // We still can get the bootloader from the EFI update payload
+                // If there's only ONE bootloader to choose from, then that's the
+                // one to be installed
+                (None, None) => {
+                    let Some(efi_component_update) = efi_component_update else {
+                        anyhow::bail!("Could not determine bootloader. Default bootloader not set")
+                    };
+
+                    choose_efi_bootloader(Utf8Path::new(&opts.src_root), &efi_component_update)?
+                }
+            }
+        }
+    })
+}
+
+/// The `targets` that `install` installs `bootloader` for, in order, after
+/// checking each one's update payload in `src_root`, so that a payload one of
+/// them refuses fails before any is installed. BIOS is skipped without
+/// `devices`, and any component that does not support `bootloader` or has no
+/// update metadata.
+fn components_to_install<'a>(
+    targets: &[&'a dyn Component],
+    devices: &[Device],
+    bootloader: Bootloader,
+    src_root: &str,
+    source_root_dir: &Dir,
+) -> Result<Vec<&'a dyn Component>> {
+    let mut components = Vec::new();
+    for &component in targets {
+        // skip for BIOS if no devices specified
+        if component.component_type() == ComponentType::Bios && devices.is_empty() {
+            println!(
+                "Skip installing component {} without target device",
+                component.name()
+            );
+            continue;
+        }
+
+        if !component.is_bootloader_supported(bootloader) {
+            println!(
+                "Skip installing component {} as it does not support bootloader {bootloader}",
+                component.name()
+            );
+            continue;
+        }
+
+        // skip components that don't have an update metadata
+        if component
+            .query_update(source_root_dir, bootloader)?
+            .is_none()
+        {
+            println!(
+                "Skip installing component {} without update metadata",
+                component.name()
+            );
+            continue;
+        }
+        components.push(component);
+    }
+    for component in &components {
+        component
+            .check_payload(src_root, bootloader)
+            .with_context(|| format!("installing component {}", component.name()))?;
+    }
+    Ok(components)
+}
+
 pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMode) -> Result<()> {
     let all_components = get_components_impl(opts.auto);
 
@@ -73,11 +235,12 @@ pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMod
             .map(|name| {
                 all_components
                     .get(name.as_str())
+                    .map(|c| c.as_ref())
                     .ok_or_else(|| anyhow!("Unknown component: {name}"))
             })
             .collect::<Result<Vec<_>>>()?
     } else {
-        all_components.values().collect()
+        all_components.values().map(|c| c.as_ref()).collect()
     };
 
     if target_components.is_empty() && !opts.auto {
@@ -115,102 +278,23 @@ pub(crate) fn install(opts: &InstallOpts, devices: &[Device], configs: ConfigMod
     }
 
     #[cfg(efi_arch)]
-    let bootloader = match opts.bootloader {
-        // CLI overrides anything else
-        Some(b) => b,
-        None => {
-            let mut efi_default = None;
-            let mut efi_component_update = None;
-            let mut bios_default = None;
-
-            for c in &target_components {
-                use crate::component::ComponentType;
-
-                match c.component_type() {
-                    ComponentType::Bios => {
-                        bios_default = Some(Bootloader::Grub);
-                    }
-                    ComponentType::Efi => {
-                        efi_default = c.get_default_bootloader(&source_root_dir)?;
-
-                        if efi_default.is_none() {
-                            // We don't want to filter any bootloader
-                            efi_component_update =
-                                c.get_component_update(&source_root_dir, None)?;
-                        }
-                    }
-                }
-            }
-
-            match (bios_default, efi_default) {
-                // EFI bootloader takes precedence
-                // Take the following example
-                //  - BIOS default = Grub (always)
-                //  - EFI default = GrubCC
-                //
-                //  We can't install GrubCC for BIOS as it's not supported
-                //  So we just default to installing GrubCC
-                (_, Some(eb)) => eb,
-                (Some(bb), None) => bb,
-
-                // We still can get the bootloader by reading in the EFI component update
-                // If there's only ONE bootloader in the metadata, then that's the one to
-                // be installed
-                (None, None) => {
-                    let Some(efi_component_update) = efi_component_update else {
-                        anyhow::bail!("Could not determine bootloader. Default bootloader not set")
-                    };
-
-                    let available_bootloaders = efi_component_update.available_bootloaders();
-
-                    if available_bootloaders.len() != 1 {
-                        anyhow::bail!(
-                            "Could not determine bootloader. Default bootloader not set. Multiple bootloaders found as install candidates"
-                        )
-                    }
-
-                    available_bootloaders[0]
-                }
-            }
-        }
-    };
+    let bootloader = install_bootloader(opts, &target_components, &source_root_dir)?;
 
     #[cfg(not(efi_arch))]
     let bootloader = Bootloader::Grub;
 
+    let components = components_to_install(
+        &target_components,
+        devices,
+        bootloader,
+        &opts.src_root,
+        &source_root_dir,
+    )?;
+
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
 
-    for &component in target_components.iter() {
-        // skip for BIOS if no devices specified
-        if component.component_type() == ComponentType::Bios && devices.is_empty() {
-            println!(
-                "Skip installing component {} without target device",
-                component.name()
-            );
-            continue;
-        }
-
-        if !component.is_bootloader_supported(bootloader) {
-            println!(
-                "Skip installing component {} as it does not support bootloader {bootloader}",
-                component.name()
-            );
-            continue;
-        }
-
-        // skip components that don't have an update metadata
-        if component
-            .query_update(&source_root_dir, bootloader)?
-            .is_none()
-        {
-            println!(
-                "Skip installing component {} without update metadata",
-                component.name()
-            );
-            continue;
-        }
-
+    for &component in components.iter() {
         // Determine which devices to install to. For EFI, filter to only
         // devices that have an ESP partition.
         let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
@@ -1100,6 +1184,284 @@ initrdefi /ostree/rhcos-bf3b382/initramfs.img
 ### END /etc/grub.d/20_linux_xen ###
 ";
         assert_eq!(expected, stripped_content);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_pick_efi_bootloader() {
+        use Bootloader::{Grub, GrubCC, Systemd};
+        let location = Path::new("usr/lib/efi");
+        // What the payload carries, what the metadata names, and the choice
+        let cases: &[(&[Bootloader], &[Bootloader], Option<Bootloader>)] = &[
+            // An image without usr/lib/efi, whose metadata names packages
+            (&[Grub], &[], Some(Grub)),
+            (&[Grub], &[Grub], Some(Grub)),
+            (&[GrubCC], &[GrubCC], Some(GrubCC)),
+            (&[Grub, Systemd], &[Grub, Systemd], None),
+            // Metadata not regenerated after adding systemd-boot,
+            (&[Grub, Systemd], &[Grub], Some(Grub)),
+            // or after removing it
+            (&[Grub], &[Grub, Systemd], Some(Grub)),
+            (&[], &[], None),
+            (&[Systemd], &[Grub], None),
+        ];
+        for (carried, named, expected) in cases {
+            let chosen = pick_efi_bootloader(carried, named, location);
+            assert_eq!(
+                chosen.as_ref().ok(),
+                expected.as_ref(),
+                "{carried:?} {named:?}: {chosen:?}"
+            );
+        }
+        let message = |carried: &[Bootloader], named: &[Bootloader]| {
+            pick_efi_bootloader(carried, named, location)
+                .unwrap_err()
+                .to_string()
+        };
+        let several = message(&[Grub, Systemd], &[Grub, Systemd]);
+        assert!(
+            several.contains("candidates: grub, systemd. Pass --bootloader, or set a default"),
+            "{several}"
+        );
+        let none = message(&[], &[]);
+        assert!(
+            none.ends_with("in usr/lib/efi carries no bootloader"),
+            "{none}"
+        );
+        let other = message(&[Systemd], &[Grub]);
+        assert!(
+            other.contains("carries systemd, but its metadata names grub. Pass --bootloader"),
+            "{other}"
+        );
+    }
+
+    /// Metadata of an image without usr/lib/efi, as bootupd 0.4.0 writes it
+    #[cfg(efi_arch)]
+    const PACKAGE_METADATA: &str = r#"{"timestamp":"2026-11-16T17:14:09Z","version":"grub2-efi-x64 1:2.12-58.el10,shim-x64 16.1-1.el10","versions":[{"name":"grub2-efi-x64","evr":"1:2.12-58.el10"},{"name":"shim-x64","evr":"16.1-1.el10"}],"default-bootloader":null}"#;
+
+    /// An empty file at `path` in `root`
+    #[cfg(efi_arch)]
+    fn write_empty(root: &Utf8Path, path: &str) -> Result<()> {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(path, "")?;
+        Ok(())
+    }
+
+    /// The choice from a payload and its metadata as bootupd writes them
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_choose_efi_bootloader() -> Result<()> {
+        use crate::efi::{BOOTLOADER_BIN, SHIM};
+        let packages: ContentMetadata = serde_json::from_str(PACKAGE_METADATA)?;
+        // As CentOS Stream 10's bootupd 0.2.35 wrote it, naming components
+        let stream10: ContentMetadata = serde_json::from_str(
+            r#"{"timestamp":"2026-10-19T21:00:56Z","version":"grub2-efi-x64-1:2.12-58.el10.x86_64,shim-x64-16.1-1.el10.x86_64","versions":[{"name":"grub2","rpm_evr":"1:2.12-58.el10"},{"name":"shim","rpm_evr":"16.1-1.el10"}]}"#,
+        )?;
+        // As written for usr/lib/efi before systemd-boot was added
+        let components: ContentMetadata = serde_json::from_str(
+            r#"{"timestamp":"2026-11-16T17:14:09Z","version":"grub2 1:2.12-58.fc45,shim 16.1-7","versions":[{"name":"grub2","evr":"1:2.12-58.fc45"},{"name":"shim","evr":"16.1-7"}],"default-bootloader":null}"#,
+        )?;
+
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        write_empty(root, &format!("usr/lib/bootupd/updates/EFI/centos/{SHIM}"))?;
+        let err = choose_efi_bootloader(root, &packages).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("in usr/lib/bootupd/updates/EFI carries no bootloader"),
+            "{err}"
+        );
+        write_empty(
+            root,
+            &format!("usr/lib/bootupd/updates/EFI/centos/{BOOTLOADER_BIN}"),
+        )?;
+        assert_eq!(choose_efi_bootloader(root, &packages)?, Bootloader::Grub);
+        assert_eq!(choose_efi_bootloader(root, &stream10)?, Bootloader::Grub);
+
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        for (component, binary) in [
+            ("grub2", BOOTLOADER_BIN),
+            ("shim", SHIM),
+            ("systemd-boot", BOOTLOADER_BIN),
+        ] {
+            write_empty(
+                root,
+                &format!("usr/lib/efi/{component}/1.0-1/EFI/fedora/{binary}"),
+            )?;
+        }
+        assert_eq!(choose_efi_bootloader(root, &components)?, Bootloader::Grub);
+
+        // Metadata naming two versions of grub2, which the payload lacks
+        let two_grub2: ContentMetadata = serde_json::from_str(
+            r#"{"timestamp":"2026-11-16T17:14:09Z","version":"grub2 1:2.12-56.fc44,grub2 1:2.12-58.fc44,shim 16.1-7","versions":[{"name":"grub2","evr":"1:2.12-56.fc44"},{"name":"grub2","evr":"1:2.12-58.fc44"},{"name":"shim","evr":"16.1-7"}],"default-bootloader":null}"#,
+        )?;
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        for (component, binary) in [("shim", SHIM), ("systemd-boot", BOOTLOADER_BIN)] {
+            write_empty(
+                root,
+                &format!("usr/lib/efi/{component}/1.0-1/EFI/fedora/{binary}"),
+            )?;
+        }
+        let err = choose_efi_bootloader(root, &two_grub2).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("carries systemd, but its metadata names grub. Pass --bootloader, or regenerate the metadata"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// A payload a component refuses fails before any component is installed,
+    /// even when BIOS, which comes first, could install.
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_components_to_install() -> Result<()> {
+        use crate::efi::{BOOTLOADER_BIN, SHIM};
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        // The legacy update directory with shim, but without GRUB
+        write_empty(root, &format!("usr/lib/bootupd/updates/EFI/centos/{SHIM}"))?;
+        let updates = root.join("usr/lib/bootupd/updates");
+        std::fs::write(updates.join("EFI.json"), PACKAGE_METADATA)?;
+        std::fs::write(updates.join("BIOS.json"), PACKAGE_METADATA)?;
+        let src_dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let all = get_components();
+        let targets = all.values().map(|c| c.as_ref()).collect::<Vec<_>>();
+        let device: Device = serde_json::from_value(serde_json::json!({
+            "name": "vda",
+            "size": 0
+        }))?;
+        let devices = [device];
+        let names = |components: Vec<&dyn Component>| {
+            components.iter().map(|c| c.name()).collect::<Vec<_>>()
+        };
+        let install = |devices: &[Device]| {
+            components_to_install(&targets, devices, Bootloader::Grub, root.as_str(), &src_dir)
+        };
+
+        let Err(err) = install(&devices) else {
+            panic!("a payload EFI refuses must fail the install");
+        };
+        assert!(
+            format!("{err:#}").starts_with(
+                "installing component EFI: Cannot install bootloader 'grub': the update payload in usr/lib/bootupd/updates/EFI carries no bootloader"
+            ),
+            "{err:#}"
+        );
+
+        write_empty(
+            root,
+            &format!("usr/lib/bootupd/updates/EFI/centos/{BOOTLOADER_BIN}"),
+        )?;
+        let expected = if all.contains_key("BIOS") {
+            vec!["BIOS", "EFI"]
+        } else {
+            vec!["EFI"]
+        };
+        assert_eq!(names(install(&devices)?), expected);
+        // BIOS needs a device to install to
+        assert_eq!(names(install(&[])?), ["EFI"]);
+        // A component without update metadata is not checked either.
+        std::fs::remove_file(updates.join("EFI.json"))?;
+        std::fs::remove_file(updates.join(format!("EFI/centos/{BOOTLOADER_BIN}")))?;
+        assert_eq!(
+            names(install(&devices)?),
+            expected
+                .into_iter()
+                .filter(|c| *c != "EFI")
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    /// `install`'s choice, from its options, for the EFI component
+    #[test]
+    #[cfg(efi_arch)]
+    fn test_install_bootloader() -> Result<()> {
+        use crate::efi::{BOOTLOADER_BIN, SHIM};
+        use clap::Parser;
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        for binary in [SHIM, BOOTLOADER_BIN] {
+            write_empty(
+                root,
+                &format!("usr/lib/bootupd/updates/EFI/centos/{binary}"),
+            )?;
+        }
+        std::fs::write(
+            root.join("usr/lib/bootupd/updates/EFI.json"),
+            PACKAGE_METADATA,
+        )?;
+        let src_dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let components = get_components();
+        let efi = components["EFI"].as_ref();
+        let dest = tempfile::tempdir()?;
+        let dest = Utf8Path::from_path(dest.path()).unwrap();
+        let opts = |root: &Utf8Path, bootloader: &[&str]| {
+            let args = ["install", "--src-root", root.as_str(), "--component", "EFI"];
+            InstallOpts::try_parse_from(args.iter().chain(bootloader).chain([&dest.as_str()]))
+        };
+        assert_eq!(
+            install_bootloader(&opts(root, &[])?, &[efi], &src_dir)?,
+            Bootloader::Grub
+        );
+        // An explicit --bootloader wins, whether or not the payload carries it.
+        let systemd = opts(root, &["--bootloader", "systemd"])?;
+        assert_eq!(
+            install_bootloader(&systemd, &[efi], &src_dir)?,
+            Bootloader::Systemd
+        );
+
+        // A payload with two bootloaders needs a default, unless the BIOS
+        // component is a target, which installs GRUB.
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).unwrap();
+        for (component, binary) in [
+            ("grub2", BOOTLOADER_BIN),
+            ("shim", SHIM),
+            ("systemd-boot", BOOTLOADER_BIN),
+        ] {
+            write_empty(
+                root,
+                &format!("usr/lib/efi/{component}/1.0-1/EFI/fedora/{binary}"),
+            )?;
+        }
+        let metadata = r#"{"timestamp":"2026-11-16T17:14:09Z","version":"grub2 1.0-1,shim 1.0-1,systemd-boot 1.0-1","versions":[{"name":"grub2","evr":"1.0-1"},{"name":"shim","evr":"1.0-1"},{"name":"systemd-boot","evr":"1.0-1"}],"default-bootloader":null}"#;
+        let efi_json = root.join("usr/lib/bootupd/updates/EFI.json");
+        std::fs::create_dir_all(efi_json.parent().unwrap())?;
+        std::fs::write(&efi_json, metadata)?;
+        let src_dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let err = install_bootloader(&opts(root, &[])?, &[efi], &src_dir).unwrap_err();
+        assert!(err.to_string().contains("Multiple bootloaders"), "{err}");
+        let bios = components.get("BIOS").map(|c| c.as_ref());
+        if let Some(bios) = bios {
+            assert_eq!(
+                install_bootloader(&opts(root, &[])?, &[bios, efi], &src_dir)?,
+                Bootloader::Grub
+            );
+        }
+        // The EFI default wins, even over the BIOS component.
+        std::fs::write(
+            &efi_json,
+            metadata.replace(
+                r#""default-bootloader":null"#,
+                r#""default-bootloader":"Systemd""#,
+            ),
+        )?;
+        assert_eq!(
+            install_bootloader(&opts(root, &[])?, &[efi], &src_dir)?,
+            Bootloader::Systemd
+        );
+        if let Some(bios) = bios {
+            assert_eq!(
+                install_bootloader(&opts(root, &[])?, &[bios, efi], &src_dir)?,
+                Bootloader::Systemd
+            );
+        }
         Ok(())
     }
 }

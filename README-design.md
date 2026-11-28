@@ -47,8 +47,21 @@ deciding if an update is required.
 An update payload must carry the components the system boots from, such as the bootloader.
 Where the installed content includes shim, the payload must carry it too.
 `bootupctl update` refuses a payload which does not, since applying it would remove those
-files from the ESP. `bootupctl backend install` also refuses a payload without the
-component for the requested bootloader.
+files from the ESP. When `bootupctl backend install` installs the EFI component, it also checks
+the EFI update payload before installing any component. The payload must carry the bootloader to
+install exactly once. In `usr/lib/efi`, exactly one version
+of the bootloader's component must contain a file with the name shim loads, e.g.
+`grubx64.efi`. Without `usr/lib/efi`, `install` copies the whole legacy update directory,
+`usr/lib/bootupd/updates/EFI`, which can only carry GRUB, and only if it contains that file
+and is a directory rather than a symbolic link.
+The payload must also contain exactly one shim binary, which `install` must copy for that bootloader
+to a vendor directory directly below `EFI`, and the bootloader's file must land in shim's directory,
+from where shim loads it: e.g. `EFI/fedora/grubx64.efi` beside `EFI/fedora/shimx64.efi`. The two may
+come from different components. `install` copies the components one over another to the ESP's FAT
+file system, which ignores case and trailing dots and cannot hold symbolic links. So the files it
+copies must not include symbolic links, and entries whose names would be the same there must be
+directories, or copies of one file at the same path: the file tree bootupd records would track a
+file under two names separately, and an update removing one name would remove the file.
 
 ## Upgrade edges
 
