@@ -30,20 +30,18 @@ pub(crate) struct ContentMetadata {
 }
 
 impl ContentMetadata {
-    /// Returns bootloaders are available for install
+    /// The bootloaders whose components the metadata names, each once, in
+    /// [`Bootloader::iter`] order. For an image without usr/lib/efi, bootupd
+    /// 0.4.0 and newer name packages instead, so this is empty there.
     #[cfg(efi_arch)]
     pub(crate) fn available_bootloaders(&self) -> Vec<Bootloader> {
-        let mut available = vec![];
-
-        if let Some(versions) = &self.versions {
-            for version in versions {
-                if let Ok(b) = Bootloader::try_from_efi_component_name(&version.name) {
-                    available.push(b);
-                }
-            }
-        }
-
-        return available;
+        let named = self
+            .versions
+            .iter()
+            .flatten()
+            .filter_map(|v| Bootloader::try_from_efi_component_name(&v.name).ok())
+            .collect::<Vec<_>>();
+        Bootloader::iter().filter(|b| named.contains(b)).collect()
     }
 
     #[cfg(efi_arch)]

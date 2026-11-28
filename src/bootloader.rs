@@ -116,3 +116,23 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 
     return Ok(bootloader);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `list-bootloaders` prints the `Display` names, which must be the ones
+    /// `--bootloader` takes.
+    #[test]
+    fn test_display_names_match_cli() {
+        use clap::ValueEnum;
+        assert_eq!(
+            Bootloader::iter().count(),
+            Bootloader::value_variants().len()
+        );
+        for bootloader in Bootloader::iter() {
+            let cli_name = bootloader.to_possible_value().unwrap();
+            assert_eq!(cli_name.get_name(), bootloader.to_string());
+        }
+    }
+}

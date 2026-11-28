@@ -12,7 +12,7 @@ use std::process::Command;
 use bootc_internal_blockdev::Device;
 
 use crate::bootloader::Bootloader;
-use crate::bootupd::{RootContext, Sysroot};
+use crate::bootupd::{PayloadBootloaders, RootContext, Sysroot};
 use crate::component::*;
 use crate::filetree::FileMetadata;
 use crate::filetree::FileTree;
@@ -103,29 +103,59 @@ fn grub_filetree(root: impl AsRef<Path>) -> Result<FileTree> {
     Ok(FileTree { children })
 }
 
+/// The grub2-install in `process_root` that `install` runs. Errors unless it
+/// and the GRUB modules it embeds are both there.
+fn grub_install_bin(process_root: &Path) -> Result<PathBuf> {
+    if !process_root
+        .join(GRUB_MODULES)
+        .try_exists()
+        .context("checking for GRUB modules dir")?
+    {
+        bail!("Failed to find grub2-modules");
+    }
+    let grub_install = process_root.join(GRUB_BIN);
+    if !grub_install.exists() {
+        bail!("Failed to find {:?}", grub_install);
+    }
+    Ok(grub_install)
+}
+
 #[derive(Default)]
 pub(crate) struct Bios {}
 
 impl Bios {
-    // Return `true` if grub2-modules installed
-    fn check_grub_modules(&self) -> Result<bool> {
-        Path::new("/")
-            .join(GRUB_MODULES)
-            .try_exists()
-            .context("checking for GRUB modules dir")
+    /// [`Component::payload_bootloaders`], looking for grub2-install and its
+    /// modules in `process_root`. The BIOS metadata alone is not enough, as it
+    /// can outlive them.
+    fn payload_bootloaders_with(
+        &self,
+        src_root: &str,
+        process_root: &Path,
+    ) -> Result<Option<PayloadBootloaders>> {
+        let src_dir = Dir::open_ambient_dir(src_root, ambient_authority())
+            .with_context(|| format!("opening source directory {src_root}"))?;
+        if self.get_component_update(&src_dir, None)?.is_none() {
+            return Ok(None);
+        }
+        let available = match grub_install_bin(process_root) {
+            Ok(_) => vec![Bootloader::Grub],
+            Err(e) => {
+                log::warn!("Cannot install GRUB for BIOS with this system's grub2-install: {e:#}");
+                Vec::new()
+            }
+        };
+        Ok(Some(PayloadBootloaders {
+            available,
+            // `install` takes no default from the BIOS metadata
+            default: None,
+        }))
     }
 
     // Run grub2-install from the process root, returning that root so
     // callers can identify the installer which was actually used
     fn run_grub_install(&self, dest_root: &str, device: &Device) -> Result<PathBuf> {
-        if !self.check_grub_modules()? {
-            bail!("Failed to find grub2-modules");
-        }
         let process_root = PathBuf::from("/");
-        let grub_install = process_root.join(GRUB_BIN);
-        if !grub_install.exists() {
-            bail!("Failed to find {:?}", grub_install);
-        }
+        let grub_install = grub_install_bin(&process_root)?;
 
         let mut cmd = Command::new(grub_install);
         let boot_dir = Path::new(dest_root).join("boot");
@@ -171,6 +201,11 @@ impl Component for Bios {
 
     fn is_bootloader_supported(&self, bootloader: Bootloader) -> bool {
         matches!(bootloader, Bootloader::Grub)
+    }
+
+    fn payload_bootloaders(&self, src_root: &str) -> Result<Option<PayloadBootloaders>> {
+        // `install` runs grub2-install and its modules from the running system
+        self.payload_bootloaders_with(src_root, Path::new("/"))
     }
 
     fn install(
@@ -415,6 +450,51 @@ mod tests {
     use camino::Utf8Path;
     use chrono::Utc;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_payload_bootloaders() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(td.path()).expect("valid UTF-8");
+        // Where `install` runs grub2-install from
+        let process_root = tempfile::tempdir()?;
+        let process_root = process_root.path();
+        let bios = Bios::default();
+        let payload = || bios.payload_bootloaders_with(root.as_str(), process_root);
+        assert_eq!(payload()?, None);
+
+        std::fs::create_dir_all(root.join(BOOTUPD_UPDATES_DIR))?;
+        let meta = ContentMetadata {
+            timestamp: Utc::now(),
+            version: "grub2-tools 1:2.12-21.fc41".into(),
+            versions: Some(vec![Module {
+                name: "grub2-tools".into(),
+                evr: "1:2.12-21.fc41".into(),
+            }]),
+            #[cfg(efi_arch)]
+            default_bootloader: None,
+        };
+        write_update_metadata(root.as_str(), PathBuf::from("BIOS.json"), &meta)?;
+        // The metadata alone, as left after removing grub2-install
+        let none = PayloadBootloaders::default();
+        assert_eq!(payload()?, Some(none.clone()));
+
+        // grub2-install is not enough without its modules, nor are they
+        // without it.
+        std::fs::create_dir_all(process_root.join(GRUB_BIN).parent().unwrap())?;
+        std::fs::write(process_root.join(GRUB_BIN), "grub2-install")?;
+        assert_eq!(payload()?, Some(none.clone()));
+        std::fs::remove_file(process_root.join(GRUB_BIN))?;
+        std::fs::create_dir_all(process_root.join(GRUB_MODULES))?;
+        assert_eq!(payload()?, Some(none));
+
+        std::fs::write(process_root.join(GRUB_BIN), "grub2-install")?;
+        let expected = PayloadBootloaders {
+            available: vec![Bootloader::Grub],
+            default: None,
+        };
+        assert_eq!(payload()?, Some(expected));
+        Ok(())
+    }
 
     #[test]
     fn test_query_updatable_content_differs() -> Result<()> {

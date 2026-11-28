@@ -43,6 +43,11 @@ pub enum DVerb {
     Install(InstallOpts),
     #[cfg(efi_arch)]
     SetDefaultBootloader(DefaultBootloaderOpts),
+    #[clap(
+        name = "list-bootloaders",
+        about = "List the bootloaders that can be installed from the update payload"
+    )]
+    ListBootloaders(ListBootloadersOpts),
     #[clap(name = "varlink", hide = true, about = "Run the varlink service")]
     Varlink,
 }
@@ -103,6 +108,25 @@ pub struct GenerateOpts {
 }
 
 #[derive(Debug, Parser)]
+pub struct ListBootloadersOpts {
+    /// Source root, as for `install`; need not be booted
+    #[clap(long, value_parser, default_value_t = String::from("/"))]
+    pub(crate) src_root: String,
+
+    /// Only consider these components, as for `install --component`
+    #[clap(long = "component", conflicts_with = "auto")]
+    pub(crate) components: Option<Vec<String>>,
+
+    /// Choose components by how this host booted, as `install --auto` does
+    #[clap(long)]
+    pub(crate) auto: bool,
+
+    /// Output JSON
+    #[clap(long, action)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Parser)]
 pub struct DefaultBootloaderOpts {
     /// Physical root mountpoint
     #[clap(long)]
@@ -120,7 +144,24 @@ impl DCommand {
             DVerb::Varlink => Self::run_varlink_service(),
             #[cfg(efi_arch)]
             DVerb::SetDefaultBootloader(opts) => Self::set_default_bootloader(opts),
+            DVerb::ListBootloaders(opts) => Self::run_list_bootloaders(opts),
         }
+    }
+
+    /// Runner for `list-bootloaders` verb.
+    pub(crate) fn run_list_bootloaders(opts: ListBootloadersOpts) -> Result<()> {
+        use std::io::Write;
+
+        let bootloaders =
+            bootupd::payload_bootloaders(&opts.src_root, opts.auto, opts.components.as_deref())?;
+        let mut stdout = std::io::stdout().lock();
+        if opts.json {
+            serde_json::to_writer(&mut stdout, &bootloaders.to_json())?;
+            writeln!(stdout)?;
+        } else {
+            stdout.write_all(bootloaders.to_text().as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Runner for `generate-install-metadata` verb.
@@ -164,9 +205,12 @@ impl DCommand {
     #[cfg(efi_arch)]
     pub(crate) fn set_default_bootloader(opts: DefaultBootloaderOpts) -> Result<()> {
         let all_components = crate::bootupd::get_components();
-        let target_components: Vec<_> = all_components.values().collect();
+        let root_path = opts.sysroot.as_deref().unwrap_or("/");
+        let root = Dir::open_ambient_dir(root_path, ambient_authority())
+            .with_context(|| format!("Opening {root_path}"))?;
+        let mut target_components = Vec::new();
 
-        for &component in target_components.iter() {
+        for component in all_components.values() {
             if !component.is_bootloader_supported(opts.bootloader) {
                 log::info!(
                     "{} is not supported for {}. Skipping...",
@@ -176,7 +220,21 @@ impl DCommand {
 
                 continue;
             }
+            // Such as BIOS on an image without grub2-install
+            if component.get_component_update(&root, None)?.is_none() {
+                log::info!("{} has no update metadata. Skipping...", component.name());
+                continue;
+            }
 
+            target_components.push(component);
+        }
+        // `install` only reads the EFI component's default
+        if !target_components.iter().any(|c| c.name() == "EFI") {
+            anyhow::bail!(
+                "Cannot set the default bootloader: there is no EFI update metadata in {root_path}"
+            );
+        }
+        for component in target_components {
             component.set_default_bootloader(&opts)?;
         }
 

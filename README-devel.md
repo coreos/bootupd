@@ -93,3 +93,41 @@ where the first path is an ostree deployment root, and the second is the physica
 root partition.
 
 This will e.g. inject the initial files into the mounted EFI system partition.
+
+### Querying which bootloaders an image can install
+
+To find out, without booting a source root, which bootloaders
+`backend install --bootloader` can install from its update payload, run:
+
+```
+$ bootupctl backend list-bootloaders --src-root /path/to/ostree/deploy --component EFI --json
+{"bootloaders":["grub","systemd"],"default-bootloader":null}
+```
+
+The answer applies to `backend install` with the same `--component` or
+`--auto`, installing the BIOS component to a device. A bootloader is listed
+if at least one selected component can install it and, as `install`
+requires, every selected component that has update metadata and supports it
+can:
+
+- EFI needs exactly one version of the bootloader's component in
+  `usr/lib/efi` holding a file with the name shim loads (e.g. `grubx64.efi`),
+  and exactly one shim. Without `usr/lib/efi`, it can offer only GRUB, if
+  `usr/lib/bootupd/updates/EFI` holds that file.
+- BIOS needs `grub2-install` and its modules on the running system, since
+  `install` runs them from there.
+
+Warnings say why a component cannot install a bootloader. An unreadable
+source root or payload is an error. A real install can still fail because
+of its other options or target devices.
+
+If the install only touches the ESP (no device on x86_64, or `--bootloader
+systemd` or `grub-cc`), pass `--component EFI` so the BIOS component cannot
+affect the answer.
+
+`default-bootloader` is the EFI default set with `backend
+set-default-bootloader`, which `install` uses when `--bootloader` is not
+given. It is `null` if unset or if EFI is not selected. All names are those
+`--bootloader` accepts. Without `--json`, bootloaders are printed one per
+line, with the default marked even if it cannot be installed. New JSON keys
+may be added; existing keys keep their meaning.
